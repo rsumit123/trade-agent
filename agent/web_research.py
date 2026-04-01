@@ -26,10 +26,17 @@ class WebResearcher:
             "moneycontrol", "economictimes", "livemint"
         ]
 
+    # Homepages/aggregators that return boilerplate instead of real articles
+    _JUNK_DOMAINS = {
+        "moneycontrol.com", "tradingview.com", "nseindia.com",
+        "bseindia.com", "google.com", "finance.yahoo.com",
+        "investing.com", "marketwatch.com",
+    }
+
     def search(self, query: str, max_results: int = 5) -> List[Dict[str, str]]:
         """
         Execute a real web search using DuckDuckGo.
-        Returns list of {title, url, snippet, source} dicts.
+        Filters out homepage/aggregator junk so LLM gets actual article content.
         Falls back to empty list on failure (never crashes the agent).
         """
         try:
@@ -37,16 +44,33 @@ class WebResearcher:
                 from ddgs import DDGS
             except ImportError:
                 from duckduckgo_search import DDGS
-            results = []
+
+            raw = []
+            # Fetch extra results so we have enough after filtering
             with DDGS() as ddgs:
-                for r in ddgs.text(query, max_results=max_results, region="in-en"):
-                    results.append({
-                        "title": r.get("title", ""),
-                        "url": r.get("href", ""),
-                        "snippet": r.get("body", ""),
-                        "source": r.get("href", "").split("/")[2] if r.get("href") else "unknown",
-                    })
-            logger.info(f"DDG search '{query[:60]}' → {len(results)} results")
+                for r in ddgs.text(query, max_results=max_results + 6, region="in-en"):
+                    raw.append(r)
+
+            results = []
+            for r in raw:
+                url = r.get("href", "")
+                domain = url.split("/")[2] if url else ""
+                snippet = r.get("body", "")
+                # Skip junk domains and results with no real snippet content
+                if any(j in domain for j in self._JUNK_DOMAINS):
+                    continue
+                if len(snippet) < 60:
+                    continue
+                results.append({
+                    "title": r.get("title", ""),
+                    "url": url,
+                    "snippet": snippet,
+                    "source": domain,
+                })
+                if len(results) >= max_results:
+                    break
+
+            logger.info(f"DDG search '{query[:60]}' → {len(results)} results (filtered from {len(raw)})")
             return results
         except Exception as e:
             logger.warning(f"DDG search failed for '{query}': {e}")
@@ -123,8 +147,10 @@ class WebResearcher:
         """
         sections = []
 
-        # 1. Broad market overview via DDG
-        market_news = self.search("NSE Nifty India stock market today", max_results=3)
+        # 1. Broad market overview via DDG — date-specific for fresh articles
+        from datetime import date
+        today = date.today().strftime("%B %d %Y")
+        market_news = self.search(f"India stock market Nifty Sensex today {today} news", max_results=3)
         if market_news:
             sections.append(self.format_news_for_llm("India Market Overview", market_news))
 
