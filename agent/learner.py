@@ -25,7 +25,9 @@ class Learner:
     def __init__(self, config: AgentConfig, portfolio: Portfolio):
         self.config = config
         self.portfolio = portfolio
-        self.journal_path = Path(config.learnings_path)
+        # Resolve to absolute path relative to project root (parent of this file's dir)
+        _project_root = Path(__file__).resolve().parent.parent
+        self.journal_path = (_project_root / config.learnings_path).resolve()
         self._ensure_journal()
 
     def _ensure_journal(self):
