@@ -23,7 +23,7 @@ def main():
     parser.add_argument("--review", action="store_true", help="Run daily review")
     parser.add_argument("--status", action="store_true", help="Show portfolio status")
     parser.add_argument("--capital", type=float, help="Starting capital (INR)")
-    parser.add_argument("--provider", choices=["anthropic", "openai"], help="LLM provider")
+    parser.add_argument("--provider", choices=["anthropic", "openai", "openrouter"], help="LLM provider")
     args = parser.parse_args()
 
     # Build config
