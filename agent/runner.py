@@ -72,19 +72,20 @@ class TradingAgent:
         logger.info(f"🔧 Tool call: {tool_name}({json.dumps(tool_input)[:200]})")
 
         if tool_name == "search_market_news":
-            query = tool_input.get("query", "").upper()
-            results = []
-            # Check if the query mentions a specific ticker from our watchlist
-            matched_tickers = [
-                t for t in self.config.watchlist
-                if t.replace(".NS", "").replace(".BO", "") in query
-            ]
-            # If no ticker match, search across top 5 watchlist stocks for general news
-            search_tickers = matched_tickers if matched_tickers else self.config.watchlist[:5]
-            for ticker in search_tickers:
-                news = self.researcher.get_news_for_stock(ticker)
-                results.extend(news)
-            return {"query": tool_input.get("query", ""), "results": results[:8]}
+            query = tool_input.get("query", "")
+            # Execute the LLM's actual query via DuckDuckGo
+            results = self.researcher.search(query, max_results=6)
+            # If DDG returned nothing, fall back to yfinance news for any
+            # tickers mentioned in the query
+            if not results:
+                query_upper = query.upper()
+                matched_tickers = [
+                    t for t in self.config.watchlist
+                    if t.replace(".NS", "").replace(".BO", "") in query_upper
+                ] or self.config.watchlist[:3]
+                for ticker in matched_tickers[:3]:
+                    results.extend(self.researcher.get_news_for_stock(ticker))
+            return {"query": query, "results": results[:8]}
 
         elif tool_name == "get_portfolio_status":
             prices = self.market_data.get_current_prices()
