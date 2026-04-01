@@ -95,7 +95,7 @@ class AgentConfig:
     llm_provider: str = "openrouter"  # "anthropic", "openai", or "openrouter"
     anthropic_model: str = "claude-sonnet-4-5-20250929"
     openai_model: str = "gpt-4o"
-    openrouter_model: str = "anthropic/claude-sonnet-4-5"
+    openrouter_model: str = "anthropic/claude-haiku-4-5"
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
     @property
