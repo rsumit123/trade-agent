@@ -165,26 +165,118 @@ Start with `## {date.today().strftime("%Y-%m-%d")} — Daily Review`
 
         logger.info(f"📝 Learning journal updated: {self.journal_path}")
 
-    def write_trade_log(self, trade: Trade, context: str = ""):
-        """Log individual trade entry to journal and logger."""
-        entry = (
-            f"**{trade.action}** {trade.quantity}x {trade.ticker} "
-            f"@ ₹{trade.entry_price:.2f}"
-        )
-        if trade.exit_price:
-            entry += f" → ₹{trade.exit_price:.2f} (P&L: ₹{trade.pnl:.2f})"
-        if trade.reason:
-            entry += f"\n  *Reason: {trade.reason}*"
-        if context:
-            entry += f"\n  *Context: {context}*"
-
-        logger.info(f"Trade logged: {entry}")
-
-        # Append to journal so decisions are visible in real-time
+    def write_trade_log(self, trade: Trade, llm_client=None):
+        """
+        Log a trade to the journal.
+        - BUY: brief entry note (thesis captured at decision time).
+        - SELL: LLM-generated reflection on what happened and what to learn.
+        """
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-        journal_entry = f"### {timestamp} — Trade\n{entry}\n"
+
+        if trade.action == "BUY" or trade.exit_price is None:
+            # ── Entry log ─────────────────────────────────────────────
+            entry = (
+                f"**ENTRY** {trade.quantity}x {trade.ticker} @ ₹{trade.entry_price:.2f}"
+                f"  [{trade.trade_type}]\n"
+                f"  *Thesis: {trade.reason or 'no reason recorded'}*"
+            )
+            logger.info(f"Trade logged: {entry}")
+            journal_entry = f"### {timestamp} — Entry: {trade.ticker}\n{entry}\n"
+
+        else:
+            # ── Exit: generate LLM reflection ─────────────────────────
+            pnl = trade.pnl or 0
+            pnl_pct = ((trade.exit_price - trade.entry_price) / trade.entry_price) * 100
+            outcome = "WIN ✅" if pnl > 0 else "LOSS ❌"
+            hold_time = ""
+            if trade.entry_time and trade.exit_time:
+                try:
+                    t0 = datetime.fromisoformat(trade.entry_time)
+                    t1 = datetime.fromisoformat(trade.exit_time)
+                    mins = int((t1 - t0).total_seconds() / 60)
+                    hold_time = f"{mins}m" if mins < 120 else f"{mins//60}h{mins%60}m"
+                except Exception:
+                    pass
+
+            summary_line = (
+                f"**EXIT** {trade.quantity}x {trade.ticker} | "
+                f"{outcome} | ₹{trade.entry_price:.2f} → ₹{trade.exit_price:.2f} | "
+                f"P&L: ₹{pnl:+.2f} ({pnl_pct:+.2f}%) | held {hold_time}"
+            )
+            logger.info(f"Trade logged: {summary_line}")
+
+            # Try LLM reflection; fall back to structured summary if unavailable
+            reflection = self._generate_trade_reflection(trade, pnl, pnl_pct, hold_time, llm_client)
+            journal_entry = (
+                f"### {timestamp} — Exit: {trade.ticker}\n"
+                f"{summary_line}\n\n"
+                f"{reflection}\n"
+            )
+
         with open(self.journal_path, "a") as f:
             f.write(f"\n{journal_entry}\n")
+
+    def _generate_trade_reflection(
+        self, trade: Trade, pnl: float, pnl_pct: float, hold_time: str, llm_client
+    ) -> str:
+        """Ask the LLM to reflect on a closed trade. Falls back to template if no client."""
+        outcome_word = "profitable" if pnl > 0 else "a loss"
+
+        prompt = f"""You are a trading journal assistant. Write a concise reflection on this closed trade.
+
+## Trade Summary
+- Ticker: {trade.ticker}
+- Type: {trade.trade_type}
+- Entry: ₹{trade.entry_price:.2f}  Exit: ₹{trade.exit_price:.2f}
+- P&L: ₹{pnl:+.2f} ({pnl_pct:+.2f}%)
+- Hold time: {hold_time}
+- Entry thesis: {trade.reason or 'not recorded'}
+- Exit reason: {trade.exit_reason or 'not recorded'}
+
+Write 3–4 bullet points covering:
+1. Did the original thesis play out? What actually drove the exit?
+2. What went well or what went wrong?
+3. One concrete thing to do differently next time (be specific, not generic)
+4. Any pattern worth remembering for future {trade.ticker} or {trade.trade_type} trades
+
+Keep it under 120 words. Be honest and specific. No fluff."""
+
+        if llm_client is None:
+            return self._fallback_trade_reflection(trade, pnl, pnl_pct)
+
+        try:
+            if self.config.llm_provider == "anthropic":
+                response = llm_client.messages.create(
+                    model=self.config.anthropic_model,
+                    max_tokens=300,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                return response.content[0].text.strip()
+            else:
+                model = (
+                    self.config.openrouter_model
+                    if self.config.llm_provider == "openrouter"
+                    else self.config.openai_model
+                )
+                response = llm_client.chat.completions.create(
+                    model=model,
+                    max_tokens=300,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                return response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.warning(f"Trade reflection LLM call failed: {e}")
+            return self._fallback_trade_reflection(trade, pnl, pnl_pct)
+
+    def _fallback_trade_reflection(self, trade: Trade, pnl: float, pnl_pct: float) -> str:
+        """Structured reflection without LLM."""
+        outcome = "met target" if pnl > 0 else "hit stop / reversed"
+        return (
+            f"- **Outcome**: {outcome} ({pnl_pct:+.2f}%)\n"
+            f"- **Original thesis**: {trade.reason or 'not recorded'}\n"
+            f"- **Exit reason**: {trade.exit_reason or 'not recorded'}\n"
+            f"- *LLM reflection unavailable — review manually*"
+        )
 
     def get_performance_stats(self, days: int = 30) -> Dict[str, Any]:
         """Calculate aggregate performance stats for the review."""
