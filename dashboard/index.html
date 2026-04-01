@@ -655,6 +655,29 @@
     </div>
   </div>
 
+  <!-- Agent Logs -->
+  <div style="margin-top:1.5rem;">
+    <div class="panel" style="max-width:100%;">
+      <div class="panel-header">
+        <div class="panel-title">Agent Logs</div>
+        <div class="panel-badge" id="logsCount">--</div>
+      </div>
+      <div id="logsContainer" style="
+        background:#0a0a0a;
+        border-radius:8px;
+        padding:1rem;
+        font-family:monospace;
+        font-size:0.78rem;
+        line-height:1.6;
+        max-height:400px;
+        overflow-y:auto;
+        color:#ccc;
+        white-space:pre-wrap;
+        word-break:break-all;
+      ">Loading logs...</div>
+    </div>
+  </div>
+
 </main>
 
 <script>
@@ -843,10 +866,37 @@ async function updateWatchlist() {
 }
 
 async function updateLearnings() {
-  const data = await fetchJSON('/api/learnings');
+  const data = await fetchJSON('/api/journal');
   if (data && data.content) {
     document.getElementById('learningsContent').textContent = data.content;
   }
+}
+
+async function updateLogs() {
+  const data = await fetchJSON('/api/logs?lines=150');
+  if (!data || !data.lines) return;
+  const lines = data.lines;
+  document.getElementById('logsCount').textContent = lines.length + ' lines';
+
+  // Colour-code by level
+  const html = lines.map(line => {
+    let color = '#aaa';
+    if (line.includes('[ERROR]'))   color = '#f87171';
+    else if (line.includes('[WARNING]')) color = '#fbbf24';
+    else if (line.includes('[INFO]'))    color = '#86efac';
+    else if (line.includes('Tool call')) color = '#67e8f9';
+    else if (line.includes('place_trade')) color = '#c084fc';
+    return `<span style="color:${color}">${escHtml(line)}</span>`;
+  }).join('\n');
+
+  const container = document.getElementById('logsContainer');
+  container.innerHTML = html;
+  // Auto-scroll to bottom
+  container.scrollTop = container.scrollHeight;
+}
+
+function escHtml(str) {
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 function updateTimestamp() {
@@ -872,6 +922,7 @@ async function refreshAll() {
     updatePerformance(),
     updateWatchlist(),
     updateLearnings(),
+    updateLogs(),
   ]);
 }
 
