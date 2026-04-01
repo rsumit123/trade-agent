@@ -169,8 +169,8 @@ class AnthropicDecisionEngine:
     def _build_context(self, portfolio: Dict, watchlist: List[Dict],
                        news: str, risk: Dict) -> str:
         """Build the initial context message for the LLM."""
-        # Truncate watchlist to top movers to stay within context limits
-        top_movers = watchlist[:10] if watchlist else []
+        # Show top 20 movers by absolute % change so LLM sees the best opportunities
+        top_movers = watchlist[:20] if watchlist else []
 
         return f"""## Current Portfolio
 ```json
@@ -312,7 +312,7 @@ class OpenRouterDecisionEngine:
 
     def _build_context(self, portfolio: Dict, watchlist: List[Dict],
                        news: str, risk: Dict) -> str:
-        top_movers = watchlist[:10] if watchlist else []
+        top_movers = watchlist[:20] if watchlist else []
         return f"""## Current Portfolio
 ```json
 {json.dumps(portfolio, indent=2)}
