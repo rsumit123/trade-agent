@@ -193,13 +193,15 @@ class TradingAgent:
 
         # Log a brief news summary so it's visible in the dashboard log panel
         if news and news != "No market news available at this time.":
-            # Print first 3 headline titles only to keep logs clean
+            # Extract numbered headline lines: "  1. [source] title"
+            import re
             headlines = [
-                line.strip() for line in news.splitlines()
-                if line.strip() and line.strip()[0].isdigit()  # numbered items like "1. [source] title"
+                re.sub(r"^\s*\d+\.\s*", "", line).strip()
+                for line in news.splitlines()
+                if re.match(r"^\s*\d+\.\s*\[", line)
             ][:3]
             if headlines:
-                logger.info(f"📰 News headlines: {' | '.join(headlines)}")
+                logger.info(f"📰 News: {' | '.join(headlines)}")
             else:
                 logger.info(f"📰 News context loaded ({len(news)} chars)")
 
