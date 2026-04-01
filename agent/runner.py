@@ -67,14 +67,19 @@ class TradingAgent:
         logger.info(f"🔧 Tool call: {tool_name}({json.dumps(tool_input)[:200]})")
 
         if tool_name == "search_market_news":
-            query = tool_input.get("query", "")
-            # In production, this would call a real search API
-            # For now, use yfinance news as a proxy
+            query = tool_input.get("query", "").upper()
             results = []
-            for ticker in self.config.watchlist[:3]:
+            # Check if the query mentions a specific ticker from our watchlist
+            matched_tickers = [
+                t for t in self.config.watchlist
+                if t.replace(".NS", "").replace(".BO", "") in query
+            ]
+            # If no ticker match, search across top 5 watchlist stocks for general news
+            search_tickers = matched_tickers if matched_tickers else self.config.watchlist[:5]
+            for ticker in search_tickers:
                 news = self.researcher.get_news_for_stock(ticker)
                 results.extend(news)
-            return {"query": query, "results": results[:5]}
+            return {"query": tool_input.get("query", ""), "results": results[:8]}
 
         elif tool_name == "get_portfolio_status":
             prices = self.market_data.get_current_prices()
@@ -200,6 +205,7 @@ class TradingAgent:
             learnings=learnings,
             tools=[],  # Tool defs are handled inside the engine
             tool_handler=self.handle_tool_call,
+            is_market_open=self.market_data.is_market_open(),
         )
 
         logger.info(f"✅ Cycle complete — {len(actions)} actions taken")

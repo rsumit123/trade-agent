@@ -40,7 +40,7 @@ class AgentConfig:
 
     # ── LLM Configuration ────────────────────────────────────
     llm_provider: str = "anthropic"  # "anthropic" or "openai"
-    anthropic_model: str = "claude-sonnet-4-20250514"
+    anthropic_model: str = "claude-sonnet-4-5-20250929"
     openai_model: str = "gpt-4o"
 
     @property

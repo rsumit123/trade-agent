@@ -78,6 +78,7 @@ class AnthropicDecisionEngine:
         learnings: str,
         tools: List[Dict],
         tool_handler: callable,
+        is_market_open: bool = True,
     ) -> List[Dict]:
         """
         Run the full decision loop with tool use.
@@ -93,7 +94,7 @@ class AnthropicDecisionEngine:
         system = TRADING_SYSTEM_PROMPT.format(
             learnings=learnings or "No past learnings yet — this is the beginning.",
             current_time=datetime.now().strftime("%Y-%m-%d %H:%M IST"),
-            market_status="OPEN" if True else "CLOSED",  # TODO: use market_data.is_market_open()
+            market_status="OPEN" if is_market_open else "CLOSED",
         )
 
         # Tool definitions
