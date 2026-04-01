@@ -1,7 +1,7 @@
 """
 Decision Engine — the LLM brain of the trading agent.
 Sends market context + portfolio state to the LLM and gets structured trade decisions.
-Supports both Anthropic (Claude) and OpenAI APIs.
+Supports Anthropic (Claude), OpenAI, and OpenRouter (all models via one key).
 """
 
 import json
@@ -192,35 +192,158 @@ If no good opportunities exist, it's perfectly fine to hold and wait.
 What trades, if any, should we make right now?"""
 
 
-# ── OpenAI Implementation (stub) ────────────────────────────
+# ── OpenAI / OpenRouter Implementation ──────────────────────
 
-class OpenAIDecisionEngine:
-    """Decision engine using OpenAI API. Same interface, different backend."""
+class OpenRouterDecisionEngine:
+    """
+    Decision engine using OpenAI-compatible API.
+    Works for OpenRouter (all models), OpenAI directly, or any compatible endpoint.
+    """
 
     def __init__(self, config: AgentConfig):
         self.config = config
         try:
             import openai
-            self.client = openai.OpenAI(api_key=config.api_key)
         except ImportError:
             raise ImportError("pip install openai")
 
-    def run_decision_loop(self, portfolio_summary, watchlist_data,
-                          news_context, risk_status, learnings,
-                          tools, tool_handler) -> List[Dict]:
-        """OpenAI implementation — same flow, different API format."""
-        # TODO: Implement OpenAI tool-use loop
-        # The structure is very similar to Anthropic but with different
-        # message/tool formats. Left as an exercise.
-        logger.warning("OpenAI engine not yet implemented, use Anthropic")
-        return []
+        base_url = config.openrouter_base_url if config.llm_provider == "openrouter" else None
+        extra_headers = {"HTTP-Referer": "https://github.com/rsumit123/trade-agent"} if base_url else {}
+
+        self.client = openai.OpenAI(
+            api_key=config.api_key,
+            base_url=base_url,
+            default_headers=extra_headers,
+        )
+        self.model = config.openrouter_model if config.llm_provider == "openrouter" else config.openai_model
+
+    def run_decision_loop(
+        self,
+        portfolio_summary: Dict,
+        watchlist_data: List[Dict],
+        news_context: str,
+        risk_status: Dict,
+        learnings: str,
+        tools: List[Dict],
+        tool_handler: callable,
+        is_market_open: bool = True,
+    ) -> List[Dict]:
+        from .web_research import LLMWebSearchTool
+
+        context = self._build_context(portfolio_summary, watchlist_data, news_context, risk_status)
+        system = TRADING_SYSTEM_PROMPT.format(
+            learnings=learnings or "No past learnings yet — this is the beginning.",
+            current_time=datetime.now().strftime("%Y-%m-%d %H:%M IST"),
+            market_status="OPEN" if is_market_open else "CLOSED",
+        )
+
+        # Convert Anthropic-style tool schemas to OpenAI function format
+        tool_defs = [
+            self._to_openai_tool(LLMWebSearchTool.tool_definition()),
+            self._to_openai_tool(LLMWebSearchTool.get_portfolio_tool()),
+            self._to_openai_tool(LLMWebSearchTool.get_stock_detail_tool()),
+            self._to_openai_tool(LLMWebSearchTool.get_trade_tool()),
+        ]
+
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": context},
+        ]
+        actions_taken = []
+        max_iterations = 10
+
+        for _ in range(max_iterations):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    max_tokens=4096,
+                    tools=tool_defs,
+                    tool_choice="auto",
+                    messages=messages,
+                )
+            except Exception as e:
+                logger.error(f"LLM API error: {e}")
+                break
+
+            msg = response.choices[0].message
+            messages.append(msg)
+
+            if not msg.tool_calls:
+                if msg.content:
+                    logger.info(f"Agent reasoning: {msg.content[:500]}")
+                break
+
+            # Handle tool calls
+            for tc in msg.tool_calls:
+                try:
+                    tool_input = json.loads(tc.function.arguments)
+                except json.JSONDecodeError:
+                    tool_input = {}
+
+                result = tool_handler(tc.function.name, tool_input)
+
+                if tc.function.name == "place_trade":
+                    actions_taken.append({
+                        "tool": tc.function.name,
+                        "input": tool_input,
+                        "result": result,
+                    })
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": json.dumps(result) if isinstance(result, dict) else str(result),
+                })
+
+        return actions_taken
+
+    def _build_context(self, portfolio: Dict, watchlist: List[Dict],
+                       news: str, risk: Dict) -> str:
+        top_movers = watchlist[:10] if watchlist else []
+        return f"""## Current Portfolio
+```json
+{json.dumps(portfolio, indent=2)}
+```
+
+## Risk Status
+```json
+{json.dumps(risk, indent=2)}
+```
+
+## Watchlist — Top Movers
+```json
+{json.dumps(top_movers, indent=2)}
+```
+
+## Recent Market News
+{news}
+
+---
+
+Analyze the market conditions and your portfolio. Use your tools to research
+specific stocks if needed, then decide whether to make any trades.
+If no good opportunities exist, it's perfectly fine to hold and wait.
+
+What trades, if any, should we make right now?"""
+
+    @staticmethod
+    def _to_openai_tool(anthropic_tool: Dict) -> Dict:
+        """Convert Anthropic tool schema → OpenAI function tool format."""
+        return {
+            "type": "function",
+            "function": {
+                "name": anthropic_tool["name"],
+                "description": anthropic_tool["description"],
+                "parameters": anthropic_tool["input_schema"],
+            }
+        }
 
 
 def create_engine(config: AgentConfig):
     """Factory function to create the right engine."""
     if config.llm_provider == "anthropic":
         return AnthropicDecisionEngine(config)
-    elif config.llm_provider == "openai":
-        return OpenAIDecisionEngine(config)
+    elif config.llm_provider in ("openrouter", "openai"):
+        return OpenRouterDecisionEngine(config)
     else:
         raise ValueError(f"Unknown LLM provider: {config.llm_provider}")

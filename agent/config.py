@@ -39,18 +39,23 @@ class AgentConfig:
     timezone: str = "Asia/Kolkata"
 
     # ── LLM Configuration ────────────────────────────────────
-    llm_provider: str = "anthropic"  # "anthropic" or "openai"
+    llm_provider: str = "openrouter"  # "anthropic", "openai", or "openrouter"
     anthropic_model: str = "claude-sonnet-4-5-20250929"
     openai_model: str = "gpt-4o"
+    openrouter_model: str = "anthropic/claude-sonnet-4-5"
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
     @property
     def api_key(self) -> str:
-        if self.llm_provider == "anthropic":
-            key = os.environ.get("ANTHROPIC_API_KEY", "")
-        else:
-            key = os.environ.get("OPENAI_API_KEY", "")
+        key_map = {
+            "anthropic": "ANTHROPIC_API_KEY",
+            "openai": "OPENAI_API_KEY",
+            "openrouter": "OPENROUTER_API_KEY",
+        }
+        env_var = key_map.get(self.llm_provider, "OPENROUTER_API_KEY")
+        key = os.environ.get(env_var, "")
         if not key:
-            raise ValueError(f"Set {'ANTHROPIC_API_KEY' if self.llm_provider == 'anthropic' else 'OPENAI_API_KEY'} env var")
+            raise ValueError(f"Set {env_var} env var")
         return key
 
     # ── Paths ────────────────────────────────────────────────
