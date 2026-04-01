@@ -13,6 +13,9 @@ env/
 # Data & Logs (generated at runtime)
 data/*.db
 logs/*.log
+# Keep the placeholder files so dirs exist in git
+!data/.gitkeep
+!logs/.gitkeep
 
 # IDE
 .vscode/

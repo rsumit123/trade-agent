@@ -95,7 +95,7 @@ class Portfolio:
             if not row:
                 conn.execute(
                     "INSERT INTO account (id, cash, starting_capital, created_at) VALUES (1, ?, ?, ?)",
-                    (starting_capital, starting_capital, datetime.now().isoformat())
+                    (self.starting_capital, self.starting_capital, datetime.now().isoformat())
                 )
 
     # ── Account State ────────────────────────────────────────
