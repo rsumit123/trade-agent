@@ -55,7 +55,12 @@ class TradingAgent:
         logger.info("🤖 Trading Agent initialized")
         logger.info(f"   Capital: ₹{self.config.starting_capital:,.0f}")
         logger.info(f"   Watchlist: {len(self.config.watchlist)} stocks")
-        logger.info(f"   LLM: {self.config.llm_provider} / {self.config.anthropic_model}")
+        active_model = {
+            "anthropic": self.config.anthropic_model,
+            "openai": self.config.openai_model,
+            "openrouter": self.config.openrouter_model,
+        }.get(self.config.llm_provider, "unknown")
+        logger.info(f"   LLM: {self.config.llm_provider} / {active_model}")
 
     # ── Tool Handler ─────────────────────────────────────────
 
