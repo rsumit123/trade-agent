@@ -166,10 +166,12 @@ class TradingAgent:
 
     # ── Main Loop ────────────────────────────────────────────
 
-    def run_once(self) -> Dict:
-        """Run a single decision cycle."""
+    def run_once(self, force_intraday: bool = False) -> Dict:
+        """Run a single decision cycle.
+        force_intraday: hint the LLM to prefer intraday trades (useful for testing).
+        """
         logger.info("=" * 60)
-        logger.info("🔄 Starting decision cycle")
+        logger.info("🔄 Starting decision cycle" + (" [FORCE INTRADAY]" if force_intraday else ""))
 
         # 1. OBSERVE — gather market data
         logger.info("👁️  Observing market...")
@@ -206,6 +208,7 @@ class TradingAgent:
             tools=[],  # Tool defs are handled inside the engine
             tool_handler=self.handle_tool_call,
             is_market_open=self.market_data.is_market_open(),
+            force_intraday=force_intraday,
         )
 
         logger.info(f"✅ Cycle complete — {len(actions)} actions taken")

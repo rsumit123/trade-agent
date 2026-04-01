@@ -131,6 +131,28 @@ def get_daily_snapshots(limit: int = 30):
         return []
 
 
+@app.get("/api/logs")
+def get_logs(lines: int = 150):
+    """Get recent agent log lines."""
+    log_path = Path(__file__).parent.parent / config.log_path
+    if not log_path.exists():
+        return {"lines": []}
+    try:
+        all_lines = log_path.read_text().splitlines()
+        return {"lines": all_lines[-lines:]}
+    except Exception as e:
+        return {"lines": [], "error": str(e)}
+
+
+@app.get("/api/journal")
+def get_journal():
+    """Get full learning journal."""
+    journal_path = Path(__file__).parent.parent / config.learnings_path
+    if not journal_path.exists():
+        return {"content": "No journal yet."}
+    return {"content": journal_path.read_text()}
+
+
 @app.get("/api/config")
 def get_config():
     """Get agent configuration (non-sensitive)."""

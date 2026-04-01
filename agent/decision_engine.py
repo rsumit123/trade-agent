@@ -79,6 +79,7 @@ class AnthropicDecisionEngine:
         tools: List[Dict],
         tool_handler: callable,
         is_market_open: bool = True,
+        force_intraday: bool = False,
     ) -> List[Dict]:
         """
         Run the full decision loop with tool use.
@@ -91,11 +92,17 @@ class AnthropicDecisionEngine:
         context = self._build_context(portfolio_summary, watchlist_data,
                                        news_context, risk_status)
 
+        intraday_hint = (
+            "\n\n⚠️  TESTING MODE: Prefer `trade_type: intraday` for any new trades this cycle."
+            " Intraday trades must be closed before 3:15 PM IST."
+            if force_intraday else ""
+        )
+
         system = TRADING_SYSTEM_PROMPT.format(
             learnings=learnings or "No past learnings yet — this is the beginning.",
             current_time=datetime.now().strftime("%Y-%m-%d %H:%M IST"),
             market_status="OPEN" if is_market_open else "CLOSED",
-        )
+        ) + intraday_hint
 
         # Tool definitions
         tool_defs = [
@@ -227,15 +234,21 @@ class OpenRouterDecisionEngine:
         tools: List[Dict],
         tool_handler: callable,
         is_market_open: bool = True,
+        force_intraday: bool = False,
     ) -> List[Dict]:
         from .web_research import LLMWebSearchTool
 
         context = self._build_context(portfolio_summary, watchlist_data, news_context, risk_status)
+        intraday_hint = (
+            "\n\n⚠️  TESTING MODE: Prefer `trade_type: intraday` for any new trades this cycle."
+            " Intraday trades must be closed before 3:15 PM IST."
+            if force_intraday else ""
+        )
         system = TRADING_SYSTEM_PROMPT.format(
             learnings=learnings or "No past learnings yet — this is the beginning.",
             current_time=datetime.now().strftime("%Y-%m-%d %H:%M IST"),
             market_status="OPEN" if is_market_open else "CLOSED",
-        )
+        ) + intraday_hint
 
         # Convert Anthropic-style tool schemas to OpenAI function format
         tool_defs = [

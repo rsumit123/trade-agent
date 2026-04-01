@@ -24,6 +24,8 @@ def main():
     parser.add_argument("--status", action="store_true", help="Show portfolio status")
     parser.add_argument("--capital", type=float, help="Starting capital (INR)")
     parser.add_argument("--provider", choices=["anthropic", "openai", "openrouter"], help="LLM provider")
+    parser.add_argument("--force-intraday", action="store_true",
+                        help="Force intraday trade_type for this cycle (useful for testing)")
     args = parser.parse_args()
 
     # Build config
@@ -71,7 +73,7 @@ def main():
         agent.run_loop(mode=mode)
     else:
         # Single cycle
-        result = agent.run_once()
+        result = agent.run_once(force_intraday=args.force_intraday)
         print(f"\nResult: {json.dumps(result, indent=2, default=str)}")
 
 

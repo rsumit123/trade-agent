@@ -110,8 +110,8 @@ Start with `## {date.today().strftime("%Y-%m-%d")} — Daily Review`
 """
 
         try:
-            if hasattr(llm_client, 'messages'):
-                # Anthropic
+            if hasattr(llm_client, 'messages') and self.config.llm_provider == "anthropic":
+                # Anthropic native client
                 response = llm_client.messages.create(
                     model=self.config.anthropic_model,
                     max_tokens=1000,
@@ -119,9 +119,14 @@ Start with `## {date.today().strftime("%Y-%m-%d")} — Daily Review`
                 )
                 reflection = response.content[0].text
             else:
-                # OpenAI
+                # OpenAI-compatible client (OpenRouter or OpenAI)
+                model = (
+                    self.config.openrouter_model
+                    if self.config.llm_provider == "openrouter"
+                    else self.config.openai_model
+                )
                 response = llm_client.chat.completions.create(
-                    model=self.config.openai_model,
+                    model=model,
                     max_tokens=1000,
                     messages=[{"role": "user", "content": review_prompt}],
                 )
@@ -159,7 +164,7 @@ Start with `## {date.today().strftime("%Y-%m-%d")} — Daily Review`
         logger.info(f"📝 Learning journal updated: {self.journal_path}")
 
     def write_trade_log(self, trade: Trade, context: str = ""):
-        """Log individual trade entries (optional, more granular than daily review)."""
+        """Log individual trade entry to journal and logger."""
         entry = (
             f"**{trade.action}** {trade.quantity}x {trade.ticker} "
             f"@ ₹{trade.entry_price:.2f}"
@@ -171,9 +176,13 @@ Start with `## {date.today().strftime("%Y-%m-%d")} — Daily Review`
         if context:
             entry += f"\n  *Context: {context}*"
 
-        # We don't append individual trades to journal — too noisy
-        # They're in the DB. But we log them.
         logger.info(f"Trade logged: {entry}")
+
+        # Append to journal so decisions are visible in real-time
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        journal_entry = f"### {timestamp} — Trade\n{entry}\n"
+        with open(self.journal_path, "a") as f:
+            f.write(f"\n{journal_entry}\n")
 
     def get_performance_stats(self, days: int = 30) -> Dict[str, Any]:
         """Calculate aggregate performance stats for the review."""
