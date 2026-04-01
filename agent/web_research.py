@@ -26,10 +26,46 @@ class WebResearcher:
             "moneycontrol", "economictimes", "livemint"
         ]
 
-    def get_news_for_stock(self, ticker: str) -> List[Dict[str, str]]:
-        """Get recent news for a specific stock using yfinance."""
-        import yfinance as yf
+    def search(self, query: str, max_results: int = 5) -> List[Dict[str, str]]:
+        """
+        Execute a real web search using DuckDuckGo.
+        Returns list of {title, url, snippet, source} dicts.
+        Falls back to empty list on failure (never crashes the agent).
+        """
         try:
+            try:
+                from ddgs import DDGS
+            except ImportError:
+                from duckduckgo_search import DDGS
+            results = []
+            with DDGS() as ddgs:
+                for r in ddgs.text(query, max_results=max_results, region="in-en"):
+                    results.append({
+                        "title": r.get("title", ""),
+                        "url": r.get("href", ""),
+                        "snippet": r.get("body", ""),
+                        "source": r.get("href", "").split("/")[2] if r.get("href") else "unknown",
+                    })
+            logger.info(f"DDG search '{query[:60]}' → {len(results)} results")
+            return results
+        except Exception as e:
+            logger.warning(f"DDG search failed for '{query}': {e}")
+            return []
+
+    def get_news_for_stock(self, ticker: str) -> List[Dict[str, str]]:
+        """
+        Get recent news for a stock.
+        First tries DuckDuckGo for fresh results, falls back to yfinance.
+        """
+        clean = ticker.replace(".NS", "").replace(".BO", "")
+        query = f"{clean} stock news India today"
+        results = self.search(query, max_results=4)
+        if results:
+            return results
+
+        # Fallback: yfinance news
+        try:
+            import yfinance as yf
             stock = yf.Ticker(ticker)
             news = stock.news or []
             results = []
@@ -37,14 +73,13 @@ class WebResearcher:
                 content = item.get("content", {})
                 results.append({
                     "title": content.get("title", "No title"),
-                    "summary": content.get("summary", ""),
+                    "snippet": content.get("summary", ""),
                     "source": content.get("provider", {}).get("displayName", "Unknown"),
-                    "published": content.get("pubDate", ""),
                     "url": content.get("canonicalUrl", {}).get("url", ""),
                 })
             return results
         except Exception as e:
-            logger.warning(f"Failed to fetch news for {ticker}: {e}")
+            logger.warning(f"yfinance news fallback failed for {ticker}: {e}")
             return []
 
     def get_market_overview_queries(self) -> List[str]:
@@ -66,25 +101,35 @@ class WebResearcher:
             f"{clean_name} quarterly results outlook",
         ]
 
-    def format_news_for_llm(self, ticker: str, news: List[Dict]) -> str:
-        """Format news into a concise string for LLM context."""
+    def format_news_for_llm(self, label: str, news: List[Dict]) -> str:
+        """Format news results into a concise string for LLM context."""
         if not news:
-            return f"No recent news found for {ticker}."
+            return f"No recent news found for {label}."
 
-        lines = [f"Recent news for {ticker}:"]
-        for i, item in enumerate(news[:3], 1):
-            lines.append(f"  {i}. [{item['source']}] {item['title']}")
-            if item.get("summary"):
-                # Truncate long summaries
-                summary = item["summary"][:150]
-                lines.append(f"     {summary}...")
+        lines = [f"News — {label}:"]
+        for i, item in enumerate(news[:4], 1):
+            title = item.get("title", "No title")
+            source = item.get("source", "")
+            snippet = item.get("snippet", item.get("summary", ""))[:180]
+            lines.append(f"  {i}. [{source}] {title}")
+            if snippet:
+                lines.append(f"     {snippet}")
         return "\n".join(lines)
 
     def build_research_context(self, tickers: List[str]) -> str:
-        """Build a consolidated research brief for the LLM."""
+        """
+        Build a consolidated research brief for the LLM.
+        Includes a broad market overview + top-5 stock-specific news.
+        """
         sections = []
 
-        for ticker in tickers[:5]:  # Limit to avoid too much context
+        # 1. Broad market overview via DDG
+        market_news = self.search("NSE Nifty India stock market today", max_results=3)
+        if market_news:
+            sections.append(self.format_news_for_llm("India Market Overview", market_news))
+
+        # 2. Stock-specific news for top 5 tickers
+        for ticker in tickers[:5]:
             news = self.get_news_for_stock(ticker)
             if news:
                 sections.append(self.format_news_for_llm(ticker, news))

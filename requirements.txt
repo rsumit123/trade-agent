@@ -17,3 +17,4 @@ jinja2>=3.1.0
 # Timezone support (Python 3.9+)
 # zoneinfo is in stdlib for Python 3.9+
 # For Python 3.8: pip install backports.zoneinfo
+ddgs>=0.1.0
