@@ -85,6 +85,12 @@ class TradingAgent:
                 ] or self.config.watchlist[:3]
                 for ticker in matched_tickers[:3]:
                     results.extend(self.researcher.get_news_for_stock(ticker))
+            # Log top result so it's visible in dashboard
+            if results:
+                top = results[0]
+                logger.info(f"📰 Search result: [{top.get('source','')}] {top.get('title','')[:80]}")
+            else:
+                logger.info(f"📰 Search returned no results for: {query[:60]}")
             return {"query": query, "results": results[:8]}
 
         elif tool_name == "get_portfolio_status":
@@ -184,6 +190,18 @@ class TradingAgent:
         prices = self.market_data.get_current_prices()
         watchlist_data = self.market_data.get_watchlist_summary()
         news = self.researcher.build_research_context(self.config.watchlist[:5])
+
+        # Log a brief news summary so it's visible in the dashboard log panel
+        if news and news != "No market news available at this time.":
+            # Print first 3 headline titles only to keep logs clean
+            headlines = [
+                line.strip() for line in news.splitlines()
+                if line.strip() and line.strip()[0].isdigit()  # numbered items like "1. [source] title"
+            ][:3]
+            if headlines:
+                logger.info(f"📰 News headlines: {' | '.join(headlines)}")
+            else:
+                logger.info(f"📰 News context loaded ({len(news)} chars)")
 
         # 2. Check risk status
         risk_status = self.risk_manager.get_risk_status(prices)
