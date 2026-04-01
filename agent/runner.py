@@ -152,7 +152,7 @@ class TradingAgent:
             price = prices.get(pos.ticker, pos.entry_price)
 
             trade = self.portfolio.execute_sell(trade_id, price, reason)
-            self.learner.write_trade_log(trade)
+            self.learner.write_trade_log(trade, llm_client=self.engine.client)
             return {
                 "success": True,
                 "trade_id": trade_id,
@@ -272,4 +272,5 @@ class TradingAgent:
         for pos in intraday:
             price = prices.get(pos.ticker, pos.entry_price)
             logger.info(f"⏰ Force-closing intraday: {pos.ticker}")
-            self.portfolio.execute_sell(pos.id, price, reason="End-of-day forced close")
+            trade = self.portfolio.execute_sell(pos.id, price, reason="End-of-day forced close")
+            self.learner.write_trade_log(trade, llm_client=self.engine.client)
