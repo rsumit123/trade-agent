@@ -169,8 +169,21 @@ class AnthropicDecisionEngine:
     def _build_context(self, portfolio: Dict, watchlist: List[Dict],
                        news: str, risk: Dict) -> str:
         """Build the initial context message for the LLM."""
-        # Show top 20 movers by absolute % change so LLM sees the best opportunities
-        top_movers = watchlist[:20] if watchlist else []
+        # Pass full watchlist sorted by absolute % change (already sorted by market_data)
+        # Compact format: one line per stock to keep context tight
+        watchlist_lines = []
+        for s in watchlist:
+            ticker = s.get('ticker', '?')
+            price  = s.get('current_price', 0)
+            chg    = s.get('change_pct', 0)
+            vol    = s.get('avg_volume', 0)
+            vola   = s.get('volatility_pct', 0)
+            sma    = s.get('price_vs_sma', '?')
+            watchlist_lines.append(
+                f"{ticker:20s}  ₹{price:>8.2f}  {chg:>+6.2f}%  "
+                f"avgvol={vol:>10,}  vola={vola:.2f}%  sma={sma}"
+            )
+        watchlist_text = "\n".join(watchlist_lines) if watchlist_lines else "(no data)"
 
         return f"""## Current Portfolio
 ```json
@@ -182,9 +195,11 @@ class AnthropicDecisionEngine:
 {json.dumps(risk, indent=2)}
 ```
 
-## Watchlist — Top Movers
-```json
-{json.dumps(top_movers, indent=2)}
+## Full Watchlist — {len(watchlist)} stocks sorted by absolute % move (biggest movers first)
+```
+{"ticker":20s}  {"price":>8s}  {"chg%":>7s}  {"avgvol":>14s}  vola    sma
+{"-"*80}
+{watchlist_text}
 ```
 
 ## Recent Market News
@@ -312,7 +327,22 @@ class OpenRouterDecisionEngine:
 
     def _build_context(self, portfolio: Dict, watchlist: List[Dict],
                        news: str, risk: Dict) -> str:
-        top_movers = watchlist[:20] if watchlist else []
+        # Pass full watchlist sorted by absolute % change (already sorted by market_data)
+        # Compact format: one line per stock to keep context tight
+        watchlist_lines = []
+        for s in watchlist:
+            ticker = s.get('ticker', '?')
+            price  = s.get('current_price', 0)
+            chg    = s.get('change_pct', 0)
+            vol    = s.get('avg_volume', 0)
+            vola   = s.get('volatility_pct', 0)
+            sma    = s.get('price_vs_sma', '?')
+            watchlist_lines.append(
+                f"{ticker:20s}  ₹{price:>8.2f}  {chg:>+6.2f}%  "
+                f"avgvol={vol:>10,}  vola={vola:.2f}%  sma={sma}"
+            )
+        watchlist_text = "\n".join(watchlist_lines) if watchlist_lines else "(no data)"
+
         return f"""## Current Portfolio
 ```json
 {json.dumps(portfolio, indent=2)}
@@ -323,9 +353,11 @@ class OpenRouterDecisionEngine:
 {json.dumps(risk, indent=2)}
 ```
 
-## Watchlist — Top Movers
-```json
-{json.dumps(top_movers, indent=2)}
+## Full Watchlist — {len(watchlist)} stocks sorted by absolute % move (biggest movers first)
+```
+{"ticker":20s}  {"price":>8s}  {"chg%":>7s}  {"avgvol":>14s}  vola    sma
+{"-"*80}
+{watchlist_text}
 ```
 
 ## Recent Market News
