@@ -22,7 +22,6 @@ export function AgentControl({ sessionId, status, onStatusChange }: {
         await api(`/api/agent/start/${sessionId}`, { method: "POST" });
         toast.success("Agent started successfully");
       }
-      // Wait a moment for the process to start/stop
       setTimeout(onStatusChange, 1500);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown error";
@@ -34,26 +33,36 @@ export function AgentControl({ sessionId, status, onStatusChange }: {
   return (
     <div className="flex items-center gap-2 sm:gap-3">
       <div className="flex items-center gap-2">
-        <span className={cn("w-2.5 h-2.5 rounded-full",
-          status.running ? "bg-accent-green animate-pulse-dot" : "bg-text-muted/40"
-        )} />
+        <span
+          className={cn("rounded-full", status.running && "animate-pulse-dot")}
+          style={{
+            width: 10, height: 10,
+            background: status.running ? "#22c55e" : "rgba(100,116,139,0.4)",
+          }}
+        />
         {/* Full status text on desktop, compact on mobile */}
-        <span className="text-sm text-text-secondary hidden sm:inline">
+        <span className="hidden sm:inline" style={{ fontSize: 14, color: "#94a3b8" }}>
           {status.running ? `Running (PID ${status.pid})` : "Stopped"}
         </span>
-        <span className="text-xs text-text-secondary sm:hidden">
-          {status.running ? "Running" : "Stopped"}
+        <span className="sm:hidden" style={{ fontSize: 13, color: "#94a3b8" }}>
+          {status.running ? "Live" : "Off"}
         </span>
       </div>
       <button
         onClick={toggle}
         disabled={loading}
-        className={cn(
-          "px-3 sm:px-4 py-1.5 rounded-lg text-xs sm:text-sm font-medium transition-all border disabled:opacity-50",
-          status.running
-            ? "border-accent-red/30 text-accent-red hover:bg-accent-red/10"
-            : "border-accent-green/30 text-accent-green hover:bg-accent-green/10"
-        )}
+        style={{
+          padding: "10px 16px",
+          minHeight: 44,
+          borderRadius: 10,
+          fontSize: 14,
+          fontWeight: 500,
+          border: status.running ? "1px solid rgba(239,68,68,0.3)" : "1px solid rgba(34,197,94,0.3)",
+          color: status.running ? "#ef4444" : "#22c55e",
+          background: "transparent",
+          opacity: loading ? 0.5 : 1,
+          cursor: loading ? "not-allowed" : "pointer",
+        }}
       >
         {loading ? "..." : status.running ? "Stop" : "Start"}
       </button>
