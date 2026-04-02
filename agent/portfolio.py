@@ -42,6 +42,9 @@ class Trade:
     pnl: Optional[float] = None
     reason: str = ""
     exit_reason: str = ""
+    stop_price: Optional[float] = None    # ATR-derived stop level
+    target_price: Optional[float] = None  # ATR-derived target level
+    direction: str = "long"               # "long" or "short"
 
 
 class Portfolio:
@@ -90,6 +93,18 @@ class Portfolio:
                 );
             """)
 
+            # Schema migration: add columns if not present
+            # (idempotent — silently ignored if columns already exist)
+            for col, col_def in [
+                ("stop_price", "REAL"),
+                ("target_price", "REAL"),
+                ("direction", "TEXT DEFAULT 'long'"),
+            ]:
+                try:
+                    conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {col_def}")
+                except Exception:
+                    pass  # column already exists
+
             # Initialize account if not exists
             row = conn.execute("SELECT cash FROM account WHERE id = 1").fetchone()
             if not row:
@@ -101,6 +116,21 @@ class Portfolio:
     # ── Account State ────────────────────────────────────────
 
     def get_cash(self) -> float:
+        """
+        Returns truly available cash — raw DB cash minus proceeds from open short positions
+        (those proceeds are a liability that will be paid back on cover).
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            raw_cash = conn.execute("SELECT cash FROM account WHERE id = 1").fetchone()[0]
+            # Subtract short sale proceeds sitting in cash (they're not spendable equity)
+            short_proceeds = conn.execute(
+                "SELECT COALESCE(SUM(quantity * entry_price), 0) "
+                "FROM trades WHERE status='open' AND direction='short'"
+            ).fetchone()[0]
+        return raw_cash - short_proceeds
+
+    def get_cash_raw(self) -> float:
+        """Raw DB cash including short proceeds (used internally for accounting)."""
         with sqlite3.connect(self.db_path) as conn:
             return conn.execute("SELECT cash FROM account WHERE id = 1").fetchone()[0]
 
@@ -110,28 +140,31 @@ class Portfolio:
     # ── Trade Execution ──────────────────────────────────────
 
     def execute_buy(self, ticker: str, quantity: int, price: float,
-                    trade_type: str, reason: str = "") -> Trade:
+                    trade_type: str, reason: str = "",
+                    stop_price: float = None,
+                    target_price: float = None) -> Trade:
         """Execute a paper BUY order."""
         cost = quantity * price
         cash = self.get_cash()
         if cost > cash:
             raise ValueError(f"Insufficient funds: need ₹{cost:.2f}, have ₹{cash:.2f}")
 
+        entry_time = datetime.now().isoformat()
         with sqlite3.connect(self.db_path) as conn:
             self._update_cash(conn, -cost)
             cursor = conn.execute(
                 """INSERT INTO trades (ticker, action, trade_type, quantity,
-                   entry_price, entry_time, status, reason)
-                   VALUES (?, ?, ?, ?, ?, ?, 'open', ?)""",
+                   entry_price, entry_time, status, reason, stop_price, target_price)
+                   VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)""",
                 (ticker, "BUY", trade_type, quantity, price,
-                 datetime.now().isoformat(), reason)
+                 entry_time, reason, stop_price, target_price)
             )
             trade_id = cursor.lastrowid
 
         return Trade(
             id=trade_id, ticker=ticker, action="BUY", trade_type=trade_type,
-            quantity=quantity, entry_price=price,
-            entry_time=datetime.now().isoformat(), reason=reason
+            quantity=quantity, entry_price=price, entry_time=entry_time,
+            reason=reason, stop_price=stop_price, target_price=target_price,
         )
 
     def execute_sell(self, trade_id: int, price: float, reason: str = "") -> Trade:
@@ -144,10 +177,72 @@ class Portfolio:
                 raise ValueError(f"No open trade with id {trade_id}")
 
             trade = self._row_to_trade(row)
-            pnl = (price - trade.entry_price) * trade.quantity
+            pnl = round((price - trade.entry_price) * trade.quantity, 2)
             proceeds = trade.quantity * price
 
             self._update_cash(conn, proceeds)
+            conn.execute(
+                """UPDATE trades SET exit_price = ?, exit_time = ?,
+                   status = 'closed', pnl = ?, exit_reason = ? WHERE id = ?""",
+                (price, datetime.now().isoformat(), pnl, reason, trade_id)
+            )
+
+        trade.exit_price = price
+        trade.exit_time = datetime.now().isoformat()
+        trade.status = "closed"
+        trade.pnl = pnl
+        trade.exit_reason = reason
+        return trade
+
+    def execute_short(self, ticker: str, quantity: int, price: float,
+                      reason: str = "",
+                      stop_price: float = None,
+                      target_price: float = None) -> Trade:
+        """
+        Open a paper SHORT position (sell first, cover later).
+        Intraday only — must be covered by EOD.
+        In paper trading, shorting doesn't require cash upfront; we credit the
+        proceeds so the portfolio value stays consistent.
+        """
+        proceeds = quantity * price
+        entry_time = datetime.now().isoformat()
+        with sqlite3.connect(self.db_path) as conn:
+            # Credit proceeds from the short sale
+            self._update_cash(conn, proceeds)
+            cursor = conn.execute(
+                """INSERT INTO trades (ticker, action, trade_type, quantity,
+                   entry_price, entry_time, status, reason, stop_price, target_price, direction)
+                   VALUES (?, 'SHORT', 'intraday', ?, ?, ?, 'open', ?, ?, ?, 'short')""",
+                (ticker, quantity, price, entry_time, reason, stop_price, target_price)
+            )
+            trade_id = cursor.lastrowid
+
+        return Trade(
+            id=trade_id, ticker=ticker, action="SHORT", trade_type="intraday",
+            quantity=quantity, entry_price=price, entry_time=entry_time,
+            reason=reason, stop_price=stop_price, target_price=target_price,
+            direction="short",
+        )
+
+    def execute_cover(self, trade_id: int, price: float, reason: str = "") -> Trade:
+        """
+        Close a SHORT position by buying to cover.
+        P&L = (entry_price - cover_price) × quantity  (positive when price fell)
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM trades WHERE id = ? AND status = 'open' AND action = 'SHORT'",
+                (trade_id,)
+            ).fetchone()
+            if not row:
+                raise ValueError(f"No open SHORT trade with id {trade_id}")
+
+            trade = self._row_to_trade(row)
+            # P&L: shorted at entry_price, covering at price
+            pnl = round((trade.entry_price - price) * trade.quantity, 2)
+            # Debit the cost to buy back shares
+            cost = trade.quantity * price
+            self._update_cash(conn, -cost)
             conn.execute(
                 """UPDATE trades SET exit_price = ?, exit_time = ?,
                    status = 'closed', pnl = ?, exit_reason = ? WHERE id = ?""",
@@ -192,37 +287,60 @@ class Portfolio:
 
     def get_portfolio_summary(self, current_prices: Dict[str, float] = None) -> Dict[str, Any]:
         """Full portfolio snapshot for LLM context."""
-        cash = self.get_cash()
+        cash = self.get_cash_raw()   # use raw here so we can compute available_cash ourselves
         open_positions = self.get_open_positions()
 
-        holdings_value = 0.0
+        holdings_value = 0.0   # long positions: current market value
+        short_proceeds = 0.0   # cash credited on open shorts (a liability, not true equity)
         holdings = []
         for pos in open_positions:
             current = current_prices.get(pos.ticker, pos.entry_price) if current_prices else pos.entry_price
-            unrealized = (current - pos.entry_price) * pos.quantity
-            market_val = current * pos.quantity
-            holdings_value += market_val
+            if pos.direction == "short":
+                # Unrealized P&L = entry - current (positive if price fell as expected)
+                unrealized = (pos.entry_price - current) * pos.quantity
+                market_val = current * pos.quantity  # cost to cover right now
+                short_proceeds += pos.entry_price * pos.quantity  # proceeds sitting in cash
+            else:
+                unrealized = (current - pos.entry_price) * pos.quantity
+                market_val = current * pos.quantity
+                holdings_value += market_val
             holdings.append({
-                "trade_id": pos.id,
-                "ticker": pos.ticker,
-                "qty": pos.quantity,
-                "entry_price": pos.entry_price,
+                "trade_id":      pos.id,
+                "ticker":        pos.ticker,
+                "direction":     pos.direction,
+                "qty":           pos.quantity,
+                "entry_price":   pos.entry_price,
                 "current_price": current,
                 "unrealized_pnl": round(unrealized, 2),
-                "market_value": round(market_val, 2),
-                "trade_type": pos.trade_type,
-                "held_since": pos.entry_time,
-                "reason": pos.reason,
+                "market_value":  round(market_val, 2),
+                "trade_type":    pos.trade_type,
+                "held_since":    pos.entry_time,
+                "reason":        pos.reason,
+                "stop_price":    pos.stop_price,
+                "target_price":  pos.target_price,
             })
 
-        total_value = cash + holdings_value
+        # available_cash = raw DB cash minus short sale proceeds (a liability, not equity)
+        available_cash = cash - short_proceeds
+        # total equity = available cash + long holdings market value
+        # (short positions contribute unrealized P&L which is already reflected:
+        #  short_proceeds netted out of cash, cover_cost netted out via available_cash calc)
+        # Equivalent: cash_raw - cover_cost_at_current + long_holdings
+        cover_cost = sum(
+            (current_prices.get(pos.ticker, pos.entry_price) if current_prices else pos.entry_price) * pos.quantity
+            for pos in open_positions if pos.direction == "short"
+        )
+        total_value = available_cash + holdings_value - cover_cost + short_proceeds
+        # Simplify: total_value = cash(raw) - cover_cost + long_holdings
+        total_value = cash - cover_cost + holdings_value
         total_return = total_value - self.starting_capital
         today_pnl = self.get_today_pnl()
 
         return {
-            "cash": round(cash, 2),
+            "cash": round(available_cash, 2),          # cash available for new trades (excl. short proceeds)
+            "cash_raw": round(cash, 2),                # raw DB cash (includes short sale proceeds)
             "holdings_value": round(holdings_value, 2),
-            "total_value": round(total_value, 2),
+            "total_value": round(total_value, 2),      # true net equity
             "starting_capital": self.starting_capital,
             "total_return": round(total_return, 2),
             "total_return_pct": round((total_return / self.starting_capital) * 100, 2),
@@ -256,5 +374,9 @@ class Portfolio:
             id=row[0], ticker=row[1], action=row[2], trade_type=row[3],
             quantity=row[4], entry_price=row[5], entry_time=row[6],
             exit_price=row[7], exit_time=row[8], status=row[9],
-            pnl=row[10], reason=row[11], exit_reason=row[12]
+            pnl=row[10], reason=row[11], exit_reason=row[12],
+            # Columns 13/14/15 added by migration — guard for pre-migration rows
+            stop_price=row[13] if len(row) > 13 else None,
+            target_price=row[14] if len(row) > 14 else None,
+            direction=row[15] if len(row) > 15 else "long",
         )

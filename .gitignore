@@ -34,3 +34,11 @@ Thumbs.db
 
 # Don't ignore learnings journal — it's part of the agent's memory
 # !learnings/journal.md
+
+# Session data (generated at runtime)
+sessions/*/trades.db
+sessions/*/agent.log
+sessions/*/agent.lock
+# Keep session configs and journals in git
+!sessions/*/config.yaml
+!sessions/*/journal.md

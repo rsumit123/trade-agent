@@ -1,11 +1,15 @@
 """
 Configuration for the AI Trading Agent.
 All tunable parameters live here — risk limits, watchlist, API settings, etc.
+
+For multi-session support, use AgentConfig.from_session(session_config) to build
+a config from a session YAML file.  Direct AgentConfig() still works for backward
+compatibility (defaults to NSE with the old paths).
 """
 
 import os
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional, Any
 
 
 @dataclass
@@ -21,66 +25,9 @@ class AgentConfig:
     per_trade_loss_limit_pct: float = 0.01  # Stop-loss per trade: 1%
     max_trade_amount: float = 2_00_000.0  # Max ₹2L per trade
 
-    # ── Watchlist (NSE symbols — 111 stocks across 18 sectors) ──
-    watchlist: List[str] = field(default_factory=lambda: [
-        # IT & Technology — Large Cap (7)
-        "TCS.NS", "INFY.NS", "WIPRO.NS", "HCLTECH.NS",
-        "TECHM.NS", "PERSISTENT.NS", "COFORGE.NS",
-        # IT — Mid Cap (4)
-        "MPHASIS.NS", "LTTS.NS", "KPITTECH.NS", "TANLA.NS",
-        # Banking — Large Cap (11)
-        "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "KOTAKBANK.NS", "AXISBANK.NS",
-        "INDUSINDBK.NS", "BANDHANBNK.NS", "BAJFINANCE.NS", "BAJAJFINSV.NS",
-        "SBILIFE.NS", "HDFCLIFE.NS",
-        # NBFCs (4)
-        "MUTHOOTFIN.NS", "CHOLAFIN.NS", "SHRIRAMFIN.NS", "M&MFIN.NS",
-        # Insurance (3)
-        "ICICIGI.NS", "LICI.NS", "GICRE.NS",
-        # Oil, Gas & Energy (8)
-        "RELIANCE.NS", "ONGC.NS", "BPCL.NS", "IOC.NS",
-        "POWERGRID.NS", "NTPC.NS", "ADANIGREEN.NS", "TATAPOWER.NS",
-        # Auto & Auto-ancillary (6)
-        "MARUTI.NS", "M&M.NS", "BAJAJ-AUTO.NS", "EICHERMOT.NS",
-        "HEROMOTOCO.NS", "MOTHERSON.NS",
-        # FMCG (7)
-        "HINDUNILVR.NS", "ITC.NS", "NESTLEIND.NS", "BRITANNIA.NS",
-        "DABUR.NS", "MARICO.NS", "GODREJCP.NS",
-        # Pharma & Healthcare (6)
-        "SUNPHARMA.NS", "DRREDDY.NS", "CIPLA.NS",
-        "DIVISLAB.NS", "APOLLOHOSP.NS", "AUROPHARMA.NS",
-        # Infra, Capital Goods & Cement (6)
-        "LT.NS", "ULTRACEMCO.NS", "GRASIM.NS",
-        "ADANIPORTS.NS", "ABB.NS", "SIEMENS.NS",
-        # Defence & Aerospace (4)
-        "HAL.NS", "BEL.NS", "BEML.NS", "MAZDOCK.NS",
-        # Metals & Mining (5)
-        "TATASTEEL.NS", "JSWSTEEL.NS", "HINDALCO.NS", "VEDL.NS", "COALINDIA.NS",
-        # Chemicals (5)
-        "SRF.NS", "DEEPAKNTR.NS", "NAVINFLUOR.NS", "ATUL.NS", "FINEORG.NS",
-        # Telecom (2)
-        "BHARTIARTL.NS", "IDEA.NS",
-        # Consumer Durables & Electronics (4)
-        "HAVELLS.NS", "VOLTAS.NS", "WHIRLPOOL.NS", "BLUESTARCO.NS",
-        # Consumer & Retail (7)
-        "TITAN.NS", "ASIANPAINT.NS", "PIDILITIND.NS", "TRENT.NS",
-        "DMART.NS", "JUBLFOOD.NS", "WESTLIFE.NS",
-        # QSR / Food (2)
-        "SAPPHIRE.NS", "DEVYANI.NS",
-        # Real Estate (5)
-        "DLF.NS", "GODREJPROP.NS", "PRESTIGE.NS", "OBEROIRLTY.NS", "PHOENIXLTD.NS",
-        # Hospitality & Travel (3)
-        "INDHOTEL.NS", "LEMONTREE.NS", "THOMASCOOK.NS",
-        # Media & Entertainment (3)
-        "ZEEL.NS", "SUNTV.NS", "DISHTV.NS",
-        # Logistics (4)
-        "DELHIVERY.NS", "BLUEDART.NS", "CONCOR.NS", "ALLCARGO.NS",
-        # Agriculture / Agrochemicals (2)
-        "UPL.NS", "COROMANDEL.NS",
-        # Chemicals & Materials (2)
-        "TATACHEM.NS", "PCBL.NS",
-        # Conglomerate (1)
-        "ADANIENT.NS",
-    ])
+    # ── Watchlist ───────────────────────────────────────────
+    # Default: NSE watchlist from market preset (backward compat)
+    watchlist: List[str] = field(default_factory=lambda: _default_nse_watchlist())
 
     # ── Trading Schedule ─────────────────────────────────────
     market_open: str = "09:15"       # IST
@@ -98,8 +45,27 @@ class AgentConfig:
     openrouter_model: str = "anthropic/claude-haiku-4-5"
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
+    # ── Session Integration (set by from_session()) ──────────
+    _api_key_override: str = ""
+    _market_preset: Any = None       # MarketPreset reference (avoid circular import in type hint)
+    _session_config: Any = None      # SessionConfig reference
+
     @property
     def api_key(self) -> str:
+        # If set by from_session(), _api_key_override contains the env var name
+        # or a literal key. Try as env var first, then as literal.
+        if self._api_key_override:
+            # Try as env var name first
+            val = os.environ.get(self._api_key_override, "")
+            if val:
+                return val
+            # If it looks like a key (long, not all-caps), use it directly
+            if len(self._api_key_override) > 20 and not self._api_key_override.isupper():
+                return self._api_key_override
+            raise ValueError(
+                f"API key not found. Set the '{self._api_key_override}' environment variable."
+            )
+        # Legacy: look up env var based on provider
         key_map = {
             "anthropic": "ANTHROPIC_API_KEY",
             "openai": "OPENAI_API_KEY",
@@ -111,6 +77,13 @@ class AgentConfig:
             raise ValueError(f"Set {env_var} env var")
         return key
 
+    @property
+    def currency_symbol(self) -> str:
+        """Dynamic currency symbol from market preset, or default based on currency."""
+        if self._market_preset:
+            return self._market_preset.currency_symbol
+        return "₹" if self.currency == "INR" else "$"
+
     # ── Paths ────────────────────────────────────────────────
     db_path: str = "data/trades.db"
     learnings_path: str = "learnings/journal.md"
@@ -121,3 +94,56 @@ class AgentConfig:
     news_sources: List[str] = field(default_factory=lambda: [
         "moneycontrol", "economictimes", "livemint", "reuters", "bloomberg"
     ])
+
+    # ── Factory: build from session config ───────────────────
+
+    @classmethod
+    def from_session(cls, sc) -> "AgentConfig":
+        """
+        Build an AgentConfig from a SessionConfig + its market preset.
+        All paths, keys, and market-specific settings come from the session.
+        """
+        from .market_presets import get_preset
+        preset = get_preset(sc.market)
+
+        # Map the single llm_model to the right provider-specific field
+        model = sc.llm_model
+        anthropic_model = model if sc.llm_provider == "anthropic" else "claude-sonnet-4-5-20250929"
+        openai_model = model if sc.llm_provider == "openai" else "gpt-4o"
+        openrouter_model = model if sc.llm_provider == "openrouter" else "anthropic/claude-haiku-4-5"
+
+        return cls(
+            starting_capital=sc.starting_capital,
+            currency=preset.currency,
+            max_position_pct=sc.max_position_pct,
+            max_open_positions=sc.max_open_positions,
+            daily_loss_limit_pct=sc.daily_loss_limit_pct,
+            per_trade_loss_limit_pct=sc.per_trade_loss_limit_pct,
+            max_trade_amount=sc.max_trade_amount,
+            watchlist=sc.watchlist,
+            market_open=preset.market_open or "00:00",
+            market_close=preset.market_close or "23:59",
+            intraday_interval_min=sc.intraday_interval_min,
+            timezone=preset.timezone,
+            llm_provider=sc.llm_provider,
+            anthropic_model=anthropic_model,
+            openai_model=openai_model,
+            openrouter_model=openrouter_model,
+            _api_key_override=sc.api_key_env,  # env var name or literal key — resolved lazily
+            _market_preset=preset,
+            _session_config=sc,
+            db_path=sc.db_path,
+            learnings_path=sc.journal_path,
+            log_path=sc.log_path,
+            news_sources=preset.news_sources,
+        )
+
+
+def _default_nse_watchlist() -> List[str]:
+    """Load the NSE watchlist from market_presets (avoids duplicating 111 tickers)."""
+    try:
+        from .market_presets import NSE_PRESET
+        return list(NSE_PRESET.default_watchlist)
+    except ImportError:
+        # Fallback: shouldn't happen, but keep things working
+        return ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS"]

@@ -494,6 +494,9 @@
     <div class="header-title">AI Trader <span>Paper Trading Dashboard</span></div>
   </div>
   <div class="header-right">
+    <select id="sessionSelector" style="background:var(--bg-card);color:var(--text-primary);border:1px solid var(--border);border-radius:6px;padding:4px 10px;font-family:inherit;font-size:0.85rem;cursor:pointer;margin-right:12px;" onchange="switchSession(this.value)">
+      <option value="">Loading...</option>
+    </select>
     <div id="marketStatus" class="status-badge closed">
       <div class="status-dot"></div>
       MARKET CLOSED
@@ -683,9 +686,17 @@
 <script>
 const API = '';  // Same origin
 
+// Dynamic config loaded from /api/config — updated on session switch
+let currentConfig = {
+  currency_symbol: '₹', locale: 'en-IN', ticker_suffix: '.NS',
+  is_24x7: false, market_open: '09:15', market_close: '15:30', timezone: 'Asia/Kolkata',
+};
+
 function fmt(n, decimals = 0) {
   if (n == null || isNaN(n)) return '--';
-  return '₹' + Number(n).toLocaleString('en-IN', {
+  const sym = currentConfig.currency_symbol || '₹';
+  const locale = currentConfig.locale || 'en-IN';
+  return sym + Number(n).toLocaleString(locale, {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals
   });
@@ -748,15 +759,22 @@ async function updatePortfolio() {
   const container = document.getElementById('holdingsTable');
   if (data.holdings && data.holdings.length > 0) {
     let html = `<table class="data-table">
-      <thead><tr><th>Ticker</th><th>Qty</th><th>Entry</th><th>Current</th><th>P&L</th><th>Type</th></tr></thead><tbody>`;
+      <thead><tr><th>Ticker</th><th>Dir</th><th>Qty</th><th>Entry</th><th>Current</th><th>Stop</th><th>Target</th><th>P&L</th><th>Type</th></tr></thead><tbody>`;
     data.holdings.forEach(h => {
       const pnlClass = h.unrealized_pnl >= 0 ? 'text-green' : 'text-red';
       const typeClass = h.trade_type === 'intraday' ? 'intraday' : 'swing';
+      const isShort = h.direction === 'short';
+      const dirBadge = isShort
+        ? `<span class="tag intraday" style="background:#ff4d4d;color:#fff;">SHORT</span>`
+        : `<span class="tag swing" style="background:#22c55e;color:#fff;">LONG</span>`;
       html += `<tr>
-        <td class="ticker">${h.ticker.replace('.NS','')}</td>
+        <td class="ticker">${h.ticker.replace(currentConfig.ticker_suffix || '.NS','')}</td>
+        <td>${dirBadge}</td>
         <td>${h.qty}</td>
         <td>${fmt(h.entry_price, 2)}</td>
         <td>${fmt(h.current_price, 2)}</td>
+        <td style="color:#f97316;">${h.stop_price ? fmt(h.stop_price, 2) : '--'}</td>
+        <td style="color:#22c55e;">${h.target_price ? fmt(h.target_price, 2) : '--'}</td>
         <td class="${pnlClass}">${fmt(h.unrealized_pnl, 2)}</td>
         <td><span class="tag ${typeClass}">${h.trade_type}</span></td>
       </tr>`;
@@ -802,14 +820,19 @@ async function updateTrades() {
 
   document.getElementById('tradesCount').textContent = data.length;
   let html = `<table class="data-table">
-    <thead><tr><th>Ticker</th><th>Type</th><th>Entry</th><th>Exit</th><th>P&L</th><th>Date</th></tr></thead><tbody>`;
+    <thead><tr><th>Ticker</th><th>Dir</th><th>Type</th><th>Entry</th><th>Exit</th><th>P&L</th><th>Date</th></tr></thead><tbody>`;
 
   data.forEach(t => {
     const pnlClass = (t.pnl || 0) >= 0 ? 'text-green' : 'text-red';
     const typeClass = t.trade_type === 'intraday' ? 'intraday' : 'swing';
     const exitDate = t.exit_time ? new Date(t.exit_time).toLocaleDateString('en-IN', { day:'2-digit', month:'short' }) : '--';
+    const isShort = t.direction === 'short';
+    const dirBadge = isShort
+      ? `<span class="tag intraday" style="background:#ff4d4d;color:#fff;font-size:10px;">SHORT</span>`
+      : `<span class="tag swing" style="background:#22c55e;color:#fff;font-size:10px;">LONG</span>`;
     html += `<tr>
-      <td class="ticker">${t.ticker.replace('.NS','')}</td>
+      <td class="ticker">${t.ticker.replace(currentConfig.ticker_suffix || '.NS','')}</td>
+      <td>${dirBadge}</td>
       <td><span class="tag ${typeClass}">${t.trade_type}</span></td>
       <td>${fmt(t.entry_price, 2)}</td>
       <td>${fmt(t.exit_price, 2)}</td>
@@ -901,16 +924,68 @@ function escHtml(str) {
 
 function updateTimestamp() {
   const now = new Date();
+  const locale = currentConfig.locale || 'en-IN';
   document.getElementById('lastUpdate').textContent =
-    'Updated ' + now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    'Updated ' + now.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-  // Rough market hours check (IST)
-  const istHour = now.getUTCHours() + 5.5;
-  const day = now.getDay();
-  const isOpen = day > 0 && day < 6 && istHour >= 9.25 && istHour <= 15.5;
+  // Market hours check — dynamic based on session config
+  let isOpen = false;
+  if (currentConfig.is_24x7) {
+    isOpen = true;
+  } else {
+    // Parse market_open/market_close from config (e.g., "09:15", "15:30")
+    const [openH, openM] = (currentConfig.market_open || '09:15').split(':').map(Number);
+    const [closeH, closeM] = (currentConfig.market_close || '15:30').split(':').map(Number);
+    const openDecimal = openH + openM / 60;
+    const closeDecimal = closeH + closeM / 60;
+    // For IST: UTC+5.5; for UTC: +0
+    const tz = currentConfig.timezone || 'Asia/Kolkata';
+    const utcOffset = tz === 'UTC' ? 0 : tz === 'Asia/Kolkata' ? 5.5 : 0;
+    const localHour = now.getUTCHours() + utcOffset + now.getUTCMinutes() / 60;
+    const day = now.getDay();
+    isOpen = day > 0 && day < 6 && localHour >= openDecimal && localHour <= closeDecimal;
+  }
   const badge = document.getElementById('marketStatus');
   badge.className = 'status-badge ' + (isOpen ? 'live' : 'closed');
   badge.innerHTML = `<div class="status-dot"></div>${isOpen ? 'MARKET LIVE' : 'MARKET CLOSED'}`;
+}
+
+// ── Session Management ──────────────────────────────────
+
+async function loadSessions() {
+  try {
+    const [sessions, current] = await Promise.all([
+      fetch(API + '/api/sessions').then(r => r.json()),
+      fetch(API + '/api/sessions/current').then(r => r.json()),
+    ]);
+    const sel = document.getElementById('sessionSelector');
+    if (!sessions || sessions.length === 0) {
+      sel.style.display = 'none';
+      return;
+    }
+    sel.innerHTML = sessions.map(s =>
+      `<option value="${s.session_id}" ${s.session_id === current.session_id ? 'selected' : ''}>` +
+      `${s.display_name} (${s.market})</option>`
+    ).join('');
+  } catch (e) {
+    document.getElementById('sessionSelector').style.display = 'none';
+  }
+}
+
+async function switchSession(sessionId) {
+  if (!sessionId) return;
+  await fetch(API + '/api/sessions/switch/' + sessionId, { method: 'POST' });
+  await loadConfig();
+  refreshAll();
+}
+
+async function loadConfig() {
+  try {
+    const cfg = await fetch(API + '/api/config').then(r => r.json());
+    if (cfg && cfg.currency_symbol) {
+      currentConfig = cfg;
+    }
+  } catch (e) {}
 }
 
 async function refreshAll() {
@@ -926,9 +1001,13 @@ async function refreshAll() {
   ]);
 }
 
-// Initial load + auto-refresh every 30s
-refreshAll();
-setInterval(refreshAll, 30000);
+// Initial load: config first (for currency), then sessions, then data
+(async function init() {
+  await loadConfig();
+  await loadSessions();
+  refreshAll();
+  setInterval(refreshAll, 30000);
+})();
 </script>
 </body>
 </html>

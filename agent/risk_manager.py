@@ -4,6 +4,7 @@ These rules CANNOT be overridden by the LLM. They are the guardrails.
 """
 
 import logging
+from datetime import datetime, timedelta
 from typing import Dict, Optional, Tuple
 from .config import AgentConfig
 from .portfolio import Portfolio
@@ -21,6 +22,11 @@ class RiskManager:
         self.config = config
         self.portfolio = portfolio
 
+    @property
+    def _sym(self) -> str:
+        """Currency symbol from market preset, or ₹ by default."""
+        return self.config.currency_symbol
+
     def check_buy(self, ticker: str, quantity: int, price: float,
                   current_prices: Dict[str, float] = None) -> Tuple[bool, str]:
         """
@@ -33,11 +39,11 @@ class RiskManager:
 
         # 1. Sufficient cash
         if trade_value > cash:
-            return False, f"Insufficient cash: need ₹{trade_value:.0f}, have ₹{cash:.0f}"
+            return False, f"Insufficient cash: need {self._sym}{trade_value:.0f}, have {self._sym}{cash:.0f}"
 
         # 2. Max trade amount
         if trade_value > self.config.max_trade_amount:
-            return False, f"Trade ₹{trade_value:.0f} exceeds max ₹{self.config.max_trade_amount:.0f}"
+            return False, f"Trade {self._sym}{trade_value:.0f} exceeds max {self._sym}{self.config.max_trade_amount:.0f}"
 
         # 3. Position size limit
         total_value = summary["total_value"]
@@ -68,21 +74,32 @@ class RiskManager:
         daily_loss_limit = self.config.starting_capital * self.config.daily_loss_limit_pct
         if summary["today_pnl"] < -daily_loss_limit:
             return False, (
-                f"Daily loss limit breached: today's P&L ₹{summary['today_pnl']:.0f} "
-                f"exceeds -₹{daily_loss_limit:.0f}"
+                f"Daily loss limit breached: today's P&L {self._sym}{summary['today_pnl']:.0f} "
+                f"exceeds -{self._sym}{daily_loss_limit:.0f}"
             )
 
-        logger.info(f"✅ BUY approved: {quantity}x {ticker} @ ₹{price:.2f} (₹{trade_value:.0f})")
+        logger.info(f"✅ BUY approved: {quantity}x {ticker} @ {self._sym}{price:.2f} ({self._sym}{trade_value:.0f})")
         return True, "Approved"
 
     def check_sell(self, trade_id: int) -> Tuple[bool, str]:
-        """Validate a SELL (close position) — mostly just verify the trade exists."""
+        """Validate a SELL (close long position) — mostly just verify the trade exists."""
         positions = self.portfolio.get_open_positions()
         trade = next((t for t in positions if t.id == trade_id), None)
 
         if not trade:
             return False, f"No open trade found with id {trade_id}"
 
+        return True, "Approved"
+
+    def check_cover(self, trade_id: int) -> Tuple[bool, str]:
+        """Validate a COVER (close short position) — verify the short trade exists."""
+        positions = self.portfolio.get_open_positions()
+        trade = next(
+            (t for t in positions if t.id == trade_id and getattr(t, "direction", "long") == "short"),
+            None
+        )
+        if not trade:
+            return False, f"No open SHORT trade found with id {trade_id}"
         return True, "Approved"
 
     def should_stop_loss(self, trade_id: int, current_price: float) -> Tuple[bool, str]:
@@ -103,30 +120,91 @@ class RiskManager:
         return False, "Within limits"
 
     def check_intraday_close(self) -> bool:
-        """Check if it's time to force-close intraday positions (near market close)."""
-        from datetime import datetime
+        """Check if it's time to force-close intraday positions (near market close).
+        Returns False for 24/7 markets (no forced close)."""
+        preset = self.config._market_preset
+        if preset and preset.is_24x7:
+            return False
+
         from zoneinfo import ZoneInfo
         now = datetime.now(ZoneInfo(self.config.timezone))
-        close_time = now.replace(hour=15, minute=15, second=0)  # 15 min before close
-        return now >= close_time
+
+        close_str = self.config.market_close  # e.g. "15:30"
+        buffer = preset.intraday_close_buffer_min if preset else 15
+        close_h, close_m = map(int, close_str.split(":"))
+        market_close = now.replace(hour=close_h, minute=close_m, second=0)
+        trigger_time = market_close - timedelta(minutes=buffer)
+        return now >= trigger_time
 
     def run_stop_loss_sweep(self, current_prices: Dict[str, float]):
-        """Check all open positions for stop-loss triggers."""
+        """
+        Check all open positions for stop-loss OR target triggers.
+
+        Branches:
+        1. New LONG positions — ATR-derived stop_price + target_price.
+           → Sell if price <= stop_price (stop) or price >= target_price (target)
+        2. New SHORT positions — ATR-derived stop_price + target_price (reversed).
+           → Cover if price >= stop_price (price rose against us) or price <= target_price (target hit)
+        3. Legacy positions — no stored levels.
+           → Fall back to config per_trade_loss_limit_pct stop only (longs only)
+        """
         positions = self.portfolio.get_open_positions()
-        stopped = []
+        closed = []
 
         for pos in positions:
             price = current_prices.get(pos.ticker)
             if not price:
                 continue
 
-            should_stop, reason = self.should_stop_loss(pos.id, price)
-            if should_stop:
-                logger.warning(f"🛑 STOP LOSS: {reason}")
-                trade = self.portfolio.execute_sell(pos.id, price, reason=f"Stop-loss: {reason}")
-                stopped.append(trade)
+            is_short = getattr(pos, "direction", "long") == "short"
 
-        return stopped
+            if pos.stop_price is not None and pos.target_price is not None:
+                if is_short:
+                    # ── Short: stop = price rises above stop_price ──────
+                    if price >= pos.stop_price:
+                        reason = (
+                            f"Short stop hit: {pos.ticker} @ {self._sym}{price:.2f} "
+                            f"≥ stop {self._sym}{pos.stop_price:.2f}"
+                        )
+                        logger.warning(f"🛑 SHORT STOP: {reason}")
+                        trade = self.portfolio.execute_cover(pos.id, price, reason=reason)
+                        closed.append(trade)
+                    elif price <= pos.target_price:
+                        reason = (
+                            f"Short target hit: {pos.ticker} @ {self._sym}{price:.2f} "
+                            f"≤ target {self._sym}{pos.target_price:.2f}"
+                        )
+                        logger.info(f"🎯 SHORT TARGET: {reason}")
+                        trade = self.portfolio.execute_cover(pos.id, price, reason=reason)
+                        closed.append(trade)
+                else:
+                    # ── Long: stop = price falls below stop_price ────────
+                    if price <= pos.stop_price:
+                        reason = (
+                            f"Stop hit: {pos.ticker} @ {self._sym}{price:.2f} "
+                            f"≤ stop {self._sym}{pos.stop_price:.2f}"
+                        )
+                        logger.warning(f"🛑 STOP: {reason}")
+                        trade = self.portfolio.execute_sell(pos.id, price, reason=reason)
+                        closed.append(trade)
+                    elif price >= pos.target_price:
+                        reason = (
+                            f"Target hit: {pos.ticker} @ {self._sym}{price:.2f} "
+                            f"≥ target {self._sym}{pos.target_price:.2f}"
+                        )
+                        logger.info(f"🎯 TARGET: {reason}")
+                        trade = self.portfolio.execute_sell(pos.id, price, reason=reason)
+                        closed.append(trade)
+            else:
+                # ── Branch 3: legacy % stop (longs only) ───────────────
+                if not is_short:
+                    should_stop, reason = self.should_stop_loss(pos.id, price)
+                    if should_stop:
+                        logger.warning(f"🛑 STOP (legacy %): {reason}")
+                        trade = self.portfolio.execute_sell(pos.id, price, reason=f"Stop-loss: {reason}")
+                        closed.append(trade)
+
+        return closed
 
     def get_risk_status(self, current_prices: Dict[str, float] = None) -> Dict:
         """Get current risk metrics for LLM context."""
