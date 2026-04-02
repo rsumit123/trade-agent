@@ -10,6 +10,8 @@ export default function CreateSessionPage() {
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
 
+  const [capitalDisplay, setCapitalDisplay] = useState("10,00,000");
+
   const [form, setForm] = useState({
     session_id: "",
     display_name: "",
@@ -28,17 +30,19 @@ export default function CreateSessionPage() {
   useEffect(() => {
     api<Record<string, MarketPreset>>("/api/market-presets").then((p) => {
       setPresets(p);
-      if (p.nse) setForm((f) => ({ ...f, starting_capital: p.nse.default_starting_capital }));
+      if (p.nse) {
+        const cap = p.nse.default_starting_capital;
+        setForm((f) => ({ ...f, starting_capital: cap }));
+        setCapitalDisplay(cap.toLocaleString("en-IN"));
+      }
     });
   }, []);
 
   const selectMarket = (m: string) => {
     const preset = presets[m];
-    setForm((f) => ({
-      ...f,
-      market: m,
-      starting_capital: preset?.default_starting_capital || f.starting_capital,
-    }));
+    const cap = preset?.default_starting_capital || form.starting_capital;
+    setForm((f) => ({ ...f, market: m, starting_capital: cap }));
+    setCapitalDisplay(cap.toLocaleString(preset?.currency === "INR" ? "en-IN" : "en-US"));
   };
 
   const handleSubmit = async (startAfter: boolean = false) => {
@@ -68,7 +72,7 @@ export default function CreateSessionPage() {
   const preset = presets[form.market];
 
   return (
-    <div className="p-4 md:p-8 max-w-3xl mx-auto">
+    <div className="px-4 md:px-8 py-4 md:py-8 max-w-3xl mx-auto">
       <div className="mb-8 animate-fade-in">
         <h1 className="text-2xl font-bold tracking-tight">Create Trading Session</h1>
         <p className="text-text-secondary text-sm mt-1">Configure a new AI trading agent</p>
@@ -126,9 +130,17 @@ export default function CreateSessionPage() {
               Starting Capital ({preset?.currency_symbol || "$"})
             </label>
             <input
-              type="number"
-              value={form.starting_capital}
-              onChange={(e) => setForm({ ...form, starting_capital: parseFloat(e.target.value) || 0 })}
+              type="text"
+              inputMode="numeric"
+              value={capitalDisplay}
+              onChange={(e) => {
+                const raw = e.target.value.replace(/[^0-9]/g, "");
+                const num = parseInt(raw) || 0;
+                setForm((f) => ({ ...f, starting_capital: num }));
+                setCapitalDisplay(raw ? num.toLocaleString("en-IN") : "");
+              }}
+              onBlur={() => setCapitalDisplay(form.starting_capital.toLocaleString("en-IN"))}
+              placeholder="10,00,000"
               className="w-full font-mono"
             />
           </div>
@@ -281,10 +293,10 @@ export default function CreateSessionPage() {
 
 function Section({ title, number, children }: { title: string; number: number; children: React.ReactNode }) {
   return (
-    <div className={`mb-8 animate-fade-in delay-${number}`}>
+    <div className={`animate-fade-in delay-${number}`} style={{ marginBottom: 24 }}>
       <div className="flex items-center gap-3 mb-4">
         <div
-          className="flex items-center justify-center font-mono font-bold"
+          className="flex items-center justify-center font-mono font-bold flex-shrink-0"
           style={{ width: 28, height: 28, borderRadius: "50%", background: "rgba(59,130,246,0.15)", color: "#3b82f6", fontSize: 12 }}
         >
           {number}
@@ -300,11 +312,12 @@ function SliderField({ label, value, onChange, min, max, step, format }: {
   label: string; value: number; onChange: (v: number) => void;
   min: number; max: number; step: number; format: (v: number) => string;
 }) {
+  const fillPct = ((value - min) / (max - min)) * 100;
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
         <label className="text-xs text-text-muted">{label}</label>
-        <span className="text-xs font-mono text-accent-blue">{format(value)}</span>
+        <span className="text-xs font-mono font-semibold text-accent-blue">{format(value)}</span>
       </div>
       <input
         type="range"
@@ -312,7 +325,12 @@ function SliderField({ label, value, onChange, min, max, step, format }: {
         onChange={(e) => onChange(parseFloat(e.target.value))}
         min={min} max={max} step={step}
         className="w-full"
+        style={{ "--range-fill": `${fillPct}%` } as React.CSSProperties}
       />
+      <div className="flex justify-between mt-1">
+        <span className="text-[10px] text-text-muted font-mono">{format(min)}</span>
+        <span className="text-[10px] text-text-muted font-mono">{format(max)}</span>
+      </div>
     </div>
   );
 }

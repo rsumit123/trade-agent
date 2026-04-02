@@ -56,27 +56,26 @@ export default function SessionDashboard() {
     : "bg-accent-green/15 text-accent-green border-accent-green/30";
 
   return (
-    <div className="p-4 md:p-6 max-w-7xl mx-auto">
+    <div className="px-4 md:px-6 py-4 md:py-6 max-w-7xl mx-auto">
       {/* Header Bar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 animate-fade-in">
-        <div className="flex items-center gap-4">
-          <div>
-            <h1 className="text-xl font-bold tracking-tight flex items-center gap-3">
-              {config?.session_name || sessionId}
-              <span className={cn("text-[10px] uppercase tracking-wider font-semibold px-2 py-0.5 rounded border", marketBadge)}>
-                {config?.market_id || "nse"}
-              </span>
-            </h1>
-            <p className="text-text-muted text-xs mt-0.5">
-              {config?.market_name || ""} {config?.is_24x7 ? "\u00B7 24/7" : ""}
-            </p>
-          </div>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6 animate-fade-in">
+        <div>
+          <h1 className="text-xl font-bold tracking-tight flex items-center gap-3">
+            {config?.session_name || sessionId}
+            <span className={cn("text-[10px] uppercase tracking-wider font-semibold px-2 py-0.5 rounded border", marketBadge)}>
+              {config?.market_id || "nse"}
+            </span>
+          </h1>
+          <p className="text-text-muted text-xs mt-0.5">
+            {config?.market_name || ""} {config?.is_24x7 ? "\u00B7 24/7" : ""}
+          </p>
         </div>
-        <div className="flex items-center gap-3 sm:gap-4">
+        <div className="flex items-center gap-3">
           <AgentControl sessionId={sessionId} status={agentStatus} onStatusChange={loadAll} />
           <Link
             href={`/sessions/${sessionId}/settings`}
-            className="p-2 rounded-lg border border-border hover:border-border-accent hover:bg-bg-card transition-all text-text-muted hover:text-text-primary"
+            className="flex items-center justify-center rounded-xl border border-border hover:border-border-accent hover:bg-bg-card transition-all text-text-muted hover:text-text-primary"
+            style={{ width: 44, height: 44 }}
             title="Settings"
           >
             &#x2699;
@@ -88,7 +87,7 @@ export default function SessionDashboard() {
       <MetricsRow portfolio={portfolio} perf={perf} config={config} />
 
       {/* Holdings + Risk */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 mb-5">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-5 mb-4 md:mb-5">
         <div className="lg:col-span-2 animate-fade-in delay-2">
           <HoldingsTable holdings={portfolio?.holdings || []} config={config} />
         </div>
@@ -98,7 +97,7 @@ export default function SessionDashboard() {
       </div>
 
       {/* Trades + Watchlist */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-5">
+      <div id="trades" className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-5 mb-4 md:mb-5">
         <div className="animate-fade-in delay-3">
           <TradesTable trades={trades} config={config} />
         </div>
@@ -108,7 +107,7 @@ export default function SessionDashboard() {
       </div>
 
       {/* Performance + Journal */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-5">
+      <div id="journal" className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-5 mb-4 md:mb-5">
         <div className="animate-fade-in delay-4">
           <PerformancePanel perf={perf} config={config} />
         </div>
@@ -118,7 +117,7 @@ export default function SessionDashboard() {
       </div>
 
       {/* Logs */}
-      <div className="mb-8 animate-fade-in delay-5">
+      <div className="mb-6 animate-fade-in delay-5">
         <LogViewer lines={logs} />
       </div>
     </div>
