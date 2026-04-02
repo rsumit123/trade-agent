@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { api, cn } from "@/lib/api";
+import { api } from "@/lib/api";
 import type { Session } from "@/lib/types";
 
 interface SidebarProps {
@@ -23,20 +23,25 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   }, []);
 
   const handleNavClick = () => {
-    // Close sidebar on mobile when a link is clicked
     if (onClose) onClose();
   };
 
   const sidebarContent = (
-    <aside className="fixed left-0 top-0 bottom-0 bg-bg-secondary border-r border-border flex flex-col z-50" style={{ width: 240 }}>
+    <aside
+      className="fixed left-0 top-0 bottom-0 flex flex-col"
+      style={{ width: 240, background: "#111827", borderRight: "1px solid #1e293b", zIndex: 9998 }}
+    >
       {/* Logo */}
-      <Link href="/" onClick={handleNavClick} className="flex items-center gap-3 px-5 py-5 border-b border-border hover:bg-bg-card transition-colors">
-        <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-accent-green to-accent-cyan flex items-center justify-center text-sm font-bold text-bg-primary font-mono">
+      <Link href="/" onClick={handleNavClick} className="flex items-center gap-3 hover:opacity-80 transition-opacity" style={{ padding: "18px 20px", borderBottom: "1px solid #1e293b" }}>
+        <div
+          className="rounded-lg flex items-center justify-center font-bold font-mono"
+          style={{ width: 40, height: 40, background: "linear-gradient(135deg, #22c55e, #06b6d4)", color: "#0a0e17", fontSize: 14 }}
+        >
           &alpha;A
         </div>
         <div>
-          <div className="font-semibold text-text-primary text-sm tracking-tight">AlphaAgent</div>
-          <div className="text-[11px] text-text-muted">AI Paper Trading</div>
+          <div className="font-semibold" style={{ color: "#e2e8f0", fontSize: 14 }}>AlphaAgent</div>
+          <div style={{ color: "#64748b", fontSize: 11 }}>AI Paper Trading</div>
         </div>
       </Link>
 
@@ -44,25 +49,26 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
       {onClose && (
         <button
           onClick={onClose}
-          className="absolute top-4 right-3 md:hidden w-8 h-8 flex items-center justify-center rounded-lg text-text-muted hover:text-text-primary hover:bg-bg-card transition-colors"
+          className="absolute md:hidden flex items-center justify-center rounded-lg transition-colors"
+          style={{ top: 12, right: 12, width: 44, height: 44, color: "#94a3b8", fontSize: 28, background: "transparent", border: "none" }}
         >
           &times;
         </button>
       )}
 
       {/* Nav */}
-      <nav className="flex-1 overflow-y-auto py-3">
-        <div className="px-4 mb-1">
-          <span className="text-[10px] uppercase tracking-widest text-text-muted font-semibold">Navigation</span>
+      <nav className="flex-1 overflow-y-auto" style={{ paddingTop: 12 }}>
+        <div style={{ padding: "0 16px", marginBottom: 8 }}>
+          <span style={{ fontSize: 10, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 600 }}>Navigation</span>
         </div>
         <NavItem href="/" label="Sessions" icon="grid" active={pathname === "/"} onClick={handleNavClick} />
         <NavItem href="/sessions/new" label="New Session" icon="plus" active={pathname === "/sessions/new"} onClick={handleNavClick} />
 
         {sessions.length > 0 && (
           <>
-            <div className="mx-4 my-3 border-t border-border" />
-            <div className="px-4 mb-1">
-              <span className="text-[10px] uppercase tracking-widest text-text-muted font-semibold">Sessions</span>
+            <div style={{ margin: "12px 16px", borderTop: "1px solid #1e293b" }} />
+            <div style={{ padding: "0 16px", marginBottom: 8 }}>
+              <span style={{ fontSize: 10, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", fontWeight: 600 }}>Sessions</span>
             </div>
             {sessions.map((s) => (
               <NavItem
@@ -80,30 +86,30 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
       </nav>
 
       {/* Footer */}
-      <div className="px-5 py-3 border-t border-border">
-        <div className="text-[10px] text-text-muted">v2.0 Multi-Session</div>
+      <div style={{ padding: "12px 20px", borderTop: "1px solid #1e293b" }}>
+        <div style={{ fontSize: 10, color: "#64748b" }}>v2.0 Multi-Session</div>
       </div>
     </aside>
   );
 
   return (
     <>
-      {/* Desktop sidebar: always visible, hidden on mobile */}
+      {/* Desktop sidebar: always visible */}
       <div className="hidden md:block">
         {sidebarContent}
       </div>
 
       {/* Mobile sidebar: overlay drawer */}
       {isOpen && (
-        <div className="md:hidden fixed inset-0 z-50">
+        <div className="md:hidden fixed inset-0" style={{ zIndex: 9998 }}>
           {/* Backdrop */}
           <div
-            className="absolute inset-0 bg-black/60"
+            className="absolute inset-0"
             onClick={onClose}
-            style={{ animation: "fade-in 0.2s ease forwards" }}
+            style={{ background: "rgba(0,0,0,0.75)", animation: "fade-in 0.2s ease forwards" }}
           />
           {/* Drawer */}
-          <div style={{ animation: "slide-in-left 0.25s ease forwards" }}>
+          <div className="relative" style={{ animation: "slide-in-left 0.25s ease forwards", zIndex: 9999 }}>
             {sidebarContent}
           </div>
         </div>
@@ -112,7 +118,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   );
 }
 
-/** Mobile top bar with hamburger + logo + context */
+/** Mobile top bar with hamburger + logo */
 export function MobileTopBar({ onMenuClick }: { onMenuClick: () => void }) {
   const pathname = usePathname();
 
@@ -122,23 +128,47 @@ export function MobileTopBar({ onMenuClick }: { onMenuClick: () => void }) {
   else if (pathname.startsWith("/sessions/")) pageTitle = "Dashboard";
 
   return (
-    <div className="md:hidden sticky top-0 z-40 bg-bg-secondary/95 backdrop-blur border-b border-border px-4 py-3 flex items-center gap-3">
+    <div
+      className="md:hidden sticky top-0 flex items-center gap-3"
+      style={{
+        zIndex: 40,
+        background: "rgba(17,24,39,0.97)",
+        backdropFilter: "blur(8px)",
+        WebkitBackdropFilter: "blur(8px)",
+        borderBottom: "1px solid #1e293b",
+        padding: "8px 12px",
+      }}
+    >
       <button
         onClick={onMenuClick}
-        className="w-9 h-9 rounded-lg border border-border hover:border-border-accent hover:bg-bg-card flex items-center justify-center transition-all"
         aria-label="Open menu"
+        style={{
+          width: 44,
+          height: 44,
+          border: "1px solid #2d3a4f",
+          borderRadius: 10,
+          background: "#151d2e",
+          color: "#e2e8f0",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          flexShrink: 0,
+        }}
       >
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
           <line x1="3" y1="6" x2="21" y2="6" />
           <line x1="3" y1="12" x2="21" y2="12" />
           <line x1="3" y1="18" x2="21" y2="18" />
         </svg>
       </button>
-      <div className="w-7 h-7 rounded-md bg-gradient-to-br from-accent-green to-accent-cyan flex items-center justify-center text-[10px] font-bold text-bg-primary font-mono">
+      <div
+        className="rounded-md flex items-center justify-center font-bold font-mono"
+        style={{ width: 34, height: 34, background: "linear-gradient(135deg, #22c55e, #06b6d4)", color: "#0a0e17", fontSize: 12, flexShrink: 0 }}
+      >
         &alpha;A
       </div>
       <div className="flex-1 min-w-0">
-        <div className="text-sm font-semibold text-text-primary truncate">{pageTitle}</div>
+        <div className="font-semibold truncate" style={{ color: "#e2e8f0", fontSize: 16 }}>{pageTitle}</div>
       </div>
     </div>
   );
@@ -151,17 +181,22 @@ function NavItem({ href, label, icon, active, badge, onClick }: {
     <Link
       href={href}
       onClick={onClick}
-      className={cn(
-        "flex items-center gap-3 px-4 py-2.5 mx-2 rounded-lg text-sm transition-all",
-        active
-          ? "bg-bg-card text-text-primary border border-border-accent"
-          : "text-text-secondary hover:text-text-primary hover:bg-bg-card/50"
-      )}
+      className="flex items-center gap-3 rounded-lg transition-all"
+      style={{
+        padding: "14px 16px",
+        margin: "2px 8px",
+        minHeight: 48,
+        fontSize: 14,
+        color: active ? "#e2e8f0" : "#94a3b8",
+        background: active ? "#151d2e" : "transparent",
+        border: active ? "1px solid #2d3a4f" : "1px solid transparent",
+        textDecoration: "none",
+      }}
     >
-      <span className="text-base w-5 text-center opacity-60">{iconMap[icon] || ">"}</span>
+      <span style={{ width: 20, textAlign: "center", opacity: 0.6, fontSize: 16 }}>{iconMap[icon] || ">"}</span>
       <span className="flex-1 truncate">{label}</span>
       {badge === "live" && (
-        <span className="w-2 h-2 rounded-full bg-accent-green animate-pulse-dot" />
+        <span className="animate-pulse-dot" style={{ width: 10, height: 10, borderRadius: "50%", background: "#22c55e", display: "inline-block" }} />
       )}
     </Link>
   );

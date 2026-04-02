@@ -82,15 +82,16 @@ body::after {
 /* Number font utility */
 .font-num { font-family: var(--font-mono); }
 
-/* Input styling */
+/* Input styling — min 44px height for touch targets */
 input, select, textarea {
   background: var(--color-bg-primary);
   border: 1px solid var(--color-border);
   color: var(--color-text-primary);
   border-radius: 8px;
-  padding: 10px 14px;
+  padding: 12px 14px;
+  min-height: 44px;
   font-family: var(--font-sans);
-  font-size: 0.9rem;
+  font-size: 16px; /* prevents iOS zoom on focus */
   outline: none;
   transition: border-color 0.2s;
 }
@@ -144,6 +145,16 @@ input[type="range"]::-webkit-slider-thumb {
 @keyframes toast-out {
   from { opacity: 1; transform: translateY(0) scale(1); }
   to { opacity: 0; transform: translateY(8px) scale(0.95); }
+}
+
+/* App content margin — sidebar offset on desktop only */
+.app-content {
+  margin-left: 0;
+}
+@media (min-width: 768px) {
+  .app-content {
+    margin-left: 240px;
+  }
 }
 
 /* Mobile drawer backdrop */
