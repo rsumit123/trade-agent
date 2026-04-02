@@ -229,7 +229,7 @@ export default function CreateSessionPage() {
 
       {/* Actions */}
       {error && (
-        <div className="mb-4 p-3 bg-accent-red/10 border border-accent-red/30 rounded-lg text-accent-red text-sm">
+        <div style={{ marginBottom: 16, padding: 14, background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 10, color: "#ef4444", fontSize: 14 }}>
           {error}
         </div>
       )}
@@ -237,14 +237,40 @@ export default function CreateSessionPage() {
         <button
           onClick={() => handleSubmit(false)}
           disabled={creating}
-          className="w-full sm:w-auto px-6 py-2.5 bg-bg-card border border-border hover:border-border-accent rounded-lg text-sm font-medium transition-all disabled:opacity-50"
+          style={{
+            width: "100%",
+            maxWidth: "none",
+            padding: "14px 24px",
+            minHeight: 48,
+            background: "#151d2e",
+            border: "1px solid #1e293b",
+            borderRadius: 10,
+            color: "#e2e8f0",
+            fontSize: 15,
+            fontWeight: 500,
+            opacity: creating ? 0.5 : 1,
+            cursor: creating ? "not-allowed" : "pointer",
+          }}
         >
           {creating ? "Creating..." : "Create Session"}
         </button>
         <button
           onClick={() => handleSubmit(true)}
           disabled={creating}
-          className="w-full sm:w-auto px-6 py-2.5 bg-accent-green hover:bg-accent-green-dim text-white rounded-lg text-sm font-medium transition-all hover:shadow-lg hover:shadow-accent-green/20 disabled:opacity-50"
+          style={{
+            width: "100%",
+            maxWidth: "none",
+            padding: "14px 24px",
+            minHeight: 48,
+            background: "#22c55e",
+            border: "none",
+            borderRadius: 10,
+            color: "#fff",
+            fontSize: 15,
+            fontWeight: 600,
+            opacity: creating ? 0.5 : 1,
+            cursor: creating ? "not-allowed" : "pointer",
+          }}
         >
           {creating ? "Creating..." : "Create & Start Agent"}
         </button>
@@ -257,12 +283,15 @@ function Section({ title, number, children }: { title: string; number: number; c
   return (
     <div className={`mb-8 animate-fade-in delay-${number}`}>
       <div className="flex items-center gap-3 mb-4">
-        <div className="w-7 h-7 rounded-full bg-accent-blue/15 text-accent-blue text-xs font-bold flex items-center justify-center font-mono">
+        <div
+          className="flex items-center justify-center font-mono font-bold"
+          style={{ width: 28, height: 28, borderRadius: "50%", background: "rgba(59,130,246,0.15)", color: "#3b82f6", fontSize: 12 }}
+        >
           {number}
         </div>
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-text-secondary">{title}</h2>
+        <h2 style={{ fontSize: 13, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "#94a3b8" }}>{title}</h2>
       </div>
-      <div className="bg-bg-card border border-border rounded-xl p-5">{children}</div>
+      <div style={{ background: "#151d2e", border: "1px solid #1e293b", borderRadius: 12, padding: 20 }}>{children}</div>
     </div>
   );
 }
