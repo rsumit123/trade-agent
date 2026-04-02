@@ -72,9 +72,13 @@ export default function SessionSettingsPage() {
   };
 
   return (
-    <div className="p-8 max-w-3xl mx-auto">
-      <div className="flex items-center gap-4 mb-8">
-        <Link href={`/sessions/${sessionId}`} className="text-text-muted hover:text-text-primary transition-colors">
+    <div className="px-4 md:px-8 py-4 md:py-8 max-w-3xl mx-auto">
+      <div className="flex items-center gap-4 mb-6">
+        <Link
+          href={`/sessions/${sessionId}`}
+          className="flex items-center justify-center rounded-xl border border-border hover:border-border-accent hover:bg-bg-card transition-all text-text-muted hover:text-text-primary text-sm"
+          style={{ minHeight: 44, paddingLeft: 12, paddingRight: 12 }}
+        >
           &larr; Back
         </Link>
         <div>
@@ -147,17 +151,19 @@ export default function SessionSettingsPage() {
         </div>
       )}
 
-      <div className="flex items-center justify-between mt-8 mb-12">
+      <div className="flex items-center justify-between mt-6 mb-8">
         <button
           onClick={() => setShowDelete(true)}
-          className="px-4 py-2 text-sm text-accent-red border border-accent-red/30 rounded-lg hover:bg-accent-red/10 transition-all"
+          className="text-sm font-medium text-accent-red border border-accent-red/40 rounded-xl hover:bg-accent-red/10 transition-all"
+          style={{ minHeight: 48, paddingLeft: 20, paddingRight: 20 }}
         >
           Delete Session
         </button>
         <button
           onClick={handleSave}
           disabled={saving}
-          className="px-6 py-2.5 bg-accent-blue hover:bg-accent-blue/80 text-white rounded-lg font-medium text-sm transition-all disabled:opacity-50"
+          className="bg-accent-blue hover:bg-accent-blue/80 text-white rounded-xl font-semibold text-sm transition-all disabled:opacity-50"
+          style={{ minHeight: 48, paddingLeft: 24, paddingRight: 24 }}
         >
           {saving ? "Saving..." : "Save Settings"}
         </button>
@@ -172,10 +178,10 @@ export default function SessionSettingsPage() {
               This will permanently delete <strong>{sessionId}</strong> and all its data (trades, journal, logs). This cannot be undone.
             </p>
             <div className="flex gap-3 justify-end">
-              <button onClick={() => setShowDelete(false)} className="px-4 py-2 text-sm border border-border rounded-lg hover:bg-bg-card-hover transition-all">
+              <button onClick={() => setShowDelete(false)} className="px-5 text-sm border border-border rounded-xl hover:bg-bg-card-hover transition-all" style={{ minHeight: 44 }}>
                 Cancel
               </button>
-              <button onClick={handleDelete} className="px-4 py-2 text-sm bg-accent-red text-white rounded-lg hover:bg-accent-red-dim transition-all">
+              <button onClick={handleDelete} className="px-5 text-sm bg-accent-red text-white rounded-xl hover:bg-accent-red-dim transition-all" style={{ minHeight: 44 }}>
                 Delete Permanently
               </button>
             </div>

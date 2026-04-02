@@ -1,27 +1,25 @@
 "use client";
-import { useState, useCallback } from "react";
 import { Sidebar, MobileTopBar } from "@/components/Sidebar";
+import { BottomNav } from "@/components/BottomNav";
 import { ToastProvider } from "@/components/Toast";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-
-  const openSidebar = useCallback(() => setSidebarOpen(true), []);
-  const closeSidebar = useCallback(() => setSidebarOpen(false), []);
-
   return (
     <ToastProvider>
-      <Sidebar isOpen={sidebarOpen} onClose={closeSidebar} />
+      <Sidebar isOpen={false} onClose={() => {}} />
 
       {/* Content area: margin-left on desktop via CSS media query, none on mobile */}
       <div className="flex flex-col min-h-screen app-content">
-        {/* Mobile top bar: hidden on md+ via the component itself */}
-        <MobileTopBar onMenuClick={openSidebar} />
-        {/* Main content */}
-        <main className="flex-1 overflow-y-auto">
+        {/* Mobile top bar: hidden on md+ */}
+        <MobileTopBar />
+        {/* Main content — pb-bottom-nav reserves space for fixed bottom nav on mobile */}
+        <main className="flex-1 overflow-y-auto pb-bottom-nav md:pb-0">
           {children}
         </main>
       </div>
+
+      {/* Mobile bottom nav */}
+      <BottomNav />
     </ToastProvider>
   );
 }

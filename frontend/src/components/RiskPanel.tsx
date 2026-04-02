@@ -8,7 +8,9 @@ export function RiskPanel({ risk }: { risk: RiskStatus | null }) {
   const riskColor = (pct: number) => pct > 80 ? "accent-red" : pct > 50 ? "accent-amber" : "accent-green";
   const dailyPct = risk.daily_limit_used_pct;
   const positionPct = (risk.open_positions / risk.max_positions) * 100;
-  const capitalPct = risk.cash_available > 0 ? Math.min(((risk.max_trade_amount - risk.cash_available) / risk.max_trade_amount) * 100, 100) : 0;
+  const capitalPct = risk.max_trade_amount > 0
+    ? Math.max(0, Math.min(100, ((risk.max_trade_amount - risk.cash_available) / risk.max_trade_amount) * 100))
+    : 0;
 
   const bars = [
     { label: "Daily Loss Usage", value: dailyPct, display: `${dailyPct.toFixed(0)}%` },

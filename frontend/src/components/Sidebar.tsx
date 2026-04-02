@@ -118,8 +118,8 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   );
 }
 
-/** Mobile top bar with hamburger + logo */
-export function MobileTopBar({ onMenuClick }: { onMenuClick: () => void }) {
+/** Mobile top bar — no hamburger, bottom nav handles navigation */
+export function MobileTopBar() {
   const pathname = usePathname();
 
   let pageTitle = "Sessions";
@@ -136,31 +136,9 @@ export function MobileTopBar({ onMenuClick }: { onMenuClick: () => void }) {
         backdropFilter: "blur(8px)",
         WebkitBackdropFilter: "blur(8px)",
         borderBottom: "1px solid #1e293b",
-        padding: "8px 12px",
+        padding: "10px 16px",
       }}
     >
-      <button
-        onClick={onMenuClick}
-        aria-label="Open menu"
-        style={{
-          width: 44,
-          height: 44,
-          border: "1px solid #2d3a4f",
-          borderRadius: 10,
-          background: "#151d2e",
-          color: "#e2e8f0",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          flexShrink: 0,
-        }}
-      >
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-          <line x1="3" y1="6" x2="21" y2="6" />
-          <line x1="3" y1="12" x2="21" y2="12" />
-          <line x1="3" y1="18" x2="21" y2="18" />
-        </svg>
-      </button>
       <div
         className="rounded-md flex items-center justify-center font-bold font-mono"
         style={{ width: 34, height: 34, background: "linear-gradient(135deg, #22c55e, #06b6d4)", color: "#0a0e17", fontSize: 12, flexShrink: 0 }}
