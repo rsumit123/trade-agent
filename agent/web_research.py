@@ -5,8 +5,8 @@ Uses the LLM's web search capability or falls back to RSS/scraping.
 
 import json
 import logging
-from typing import List, Dict, Any, Optional
-from datetime import datetime
+from typing import List, Dict, Any, Optional, Tuple
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -21,10 +21,17 @@ class WebResearcher:
     For standalone use (without LLM tool-use), it falls back to yfinance news.
     """
 
-    def __init__(self, news_sources: List[str] = None):
-        self.sources = news_sources or [
-            "moneycontrol", "economictimes", "livemint"
-        ]
+    # Shared in-memory news cache: {query: (fetched_at, results)}
+    # 90-minute TTL — news doesn't change every 15 minutes
+    _news_cache: Dict[str, Tuple[datetime, List]] = {}
+    _CACHE_TTL = timedelta(minutes=90)
+
+    def __init__(self, news_sources: List[str] = None, market_preset=None):
+        self.market_preset = market_preset
+        self.sources = news_sources or (
+            market_preset.news_sources if market_preset else
+            ["moneycontrol", "economictimes", "livemint"]
+        )
 
     # Homepages/aggregators that return boilerplate instead of real articles
     _JUNK_DOMAINS = {
@@ -38,7 +45,18 @@ class WebResearcher:
         Execute a real web search using DuckDuckGo.
         Filters out homepage/aggregator junk so LLM gets actual article content.
         Falls back to empty list on failure (never crashes the agent).
+        Results are cached for 90 minutes so repeated identical queries don't
+        hit the network every 15-minute cycle.
         """
+        # ── Cache check ──────────────────────────────────────────────
+        now = datetime.now()
+        if query in self._news_cache:
+            cached_at, cached_results = self._news_cache[query]
+            age_min = int((now - cached_at).total_seconds() / 60)
+            if now - cached_at < self._CACHE_TTL:
+                logger.debug(f"📦 News cache hit '{query[:50]}' (age {age_min}m)")
+                return cached_results
+
         try:
             try:
                 from ddgs import DDGS
@@ -48,7 +66,8 @@ class WebResearcher:
             raw = []
             # Fetch extra results so we have enough after filtering
             with DDGS() as ddgs:
-                for r in ddgs.text(query, max_results=max_results + 6, region="in-en"):
+                region = self.market_preset.news_region if self.market_preset else "in-en"
+                for r in ddgs.text(query, max_results=max_results + 6, region=region):
                     raw.append(r)
 
             results = []
@@ -71,6 +90,8 @@ class WebResearcher:
                     break
 
             logger.info(f"DDG search '{query[:60]}' → {len(results)} results (filtered from {len(raw)})")
+            # Store in cache before returning
+            self._news_cache[query] = (now, results)
             return results
         except Exception as e:
             logger.warning(f"DDG search failed for '{query}': {e}")
@@ -81,8 +102,11 @@ class WebResearcher:
         Get recent news for a stock.
         First tries DuckDuckGo for fresh results, falls back to yfinance.
         """
-        clean = ticker.replace(".NS", "").replace(".BO", "")
-        query = f"{clean} stock news India today"
+        clean = ticker.replace(".NS", "").replace(".BO", "").replace("-USD", "")
+        if self.market_preset and self.market_preset.market_id == "crypto":
+            query = f"{clean} cryptocurrency news today"
+        else:
+            query = f"{clean} stock news India today"
         results = self.search(query, max_results=4)
         if results:
             return results
@@ -111,6 +135,8 @@ class WebResearcher:
         Generate search queries for general market sentiment.
         These get passed to the LLM's web_search tool.
         """
+        if self.market_preset and self.market_preset.news_queries:
+            return list(self.market_preset.news_queries)
         return [
             "Indian stock market today NSE NIFTY",
             "FII DII activity today India",
@@ -118,8 +144,13 @@ class WebResearcher:
         ]
 
     def get_stock_research_queries(self, ticker: str) -> List[str]:
-        """Generate search queries for a specific stock."""
-        clean_name = ticker.replace(".NS", "").replace(".BO", "")
+        """Generate search queries for a specific asset."""
+        clean_name = ticker.replace(".NS", "").replace(".BO", "").replace("-USD", "")
+        if self.market_preset and self.market_preset.market_id == "crypto":
+            return [
+                f"{clean_name} crypto news today",
+                f"{clean_name} price analysis outlook",
+            ]
         return [
             f"{clean_name} stock news today",
             f"{clean_name} quarterly results outlook",
@@ -150,9 +181,13 @@ class WebResearcher:
         # 1. Broad market overview via DDG — date-specific for fresh articles
         from datetime import date
         today = date.today().strftime("%B %d %Y")
-        market_news = self.search(f"India stock market Nifty Sensex today {today} news", max_results=3)
-        if market_news:
-            sections.append(self.format_news_for_llm("India Market Overview", market_news))
+        overview_queries = self.get_market_overview_queries()
+        for q in overview_queries[:2]:
+            market_news = self.search(f"{q} {today} news", max_results=3)
+            if market_news:
+                label = self.market_preset.display_name if self.market_preset else "Market"
+                sections.append(self.format_news_for_llm(f"{label} Overview", market_news))
+                break  # One overview section is enough
 
         # 2. Stock-specific news for top 5 tickers
         for ticker in tickers[:5]:
@@ -174,14 +209,15 @@ class LLMWebSearchTool:
     """
 
     @staticmethod
-    def tool_definition() -> Dict[str, Any]:
+    def tool_definition(market_preset=None) -> Dict[str, Any]:
         """Returns the tool schema for the LLM."""
+        market_desc = market_preset.display_name if market_preset else "financial markets"
         return {
             "name": "search_market_news",
             "description": (
-                "Search the web for recent market news, stock-specific news, "
-                "sector analysis, or economic indicators relevant to Indian markets. "
-                "Use this to gather information before making trade decisions."
+                f"Search the web for recent market news, asset-specific news, "
+                f"sector analysis, or economic indicators relevant to {market_desc}. "
+                f"Use this to gather information before making trade decisions."
             ),
             "input_schema": {
                 "type": "object",
@@ -212,20 +248,26 @@ class LLMWebSearchTool:
         }
 
     @staticmethod
-    def get_stock_detail_tool() -> Dict[str, Any]:
-        """Tool for the LLM to get detailed stock data."""
+    def get_stock_detail_tool(market_preset=None) -> Dict[str, Any]:
+        """Tool for the LLM to get detailed asset data."""
+        if market_preset and market_preset.market_id == "crypto":
+            example = "'BTC-USD'"
+            label = "Cryptocurrency ticker"
+        else:
+            example = "'RELIANCE.NS'"
+            label = "Ticker symbol"
         return {
             "name": "get_stock_details",
             "description": (
                 "Get detailed price data, technical indicators, and recent performance "
-                "for a specific stock. Use before making a trade decision."
+                "for a specific asset. Use before making a trade decision."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "ticker": {
                         "type": "string",
-                        "description": "NSE ticker symbol (e.g., 'RELIANCE.NS')"
+                        "description": f"{label} (e.g., {example})"
                     }
                 },
                 "required": ["ticker"]
@@ -233,39 +275,61 @@ class LLMWebSearchTool:
         }
 
     @staticmethod
-    def get_trade_tool() -> Dict[str, Any]:
+    def get_trade_tool(market_preset=None) -> Dict[str, Any]:
         """Tool for the LLM to place trades."""
+        if market_preset and market_preset.is_24x7:
+            short_note = ""
+            force_note = ""
+        else:
+            close_time = market_preset.market_close if market_preset else "15:30"
+            buffer = market_preset.intraday_close_buffer_min if market_preset else 15
+            close_h, close_m = map(int, close_time.split(":"))
+            trigger_m = close_m - buffer
+            trigger_h = close_h
+            if trigger_m < 0:
+                trigger_m += 60
+                trigger_h -= 1
+            tz_label = market_preset.timezone if market_preset else "IST"
+            short_note = f" — INTRADAY ONLY"
+            force_note = (
+                f" SHORT positions are force-covered at {trigger_h}:{trigger_m:02d} "
+                f"({tz_label}) if not closed manually."
+            )
         return {
             "name": "place_trade",
             "description": (
-                "Place a paper trade (buy or sell). For BUY: opens a new position. "
-                "For SELL: closes an existing position by trade_id. "
-                "All trades are subject to risk limits."
+                "Place a paper trade. Actions:\n"
+                "  BUY: open a long position (ticker + quantity required).\n"
+                "  SELL: close a long position (trade_id required).\n"
+                f"  SHORT: open a short/bearish position{short_note} (ticker + quantity required). "
+                "Use when you expect the price to fall.\n"
+                "  COVER: close a short position by buying back (trade_id required).\n"
+                f"All trades are subject to risk limits.{force_note}"
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["BUY", "SELL"],
-                        "description": "Trade action"
+                        "enum": ["BUY", "SELL", "SHORT", "COVER"],
+                        "description": "Trade action: BUY/SELL for long trades, SHORT/COVER for short trades"
                     },
                     "ticker": {
                         "type": "string",
-                        "description": "Stock ticker (required for BUY)"
+                        "description": "Stock ticker, e.g. 'RELIANCE.NS' (required for BUY and SHORT)"
                     },
                     "quantity": {
                         "type": "integer",
-                        "description": "Number of shares (required for BUY)"
+                        "description": "Number of shares (required for BUY and SHORT)"
                     },
                     "trade_type": {
                         "type": "string",
                         "enum": ["intraday", "swing"],
-                        "description": "Trade holding period type"
+                        "description": "Holding period — SHORT is always intraday regardless of this value"
                     },
                     "trade_id": {
                         "type": "integer",
-                        "description": "Trade ID to close (required for SELL)"
+                        "description": "Trade ID to close (required for SELL and COVER)"
                     },
                     "reason": {
                         "type": "string",

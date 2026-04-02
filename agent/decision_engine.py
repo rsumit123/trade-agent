@@ -13,40 +13,45 @@ from .config import AgentConfig
 
 logger = logging.getLogger(__name__)
 
-# ── System Prompt ────────────────────────────────────────────
 
-TRADING_SYSTEM_PROMPT = """You are an autonomous AI trading agent managing a paper trading portfolio on Indian stock markets (NSE).
+# ── System Prompt Template ──────────────────────────────────
+
+TRADING_SYSTEM_PROMPT = """You are an autonomous AI trading agent managing a paper trading portfolio on {market_name}.
 
 ## Your Mandate
-- Make profitable intraday and short-term swing trades
+- Make profitable trades
 - Preserve capital — never risk more than you can afford to lose
 - Learn from past trades and adapt your strategy
 
 ## Trading Rules
-- INTRADAY trades must be closed before 3:15 PM IST
-- SWING trades can be held for 1-5 days max
-- Always have a clear thesis for every trade (why this stock, why now)
-- Consider both technical signals AND news/sentiment
-- When in doubt, do nothing — cash is a position too
+{trading_rules}
+
+## Long vs Short
+- Use BUY (long) when you expect the price to RISE
+- Use SHORT when you expect the price to FALL (bearish setup: RSI >70 overbought, near resistance, negative news)
+- Use SELL to close a BUY position; use COVER to close a SHORT position
+- For SHORT: stop is ABOVE entry (price rising against you), target is BELOW entry (price falling in your favour)
 
 ## Available Tools
 You have access to these tools:
 1. `search_market_news` — Search web for market news and analysis
 2. `get_portfolio_status` — Check your current portfolio, cash, and open positions
-3. `get_stock_details` — Get detailed price/technical data for a stock
-4. `place_trade` — Execute a BUY or SELL trade
+3. `get_stock_details` — Get detailed price/technical data for an asset
+4. `place_trade` — Execute BUY / SELL (long) or SHORT / COVER (short) trades
 
 ## Decision Framework
 1. First, assess overall market sentiment (bullish/bearish/neutral)
 2. Check your portfolio status and risk capacity
-3. Scan for opportunities in the watchlist
-4. For each potential trade, research the stock's news and technicals
+3. Scan for opportunities in the watchlist — both long AND short setups
+4. For each potential trade, research the asset's news and technicals
 5. Only trade when you have conviction — explain your reasoning
 
 ## Risk Awareness
 - Your trades are checked against hard risk limits (position size, daily loss, etc.)
 - If a trade is rejected by the risk manager, accept it and move on
 - Never try to circumvent risk limits
+
+{personality_section}
 
 ## Past Learnings
 {learnings}
@@ -55,6 +60,160 @@ You have access to these tools:
 - Date/Time: {current_time}
 - Market Status: {market_status}
 """
+
+
+def _build_trading_rules(preset) -> str:
+    """Build market-specific trading rules for the system prompt."""
+    if preset and preset.is_24x7:
+        return (
+            "- This is a 24/7 market — no forced close times\n"
+            "- SWING trades can be held for days\n"
+            "- Always have a clear thesis for every trade (why this asset, why now)\n"
+            "- Consider both technical signals AND news/sentiment\n"
+            "- When in doubt, do nothing — cash is a position too"
+        )
+    else:
+        close_time = preset.market_close if preset else "15:30"
+        buffer = preset.intraday_close_buffer_min if preset else 15
+        tz = preset.timezone if preset else "IST"
+        close_h, close_m = map(int, close_time.split(":"))
+        trigger_m = close_m - buffer
+        trigger_h = close_h
+        if trigger_m < 0:
+            trigger_m += 60
+            trigger_h -= 1
+        trigger_str = f"{trigger_h}:{trigger_m:02d}"
+        return (
+            f"- INTRADAY trades must be closed before {trigger_str} ({tz}) (auto-closed if you don't)\n"
+            "- SWING trades can be held for 1-5 days max\n"
+            f"- SHORT positions are ALWAYS intraday — force-covered at {trigger_str} ({tz})\n"
+            "- Always have a clear thesis for every trade (why this asset, why now)\n"
+            "- Consider both technical signals AND news/sentiment\n"
+            "- When in doubt, do nothing — cash is a position too"
+        )
+
+
+def _format_system_prompt(config, learnings, is_market_open, force_intraday=False):
+    """Format the system prompt with dynamic values."""
+    preset = config._market_preset
+    market_name = preset.display_name if preset else "Indian Stock Markets (NSE)"
+    tz = preset.timezone if preset else "Asia/Kolkata"
+
+    trading_rules = _build_trading_rules(preset)
+
+    # Personality section from session config
+    personality_section = ""
+    sc = config._session_config
+    if sc and sc.personality:
+        personality_section = f"## Trading Personality\n{sc.personality}"
+
+    # Current time in the market's timezone
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo(tz))
+        time_str = now.strftime(f"%Y-%m-%d %H:%M ({tz})")
+    except Exception:
+        time_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    system = TRADING_SYSTEM_PROMPT.format(
+        market_name=market_name,
+        trading_rules=trading_rules,
+        personality_section=personality_section,
+        learnings=learnings or "No past learnings yet — this is the beginning.",
+        current_time=time_str,
+        market_status="OPEN" if is_market_open else "CLOSED",
+    )
+
+    # Intraday hint (only for scheduled markets)
+    if force_intraday and preset and not preset.is_24x7:
+        close_str = preset.market_close or "15:30"
+        buffer = preset.intraday_close_buffer_min or 15
+        close_h, close_m = map(int, close_str.split(":"))
+        trigger_m = close_m - buffer
+        trigger_h = close_h
+        if trigger_m < 0:
+            trigger_m += 60
+            trigger_h -= 1
+        system += (
+            f"\n\n⚠️  TESTING MODE: Prefer `trade_type: intraday` for any new trades this cycle."
+            f" Intraday trades must be closed before {trigger_h}:{trigger_m:02d}."
+        )
+
+    return system
+
+
+def _build_context(portfolio: Dict, watchlist: List[Dict], news: str,
+                   risk: Dict, config: AgentConfig = None) -> str:
+    """Build the initial context message for the LLM."""
+    sym = config.currency_symbol if config else "₹"
+
+    watchlist_lines = []
+    for s in watchlist:
+        ticker = s.get('ticker', '?')
+        price  = s.get('current_price', 0)
+        chg    = s.get('change_pct', 0)
+        sma    = s.get('price_vs_sma', '?')
+        rsi    = s.get('rsi_14')
+        vr     = s.get('vol_ratio')
+        r2res  = s.get('dist_to_resistance_pct')
+        r2sup  = s.get('dist_to_support_pct')
+        rsi_str = f"{rsi:>5.1f}" if rsi is not None else "  n/a"
+        vr_str  = f"{vr:>4.1f}x"  if vr  is not None else " n/a"
+        r2res_str = f"{r2res:>5.1f}%" if r2res is not None else "  n/a"
+        r2sup_str = f"{r2sup:>5.1f}%" if r2sup is not None else "  n/a"
+        watchlist_lines.append(
+            f"{ticker:20s}  {sym}{price:>8.2f}  {chg:>+6.2f}%  "
+            f"RSI={rsi_str}  vol={vr_str}  res={r2res_str}  sup={r2sup_str}  sma={sma}"
+        )
+    watchlist_text = "\n".join(watchlist_lines) if watchlist_lines else "(no data)"
+
+    asset_label = "assets" if (config and config._market_preset and config._market_preset.market_id == "crypto") else "stocks"
+
+    return f"""## Current Portfolio
+```json
+{json.dumps(portfolio, indent=2)}
+```
+
+## Risk Status
+```json
+{json.dumps(risk, indent=2)}
+```
+
+## Full Watchlist — {len(watchlist)} {asset_label} sorted by absolute % move (biggest movers first)
+RSI: <30=oversold, >70=overbought | vol: today/20d avg volume ratio (>1.5 = above-avg volume) | res/sup: % distance to 5d resistance/support
+```
+{"ticker":20s}  {"price":>8s}  {"chg%":>7s}  {"RSI":>9s}  {"vol":>8s}  {"res":>8s}  {"sup":>8s}  sma
+{"-"*95}
+{watchlist_text}
+```
+
+## Recent Market News
+{news}
+
+---
+
+Analyze the market conditions and your portfolio. Use your tools to research
+specific {asset_label} if needed, then decide whether to make any trades.
+
+LONG signals: RSI <35 (oversold bounce), vol_ratio >1.5 (breakout volume), price near support (sup <1%).
+SHORT signals: RSI >70 (overbought), price near resistance (res <0.5%), negative news catalyst, vol_ratio >1.5 (distribution).
+Caution: avoid entering longs when RSI >75 or near resistance; avoid shorts when RSI <30.
+If no good opportunities exist, it's perfectly fine to hold and wait.
+
+What trades, if any, should we make right now?"""
+
+
+def _get_tool_defs(config):
+    """Build tool definitions with market-aware descriptions."""
+    from .web_research import LLMWebSearchTool
+    preset = config._market_preset
+    return [
+        LLMWebSearchTool.tool_definition(market_preset=preset),
+        LLMWebSearchTool.get_portfolio_tool(),
+        LLMWebSearchTool.get_stock_detail_tool(market_preset=preset),
+        LLMWebSearchTool.get_trade_tool(market_preset=preset),
+    ]
+
 
 # ── Anthropic Implementation ────────────────────────────────
 
@@ -86,35 +245,16 @@ class AnthropicDecisionEngine:
         The LLM can call tools multiple times before deciding.
         Returns list of trade actions taken.
         """
-        from .web_research import LLMWebSearchTool
+        context = _build_context(portfolio_summary, watchlist_data,
+                                 news_context, risk_status, self.config)
 
-        # Build the context message
-        context = self._build_context(portfolio_summary, watchlist_data,
-                                       news_context, risk_status)
+        system = _format_system_prompt(self.config, learnings, is_market_open, force_intraday)
 
-        intraday_hint = (
-            "\n\n⚠️  TESTING MODE: Prefer `trade_type: intraday` for any new trades this cycle."
-            " Intraday trades must be closed before 3:15 PM IST."
-            if force_intraday else ""
-        )
-
-        system = TRADING_SYSTEM_PROMPT.format(
-            learnings=learnings or "No past learnings yet — this is the beginning.",
-            current_time=datetime.now().strftime("%Y-%m-%d %H:%M IST"),
-            market_status="OPEN" if is_market_open else "CLOSED",
-        ) + intraday_hint
-
-        # Tool definitions
-        tool_defs = [
-            LLMWebSearchTool.tool_definition(),
-            LLMWebSearchTool.get_portfolio_tool(),
-            LLMWebSearchTool.get_stock_detail_tool(),
-            LLMWebSearchTool.get_trade_tool(),
-        ]
+        tool_defs = _get_tool_defs(self.config)
 
         messages = [{"role": "user", "content": context}]
         actions_taken = []
-        max_iterations = 10  # Safety limit on tool use loops
+        max_iterations = 10
 
         for i in range(max_iterations):
             try:
@@ -129,26 +269,21 @@ class AnthropicDecisionEngine:
                 logger.error(f"LLM API error: {e}")
                 break
 
-            # Process response blocks
             assistant_content = response.content
             messages.append({"role": "assistant", "content": assistant_content})
 
-            # Check if there are tool calls
             tool_uses = [b for b in assistant_content if b.type == "tool_use"]
 
             if not tool_uses:
-                # LLM is done — extract any final text
                 text_blocks = [b.text for b in assistant_content if b.type == "text"]
                 if text_blocks:
                     logger.info(f"Agent reasoning: {' '.join(text_blocks)[:500]}")
                 break
 
-            # Handle tool calls
             tool_results = []
             for tool_use in tool_uses:
                 result = tool_handler(tool_use.name, tool_use.input)
 
-                # Track trade actions
                 if tool_use.name == "place_trade":
                     actions_taken.append({
                         "tool": tool_use.name,
@@ -165,53 +300,6 @@ class AnthropicDecisionEngine:
             messages.append({"role": "user", "content": tool_results})
 
         return actions_taken
-
-    def _build_context(self, portfolio: Dict, watchlist: List[Dict],
-                       news: str, risk: Dict) -> str:
-        """Build the initial context message for the LLM."""
-        # Pass full watchlist sorted by absolute % change (already sorted by market_data)
-        # Compact format: one line per stock to keep context tight
-        watchlist_lines = []
-        for s in watchlist:
-            ticker = s.get('ticker', '?')
-            price  = s.get('current_price', 0)
-            chg    = s.get('change_pct', 0)
-            vol    = s.get('avg_volume', 0)
-            vola   = s.get('volatility_pct', 0)
-            sma    = s.get('price_vs_sma', '?')
-            watchlist_lines.append(
-                f"{ticker:20s}  ₹{price:>8.2f}  {chg:>+6.2f}%  "
-                f"avgvol={vol:>10,}  vola={vola:.2f}%  sma={sma}"
-            )
-        watchlist_text = "\n".join(watchlist_lines) if watchlist_lines else "(no data)"
-
-        return f"""## Current Portfolio
-```json
-{json.dumps(portfolio, indent=2)}
-```
-
-## Risk Status
-```json
-{json.dumps(risk, indent=2)}
-```
-
-## Full Watchlist — {len(watchlist)} stocks sorted by absolute % move (biggest movers first)
-```
-{"ticker":20s}  {"price":>8s}  {"chg%":>7s}  {"avgvol":>14s}  vola    sma
-{"-"*80}
-{watchlist_text}
-```
-
-## Recent Market News
-{news}
-
----
-
-Analyze the market conditions and your portfolio. Use your tools to research
-specific stocks if needed, then decide whether to make any trades.
-If no good opportunities exist, it's perfectly fine to hold and wait.
-
-What trades, if any, should we make right now?"""
 
 
 # ── OpenAI / OpenRouter Implementation ──────────────────────
@@ -251,27 +339,13 @@ class OpenRouterDecisionEngine:
         is_market_open: bool = True,
         force_intraday: bool = False,
     ) -> List[Dict]:
-        from .web_research import LLMWebSearchTool
+        context = _build_context(portfolio_summary, watchlist_data,
+                                 news_context, risk_status, self.config)
 
-        context = self._build_context(portfolio_summary, watchlist_data, news_context, risk_status)
-        intraday_hint = (
-            "\n\n⚠️  TESTING MODE: Prefer `trade_type: intraday` for any new trades this cycle."
-            " Intraday trades must be closed before 3:15 PM IST."
-            if force_intraday else ""
-        )
-        system = TRADING_SYSTEM_PROMPT.format(
-            learnings=learnings or "No past learnings yet — this is the beginning.",
-            current_time=datetime.now().strftime("%Y-%m-%d %H:%M IST"),
-            market_status="OPEN" if is_market_open else "CLOSED",
-        ) + intraday_hint
+        system = _format_system_prompt(self.config, learnings, is_market_open, force_intraday)
 
         # Convert Anthropic-style tool schemas to OpenAI function format
-        tool_defs = [
-            self._to_openai_tool(LLMWebSearchTool.tool_definition()),
-            self._to_openai_tool(LLMWebSearchTool.get_portfolio_tool()),
-            self._to_openai_tool(LLMWebSearchTool.get_stock_detail_tool()),
-            self._to_openai_tool(LLMWebSearchTool.get_trade_tool()),
-        ]
+        tool_defs = [self._to_openai_tool(t) for t in _get_tool_defs(self.config)]
 
         messages = [
             {"role": "system", "content": system},
@@ -301,7 +375,6 @@ class OpenRouterDecisionEngine:
                     logger.info(f"Agent reasoning: {msg.content[:500]}")
                 break
 
-            # Handle tool calls
             for tc in msg.tool_calls:
                 try:
                     tool_input = json.loads(tc.function.arguments)
@@ -324,52 +397,6 @@ class OpenRouterDecisionEngine:
                 })
 
         return actions_taken
-
-    def _build_context(self, portfolio: Dict, watchlist: List[Dict],
-                       news: str, risk: Dict) -> str:
-        # Pass full watchlist sorted by absolute % change (already sorted by market_data)
-        # Compact format: one line per stock to keep context tight
-        watchlist_lines = []
-        for s in watchlist:
-            ticker = s.get('ticker', '?')
-            price  = s.get('current_price', 0)
-            chg    = s.get('change_pct', 0)
-            vol    = s.get('avg_volume', 0)
-            vola   = s.get('volatility_pct', 0)
-            sma    = s.get('price_vs_sma', '?')
-            watchlist_lines.append(
-                f"{ticker:20s}  ₹{price:>8.2f}  {chg:>+6.2f}%  "
-                f"avgvol={vol:>10,}  vola={vola:.2f}%  sma={sma}"
-            )
-        watchlist_text = "\n".join(watchlist_lines) if watchlist_lines else "(no data)"
-
-        return f"""## Current Portfolio
-```json
-{json.dumps(portfolio, indent=2)}
-```
-
-## Risk Status
-```json
-{json.dumps(risk, indent=2)}
-```
-
-## Full Watchlist — {len(watchlist)} stocks sorted by absolute % move (biggest movers first)
-```
-{"ticker":20s}  {"price":>8s}  {"chg%":>7s}  {"avgvol":>14s}  vola    sma
-{"-"*80}
-{watchlist_text}
-```
-
-## Recent Market News
-{news}
-
----
-
-Analyze the market conditions and your portfolio. Use your tools to research
-specific stocks if needed, then decide whether to make any trades.
-If no good opportunities exist, it's perfectly fine to hold and wait.
-
-What trades, if any, should we make right now?"""
 
     @staticmethod
     def _to_openai_tool(anthropic_tool: Dict) -> Dict:

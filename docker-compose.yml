@@ -1,0 +1,27 @@
+version: "3.8"
+
+services:
+  alphaagent-backend:
+    build: .
+    container_name: alphaagent-backend
+    restart: unless-stopped
+    ports:
+      - "8030:8000"
+    volumes:
+      # Persist all session data across container restarts
+      - ./sessions:/app/sessions
+      # Legacy paths (backward compat)
+      - ./data:/app/data
+      - ./learnings:/app/learnings
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    mem_limit: 512m
+    memswap_limit: 768m
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/sessions"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

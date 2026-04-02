@@ -1,0 +1,15 @@
+.venv/
+frontend/
+node_modules/
+__pycache__/
+*.pyc
+.git/
+.env
+.env.local
+data/
+logs/
+sessions/
+learnings/
+*.egg-info/
+.DS_Store
+ARCHITECTURE.md

@@ -25,36 +25,63 @@ class TradingAgent:
     """
     The autonomous trading agent.
     Call `run_once()` for a single decision cycle, or `run_loop()` for continuous operation.
+
+    Can be initialized with:
+      - config: AgentConfig  (legacy, backward compat)
+      - session: SessionConfig  (new multi-session mode)
     """
 
-    def __init__(self, config: AgentConfig = None):
-        self.config = config or AgentConfig()
+    def __init__(self, config: AgentConfig = None, session=None):
+        # Session-based init
+        if session is not None:
+            from .market_presets import get_preset
+            self.session = session
+            self.preset = get_preset(session.market)
+            self.config = AgentConfig.from_session(session)
+        else:
+            self.session = None
+            self.preset = getattr(config, '_market_preset', None) if config else None
+            self.config = config or AgentConfig()
+
+        sym = self.config.currency_symbol
 
         # Ensure directories exist
         for path in [self.config.db_path, self.config.learnings_path, self.config.log_path]:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
 
-        # Setup logging
+        # Setup logging — force=True clears any handlers added by a previous
+        # instance that briefly shared this process space, preventing double-logs
         logging.basicConfig(
             level=logging.INFO,
             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
             handlers=[
                 logging.FileHandler(self.config.log_path),
                 logging.StreamHandler(),
-            ]
+            ],
+            force=True,
         )
 
-        # Initialize components
+        # Initialize components — pass market_preset for market-aware behaviour
         self.portfolio = Portfolio(self.config.db_path, self.config.starting_capital)
-        self.market_data = MarketData(self.config.watchlist)
-        self.researcher = WebResearcher(self.config.news_sources)
+        self.market_data = MarketData(self.config.watchlist, market_preset=self.preset)
+        self.researcher = WebResearcher(self.config.news_sources, market_preset=self.preset)
         self.risk_manager = RiskManager(self.config, self.portfolio)
         self.learner = Learner(self.config, self.portfolio)
-        self.engine = create_engine(self.config)
 
-        logger.info("🤖 Trading Agent initialized")
-        logger.info(f"   Capital: ₹{self.config.starting_capital:,.0f}")
-        logger.info(f"   Watchlist: {len(self.config.watchlist)} stocks")
+        # Engine init requires API key — defer failure to when engine is actually used
+        # so that --status and other read-only commands work without a key
+        try:
+            self.engine = create_engine(self.config)
+        except (ValueError, ImportError) as e:
+            logger.warning(f"⚠️  LLM engine not available: {e}")
+            self.engine = None
+
+        market_label = self.preset.display_name if self.preset else "NSE"
+        session_label = f" (session: {self.session.session_id})" if self.session else ""
+        logger.info(f"🤖 Trading Agent initialized{session_label}")
+        logger.info(f"   Market: {market_label}")
+        logger.info(f"   Capital: {sym}{self.config.starting_capital:,.0f}")
+        logger.info(f"   Watchlist: {len(self.config.watchlist)} assets")
         active_model = {
             "anthropic": self.config.anthropic_model,
             "openai": self.config.openai_model,
@@ -85,10 +112,16 @@ class TradingAgent:
                 ] or self.config.watchlist[:3]
                 for ticker in matched_tickers[:3]:
                     results.extend(self.researcher.get_news_for_stock(ticker))
-            # Log top result so it's visible in dashboard
+            # Log all results so user can see exactly what the LLM received
             if results:
-                top = results[0]
-                logger.info(f"📰 Search result: [{top.get('source','')}] {top.get('title','')[:80]}")
+                logger.info(f"📰 Search '{query[:60]}' → {len(results)} results:")
+                for i, r in enumerate(results, 1):
+                    src = r.get('source', '')
+                    title = r.get('title', '')[:70]
+                    snippet = r.get('snippet', '')[:120].replace('\n', ' ')
+                    logger.info(f"   {i}. [{src}] {title}")
+                    if snippet:
+                        logger.info(f"      ↳ {snippet}")
             else:
                 logger.info(f"📰 Search returned no results for: {query[:60]}")
             return {"query": query, "results": results[:8]}
@@ -112,6 +145,12 @@ class TradingAgent:
         action = trade_input.get("action", "")
         reason = trade_input.get("reason", "")
 
+        # Hard guard: block new positions near market close (force-close window)
+        if action in ("BUY", "SHORT") and self.risk_manager.check_intraday_close():
+            msg = "Cannot open new positions — market closing soon"
+            logger.warning(f"❌ {msg}")
+            return {"success": False, "error": msg}
+
         if action == "BUY":
             ticker = trade_input.get("ticker", "")
             quantity = trade_input.get("quantity", 0)
@@ -131,17 +170,45 @@ class TradingAgent:
                 logger.warning(f"❌ Trade rejected: {risk_msg}")
                 return {"success": False, "error": risk_msg}
 
+            # Compute ATR-based stop and target (1.5×ATR stop, 2×ATR target → 1:2 RR)
+            stop_price = target_price = atr_14 = None
+            try:
+                ctx = self.market_data.get_stock_context(ticker, include_vwap=False)
+                atr_14 = ctx.get("atr_14")
+                if atr_14 and atr_14 > 0:
+                    stop_price   = round(price - 1.5 * atr_14, 2)
+                    target_price = round(price + 2.0 * atr_14, 2)
+                    sym = self.config.currency_symbol
+                    logger.info(
+                        f"📐 {ticker} ATR={atr_14:.2f} → "
+                        f"stop {sym}{stop_price} / target {sym}{target_price}"
+                    )
+                else:
+                    # Fallback: use config % if ATR unavailable
+                    fallback_pct = self.config.per_trade_loss_limit_pct
+                    stop_price   = round(price * (1 - fallback_pct), 2)
+                    target_price = round(price * (1 + 2 * fallback_pct), 2)
+                    logger.warning(f"ATR unavailable for {ticker}, using config % stop/target")
+            except Exception as e:
+                logger.warning(f"Stop/target calc failed for {ticker}: {e}")
+
             # Execute
-            trade = self.portfolio.execute_buy(ticker, quantity, price, trade_type, reason)
+            trade = self.portfolio.execute_buy(
+                ticker, quantity, price, trade_type, reason,
+                stop_price=stop_price, target_price=target_price,
+            )
             self.learner.write_trade_log(trade)
             return {
-                "success": True,
-                "trade_id": trade.id,
-                "action": "BUY",
-                "ticker": ticker,
-                "quantity": quantity,
-                "price": price,
-                "total_cost": round(quantity * price, 2),
+                "success":      True,
+                "trade_id":     trade.id,
+                "action":       "BUY",
+                "ticker":       ticker,
+                "quantity":     quantity,
+                "price":        price,
+                "total_cost":   round(quantity * price, 2),
+                "stop_price":   stop_price,
+                "target_price": target_price,
+                "atr_14":       atr_14,
             }
 
         elif action == "SELL":
@@ -174,6 +241,90 @@ class TradingAgent:
                 "pnl": round(trade.pnl, 2),
             }
 
+        elif action == "SHORT":
+            ticker = trade_input.get("ticker", "")
+            quantity = trade_input.get("quantity", 0)
+
+            if not ticker or not quantity:
+                return {"success": False, "error": "ticker and quantity required for SHORT"}
+
+            # Get current price
+            prices = self.market_data.get_current_prices([ticker])
+            price = prices.get(ticker)
+            if not price:
+                return {"success": False, "error": f"Cannot get price for {ticker}"}
+
+            # Risk check (reuse buy limits — same capital at risk)
+            approved, risk_msg = self.risk_manager.check_buy(
+                ticker, quantity, price, prices
+            )
+            if not approved:
+                logger.warning(f"❌ Short rejected: {risk_msg}")
+                return {"success": False, "error": risk_msg}
+
+            # For shorts: stop ABOVE entry, target BELOW entry
+            stop_price = target_price = atr_14 = None
+            try:
+                ctx = self.market_data.get_stock_context(ticker, include_vwap=False)
+                atr_14 = ctx.get("atr_14")
+                if atr_14 and atr_14 > 0:
+                    stop_price   = round(price + 1.5 * atr_14, 2)   # stop: price rises against us
+                    target_price = round(price - 2.0 * atr_14, 2)   # target: price drops in our favour
+                    sym = self.config.currency_symbol
+                    logger.info(
+                        f"📐 SHORT {ticker} ATR={atr_14:.2f} → "
+                        f"stop {sym}{stop_price} / target {sym}{target_price}"
+                    )
+                else:
+                    fallback_pct = self.config.per_trade_loss_limit_pct
+                    stop_price   = round(price * (1 + fallback_pct), 2)
+                    target_price = round(price * (1 - 2 * fallback_pct), 2)
+                    logger.warning(f"ATR unavailable for {ticker}, using config % stop/target (short)")
+            except Exception as e:
+                logger.warning(f"Stop/target calc failed for SHORT {ticker}: {e}")
+
+            trade = self.portfolio.execute_short(
+                ticker, quantity, price, reason,
+                stop_price=stop_price, target_price=target_price,
+            )
+            self.learner.write_trade_log(trade)
+            return {
+                "success":      True,
+                "trade_id":     trade.id,
+                "action":       "SHORT",
+                "ticker":       ticker,
+                "quantity":     quantity,
+                "price":        price,
+                "stop_price":   stop_price,
+                "target_price": target_price,
+                "atr_14":       atr_14,
+            }
+
+        elif action == "COVER":
+            trade_id = trade_input.get("trade_id")
+            if not trade_id:
+                return {"success": False, "error": "trade_id required for COVER"}
+
+            # Verify the short trade exists
+            positions = self.portfolio.get_open_positions()
+            pos = next((p for p in positions if p.id == trade_id and p.direction == "short"), None)
+            if not pos:
+                return {"success": False, "error": f"No open SHORT position with id {trade_id}"}
+
+            prices = self.market_data.get_current_prices([pos.ticker])
+            price = prices.get(pos.ticker, pos.entry_price)
+
+            trade = self.portfolio.execute_cover(trade_id, price, reason)
+            self.learner.write_trade_log(trade, llm_client=self.engine.client)
+            return {
+                "success":    True,
+                "trade_id":   trade_id,
+                "action":     "COVER",
+                "ticker":     trade.ticker,
+                "exit_price": price,
+                "pnl":        round(trade.pnl, 2),
+            }
+
         return {"success": False, "error": f"Unknown action: {action}"}
 
     # ── Main Loop ────────────────────────────────────────────
@@ -183,6 +334,9 @@ class TradingAgent:
         force_intraday: hint the LLM to prefer intraday trades (useful for testing).
         """
         logger.info("=" * 60)
+        # Suppress intraday hint for 24/7 markets
+        if force_intraday and self.preset and self.preset.is_24x7:
+            force_intraday = False
         logger.info("🔄 Starting decision cycle" + (" [FORCE INTRADAY]" if force_intraday else ""))
 
         # 1. OBSERVE — gather market data
@@ -211,19 +365,25 @@ class TradingAgent:
             logger.warning("⚠️  Daily loss limit hit — no trading today")
             return {"status": "blocked", "reason": "daily loss limit"}
 
-        # 3. Run stop-loss sweep
+        # 3. Run stop/target sweep — writes journal entry for each closed position
         stopped = self.risk_manager.run_stop_loss_sweep(prices)
         if stopped:
-            logger.info(f"🛑 Stop-loss triggered on {len(stopped)} positions")
+            logger.info(f"🛑 Stop/target triggered on {len(stopped)} positions")
+            for trade in stopped:
+                self.learner.write_trade_log(trade, llm_client=self.engine.client)
 
-        # 4. Force-close intraday positions near market close
-        if self.risk_manager.check_intraday_close():
+        # 4. Force-close intraday positions near market close (≥15:15 IST)
+        near_close = self.risk_manager.check_intraday_close()
+        if near_close:
             self._close_intraday_positions(prices)
+            # Don't let LLM open new positions when we're in the closing window
+            logger.info("⏰ Near market close — skipping new trade decisions")
+            return {"status": "ok", "actions": [], "portfolio": self.portfolio.get_portfolio_summary(prices)}
 
         # 5. DECIDE + ACT — let the LLM make decisions
         logger.info("🧠 Running decision engine...")
         portfolio_summary = self.portfolio.get_portfolio_summary(prices)
-        learnings = self.learner.get_learnings()
+        learnings = self.learner.get_learnings(max_chars=6000)
 
         actions = self.engine.run_decision_loop(
             portfolio_summary=portfolio_summary,
@@ -256,6 +416,9 @@ class TradingAgent:
         if hasattr(self.engine, 'client'):
             reflection = self.learner.generate_daily_review(self.engine.client)
             self.learner.write_reflection(reflection)
+            # Synthesise ALL journal history into a persistent distilled rules block
+            # so nothing is lost to truncation next session
+            self.learner.update_distilled_rules(self.engine.client)
 
         # Log performance stats
         stats = self.learner.get_performance_stats()
@@ -291,12 +454,16 @@ class TradingAgent:
             self.run_daily_review()
 
     def _close_intraday_positions(self, prices: Dict[str, float]):
-        """Force-close all intraday positions near market close."""
+        """Force-close all intraday positions (longs and shorts) near market close."""
         positions = self.portfolio.get_open_positions()
         intraday = [p for p in positions if p.trade_type == "intraday"]
 
         for pos in intraday:
             price = prices.get(pos.ticker, pos.entry_price)
-            logger.info(f"⏰ Force-closing intraday: {pos.ticker}")
-            trade = self.portfolio.execute_sell(pos.id, price, reason="End-of-day forced close")
+            if pos.direction == "short":
+                logger.info(f"⏰ Force-covering intraday SHORT: {pos.ticker}")
+                trade = self.portfolio.execute_cover(pos.id, price, reason="End-of-day forced cover")
+            else:
+                logger.info(f"⏰ Force-closing intraday LONG: {pos.ticker}")
+                trade = self.portfolio.execute_sell(pos.id, price, reason="End-of-day forced close")
             self.learner.write_trade_log(trade, llm_client=self.engine.client)

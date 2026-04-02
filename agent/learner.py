@@ -25,10 +25,20 @@ class Learner:
     def __init__(self, config: AgentConfig, portfolio: Portfolio):
         self.config = config
         self.portfolio = portfolio
-        # Resolve to absolute path relative to project root (parent of this file's dir)
-        _project_root = Path(__file__).resolve().parent.parent
-        self.journal_path = (_project_root / config.learnings_path).resolve()
+        # If path is already absolute (session-based), use directly;
+        # otherwise resolve relative to project root (backward compat)
+        lp = Path(config.learnings_path)
+        if lp.is_absolute():
+            self.journal_path = lp
+        else:
+            _project_root = Path(__file__).resolve().parent.parent
+            self.journal_path = (_project_root / config.learnings_path).resolve()
         self._ensure_journal()
+
+    @property
+    def _sym(self) -> str:
+        """Currency symbol from config."""
+        return self.config.currency_symbol
 
     def _ensure_journal(self):
         """Create the journal file if it doesn't exist."""
@@ -41,21 +51,50 @@ class Learner:
                 "---\n\n"
             )
 
-    def get_learnings(self, max_chars: int = 3000) -> str:
-        """Read recent learnings to feed back into the LLM context."""
+    def get_learnings(self, max_chars: int = 4000) -> str:
+        """
+        Read learnings to feed back into the LLM context.
+
+        Strategy: always include the persistent rules block (## Distilled Rules section)
+        at the top, then fill remaining space with the most recent trade entries.
+        This ensures the agent always has its accumulated wisdom regardless of journal size.
+        """
         content = self.journal_path.read_text()
 
-        # Return the last N characters (most recent entries)
-        if len(content) > max_chars:
-            # Find a clean break point
-            truncated = content[-max_chars:]
-            # Start from the next entry header
-            entry_start = truncated.find("\n## ")
-            if entry_start > 0:
-                truncated = truncated[entry_start:]
-            return f"[... earlier entries truncated ...]\n{truncated}"
+        # Split out the distilled rules block if it exists
+        rules_marker = "\n## 📌 Distilled Rules"
+        rules_end_marker = "\n---"
+        rules_block = ""
+        rest = content
 
-        return content
+        rules_start = content.find(rules_marker)
+        if rules_start >= 0:
+            rules_end = content.find(rules_end_marker, rules_start + len(rules_marker))
+            if rules_end >= 0:
+                rules_block = content[rules_start:rules_end + len(rules_end_marker)].strip()
+                # Remove the rules block from rest so we don't double-count
+                rest = content[:rules_start] + content[rules_end + len(rules_end_marker):]
+
+        # Budget: rules get up to half the space, recent entries fill the rest
+        rules_budget = min(len(rules_block), max_chars // 2)
+        entries_budget = max_chars - rules_budget
+
+        # Take the most recent entries that fit in the budget
+        if len(rest) > entries_budget:
+            truncated = rest[-entries_budget:]
+            # Start from a clean entry header
+            for header in ["\n### ", "\n## "]:
+                entry_start = truncated.find(header)
+                if entry_start > 0:
+                    truncated = truncated[entry_start:]
+                    break
+            recent_entries = f"[... earlier entries truncated ...]\n{truncated}"
+        else:
+            recent_entries = rest
+
+        if rules_block:
+            return f"{rules_block}\n\n---\n\n{recent_entries}"
+        return recent_entries
 
     def generate_daily_review(self, llm_client) -> str:
         """
@@ -150,10 +189,95 @@ Start with `## {date.today().strftime("%Y-%m-%d")} — Daily Review`
         return f"""## {today} — Daily Review (auto-generated)
 
 - **Trades taken**: {len(trades)} (Wins: {wins}, Losses: {losses})
-- **Day P&L**: ₹{total_pnl:.2f}
-- **Portfolio value**: ₹{summary['total_value']:.2f}
+- **Day P&L**: {self._sym}{total_pnl:.2f}
+- **Portfolio value**: {self._sym}{summary['total_value']:.2f}
 - *Note: LLM review unavailable, this is a stats-only summary*
 """
+
+    def update_distilled_rules(self, llm_client) -> None:
+        """
+        Ask the LLM to synthesize ALL journal entries into a short persistent
+        rules block (## 📌 Distilled Rules). This block is always included at
+        the top of get_learnings() so no wisdom is lost to truncation.
+        Called at end-of-day after generate_daily_review().
+        """
+        content = self.journal_path.read_text()
+
+        # Strip existing rules block so we regenerate from scratch
+        rules_marker = "\n## 📌 Distilled Rules"
+        rules_start = content.find(rules_marker)
+        rules_end_marker = "\n---"
+        if rules_start >= 0:
+            rules_end = content.find(rules_end_marker, rules_start + len(rules_marker))
+            if rules_end >= 0:
+                content_without_rules = content[:rules_start] + content[rules_end + len(rules_end_marker):]
+            else:
+                content_without_rules = content[:rules_start]
+        else:
+            content_without_rules = content
+
+        # Don't burn tokens if journal is tiny
+        if len(content_without_rules.strip()) < 500:
+            return
+
+        prompt = f"""You are a trading journal assistant. Read ALL the trade entries and reflections below and extract the most important, actionable trading rules this agent has learned so far.
+
+{content_without_rules[-8000:]}
+
+---
+
+Write a "## 📌 Distilled Rules" section (max 20 bullet points) that captures:
+- Setups that WORK (with conditions: which stocks, RSI levels, volume, time of day)
+- Setups that FAIL (with conditions to avoid)
+- Position sizing / stop-loss lessons
+- Intraday vs swing timing rules
+- Sector-specific patterns observed
+
+Rules must be SPECIFIC (e.g. "HAVELLS RSI <30 + VWAP support = reliable intraday bounce") not generic.
+Format as a bullet list under `## 📌 Distilled Rules`. No preamble, just the section."""
+
+        try:
+            if self.config.llm_provider == "anthropic":
+                response = llm_client.messages.create(
+                    model=self.config.anthropic_model,
+                    max_tokens=800,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                rules_text = response.content[0].text.strip()
+            else:
+                model = (
+                    self.config.openrouter_model
+                    if self.config.llm_provider == "openrouter"
+                    else self.config.openai_model
+                )
+                response = llm_client.chat.completions.create(
+                    model=model,
+                    max_tokens=800,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                rules_text = response.choices[0].message.content.strip()
+
+            # Ensure it starts with the right header
+            if not rules_text.startswith("## 📌 Distilled Rules"):
+                rules_text = "## 📌 Distilled Rules\n\n" + rules_text
+
+            # Insert rules block right after the journal header (before first trade entry)
+            header_end = content_without_rules.find("\n---\n")
+            if header_end >= 0:
+                insert_at = header_end + len("\n---\n")
+            else:
+                insert_at = len(content_without_rules)
+
+            new_content = (
+                content_without_rules[:insert_at]
+                + f"\n{rules_text}\n\n---\n\n"
+                + content_without_rules[insert_at:]
+            )
+            self.journal_path.write_text(new_content)
+            logger.info("📌 Distilled rules block updated in journal")
+
+        except Exception as e:
+            logger.warning(f"Failed to update distilled rules: {e}")
 
     def write_reflection(self, reflection: str):
         """Append a reflection entry to the journal."""
@@ -173,11 +297,20 @@ Start with `## {date.today().strftime("%Y-%m-%d")} — Daily Review`
         """
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-        if trade.action == "BUY" or trade.exit_price is None:
+        if trade.exit_price is None:
             # ── Entry log ─────────────────────────────────────────────
+            # Dedup: skip if this trade_id was already logged as an entry
+            if trade.id is not None:
+                existing = self.journal_path.read_text()
+                dedup_marker = f"trade_id={trade.id}]"
+                if dedup_marker in existing:
+                    logger.debug(f"Skipping duplicate entry log for trade {trade.id}")
+                    return
+
+            action_label = "SHORT" if trade.direction == "short" else "ENTRY"
             entry = (
-                f"**ENTRY** {trade.quantity}x {trade.ticker} @ ₹{trade.entry_price:.2f}"
-                f"  [{trade.trade_type}]\n"
+                f"**{action_label}** {trade.quantity}x {trade.ticker} @ {self._sym}{trade.entry_price:.2f}"
+                f"  [{trade.trade_type}]  [trade_id={trade.id}]\n"
                 f"  *Thesis: {trade.reason or 'no reason recorded'}*"
             )
             logger.info(f"Trade logged: {entry}")
@@ -200,8 +333,8 @@ Start with `## {date.today().strftime("%Y-%m-%d")} — Daily Review`
 
             summary_line = (
                 f"**EXIT** {trade.quantity}x {trade.ticker} | "
-                f"{outcome} | ₹{trade.entry_price:.2f} → ₹{trade.exit_price:.2f} | "
-                f"P&L: ₹{pnl:+.2f} ({pnl_pct:+.2f}%) | held {hold_time}"
+                f"{outcome} | {self._sym}{trade.entry_price:.2f} → {self._sym}{trade.exit_price:.2f} | "
+                f"P&L: {self._sym}{pnl:+.2f} ({pnl_pct:+.2f}%) | held {hold_time}"
             )
             logger.info(f"Trade logged: {summary_line}")
 
@@ -227,8 +360,8 @@ Start with `## {date.today().strftime("%Y-%m-%d")} — Daily Review`
 ## Trade Summary
 - Ticker: {trade.ticker}
 - Type: {trade.trade_type}
-- Entry: ₹{trade.entry_price:.2f}  Exit: ₹{trade.exit_price:.2f}
-- P&L: ₹{pnl:+.2f} ({pnl_pct:+.2f}%)
+- Entry: {self._sym}{trade.entry_price:.2f}  Exit: {self._sym}{trade.exit_price:.2f}
+- P&L: {self._sym}{pnl:+.2f} ({pnl_pct:+.2f}%)
 - Hold time: {hold_time}
 - Entry thesis: {trade.reason or 'not recorded'}
 - Exit reason: {trade.exit_reason or 'not recorded'}
