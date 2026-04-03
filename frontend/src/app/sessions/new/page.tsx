@@ -197,7 +197,16 @@ export default function CreateSessionPage() {
             <label className="block text-xs text-text-muted mb-1.5">Provider</label>
             <select
               value={form.llm_provider}
-              onChange={(e) => setForm({ ...form, llm_provider: e.target.value })}
+              onChange={(e) => {
+                const provider = e.target.value;
+                const defaults: Record<string, { model: string; keyEnv: string }> = {
+                  openrouter: { model: "anthropic/claude-haiku-4-5", keyEnv: "OPENROUTER_API_KEY" },
+                  anthropic: { model: "claude-sonnet-4-5-20250929", keyEnv: "ANTHROPIC_API_KEY" },
+                  openai: { model: "gpt-4o", keyEnv: "OPENAI_API_KEY" },
+                };
+                const d = defaults[provider] || defaults.openrouter;
+                setForm({ ...form, llm_provider: provider, llm_model: d.model, api_key_env: d.keyEnv });
+              }}
               className="w-full"
             >
               <option value="openrouter">OpenRouter</option>
@@ -207,22 +216,69 @@ export default function CreateSessionPage() {
           </div>
           <div>
             <label className="block text-xs text-text-muted mb-1.5">Model</label>
-            <input
-              value={form.llm_model}
-              onChange={(e) => setForm({ ...form, llm_model: e.target.value })}
-              placeholder="anthropic/claude-haiku-4-5"
-              className="w-full text-sm"
-            />
+            {form.llm_provider === "openrouter" ? (
+              <select
+                value={form.llm_model}
+                onChange={(e) => setForm({ ...form, llm_model: e.target.value })}
+                className="w-full text-sm"
+              >
+                <optgroup label="Anthropic (via OpenRouter)">
+                  <option value="anthropic/claude-haiku-4-5">Claude Haiku 4.5 — fast, cheap ($0.80/M)</option>
+                  <option value="anthropic/claude-sonnet-4-5-20250929">Claude Sonnet 4.5 — balanced ($3/M)</option>
+                  <option value="anthropic/claude-opus-4-0-20250514">Claude Opus 4 — smartest ($15/M)</option>
+                </optgroup>
+                <optgroup label="Google (via OpenRouter)">
+                  <option value="google/gemini-2.5-flash-preview">Gemini 2.5 Flash — fast ($0.15/M)</option>
+                  <option value="google/gemini-2.5-pro-preview">Gemini 2.5 Pro — strong ($1.25/M)</option>
+                </optgroup>
+                <optgroup label="OpenAI (via OpenRouter)">
+                  <option value="openai/gpt-4o">GPT-4o ($2.50/M)</option>
+                  <option value="openai/gpt-4o-mini">GPT-4o Mini — cheap ($0.15/M)</option>
+                </optgroup>
+                <optgroup label="Meta (via OpenRouter)">
+                  <option value="meta-llama/llama-4-maverick">Llama 4 Maverick ($0.20/M)</option>
+                  <option value="meta-llama/llama-4-scout">Llama 4 Scout ($0.10/M)</option>
+                </optgroup>
+                <optgroup label="DeepSeek (via OpenRouter)">
+                  <option value="deepseek/deepseek-chat-v3-0324">DeepSeek V3 — very cheap ($0.14/M)</option>
+                  <option value="deepseek/deepseek-r1">DeepSeek R1 — reasoning ($0.55/M)</option>
+                </optgroup>
+              </select>
+            ) : form.llm_provider === "anthropic" ? (
+              <select
+                value={form.llm_model}
+                onChange={(e) => setForm({ ...form, llm_model: e.target.value })}
+                className="w-full text-sm"
+              >
+                <option value="claude-haiku-4-5-20250929">Claude Haiku 4.5</option>
+                <option value="claude-sonnet-4-5-20250929">Claude Sonnet 4.5</option>
+                <option value="claude-opus-4-0-20250514">Claude Opus 4</option>
+              </select>
+            ) : (
+              <select
+                value={form.llm_model}
+                onChange={(e) => setForm({ ...form, llm_model: e.target.value })}
+                className="w-full text-sm"
+              >
+                <option value="gpt-4o">GPT-4o</option>
+                <option value="gpt-4o-mini">GPT-4o Mini</option>
+                <option value="o3-mini">o3-mini (reasoning)</option>
+              </select>
+            )}
           </div>
           <div className="col-span-1 sm:col-span-2">
             <label className="block text-xs text-text-muted mb-1.5">API Key (env var name)</label>
             <input
               value={form.api_key_env}
               onChange={(e) => setForm({ ...form, api_key_env: e.target.value })}
-              placeholder="OPENROUTER_API_KEY"
+              placeholder={form.llm_provider === "openrouter" ? "OPENROUTER_API_KEY" : form.llm_provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"}
               className="w-full font-mono text-sm"
             />
-            <span className="text-[10px] text-text-muted">Name of the environment variable containing your API key</span>
+            <span className="text-[10px] text-text-muted">
+              {form.api_key_env === "OPENROUTER_API_KEY" || form.api_key_env === "ANTHROPIC_API_KEY" || form.api_key_env === "OPENAI_API_KEY"
+                ? `Uses the server's ${form.api_key_env} env variable. Leave as-is to use the default key.`
+                : "Name of the environment variable containing your API key"}
+            </span>
           </div>
         </div>
       </Section>
