@@ -67,7 +67,8 @@ export default function SessionDashboard() {
             </span>
           </h1>
           <p className="text-text-muted text-xs mt-0.5">
-            {config?.market_name || ""} {config?.is_24x7 ? "\u00B7 24/7" : ""}
+            {config?.market_name || ""} {config?.is_24x7 ? " \u00B7 24/7" : ""}
+            {config?.llm_model ? ` \u00B7 ${config.llm_model.includes("/") ? config.llm_model.split("/").pop() : config.llm_model}` : ""}
           </p>
         </div>
         <div className="flex items-center gap-3">

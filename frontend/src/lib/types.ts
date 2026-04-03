@@ -6,6 +6,10 @@ export interface Session {
   starting_capital: number;
   is_running: boolean;
   pid: number | null;
+  llm_provider?: string;
+  llm_model?: string;
+  total_trades?: number;
+  win_rate?: number | null;
 }
 
 export interface MarketPreset {
@@ -116,6 +120,7 @@ export interface SessionConfig {
   max_trade_amount: number;
   watchlist_count: number;
   llm_provider: string;
+  llm_model?: string;
   intraday_interval_min: number;
   market_open: string;
   market_close: string;
