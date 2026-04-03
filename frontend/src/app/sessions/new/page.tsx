@@ -228,8 +228,8 @@ export default function CreateSessionPage() {
                   <option value="anthropic/claude-opus-4-0-20250514">Claude Opus 4 — smartest ($15/M)</option>
                 </optgroup>
                 <optgroup label="Google (via OpenRouter)">
-                  <option value="google/gemini-2.5-flash-preview">Gemini 2.5 Flash — fast ($0.15/M)</option>
-                  <option value="google/gemini-2.5-pro-preview">Gemini 2.5 Pro — strong ($1.25/M)</option>
+                  <option value="google/gemini-2.5-flash">Gemini 2.5 Flash — fast ($0.15/M)</option>
+                  <option value="google/gemini-2.5-pro">Gemini 2.5 Pro — strong ($1.25/M)</option>
                 </optgroup>
                 <optgroup label="OpenAI (via OpenRouter)">
                   <option value="openai/gpt-4o">GPT-4o ($2.50/M)</option>
