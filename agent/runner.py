@@ -452,6 +452,9 @@ class TradingAgent:
         except KeyboardInterrupt:
             logger.info("🛑 Agent stopped by user")
             self.run_daily_review()
+        except Exception as e:
+            logger.error(f"💥 Agent crashed with unhandled exception: {e}", exc_info=True)
+            raise
 
     def _close_intraday_positions(self, prices: Dict[str, float]):
         """Force-close all intraday positions (longs and shorts) near market close."""

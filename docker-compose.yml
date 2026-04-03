@@ -16,8 +16,8 @@ services:
       - ./logs:/app/logs
     env_file:
       - .env
-    mem_limit: 512m
-    memswap_limit: 768m
+    mem_limit: 1g
+    memswap_limit: 1536m
     stop_grace_period: 30s
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/sessions"]
