@@ -45,6 +45,8 @@ class Trade:
     stop_price: Optional[float] = None    # ATR-derived stop level
     target_price: Optional[float] = None  # ATR-derived target level
     direction: str = "long"               # "long" or "short"
+    conviction: Optional[int] = None      # 1-5 scale, set by LLM at entry
+    exit_type: Optional[str] = None       # stop_hit, target_hit, manual, forced_close
 
 
 class Portfolio:
@@ -99,6 +101,8 @@ class Portfolio:
                 ("stop_price", "REAL"),
                 ("target_price", "REAL"),
                 ("direction", "TEXT DEFAULT 'long'"),
+                ("conviction", "INTEGER"),
+                ("exit_type", "TEXT"),
             ]:
                 try:
                     conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {col_def}")
@@ -142,7 +146,8 @@ class Portfolio:
     def execute_buy(self, ticker: str, quantity: int, price: float,
                     trade_type: str, reason: str = "",
                     stop_price: float = None,
-                    target_price: float = None) -> Trade:
+                    target_price: float = None,
+                    conviction: int = None) -> Trade:
         """Execute a paper BUY order."""
         cost = quantity * price
         cash = self.get_cash()
@@ -154,10 +159,10 @@ class Portfolio:
             self._update_cash(conn, -cost)
             cursor = conn.execute(
                 """INSERT INTO trades (ticker, action, trade_type, quantity,
-                   entry_price, entry_time, status, reason, stop_price, target_price)
-                   VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)""",
+                   entry_price, entry_time, status, reason, stop_price, target_price, conviction)
+                   VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)""",
                 (ticker, "BUY", trade_type, quantity, price,
-                 entry_time, reason, stop_price, target_price)
+                 entry_time, reason, stop_price, target_price, conviction)
             )
             trade_id = cursor.lastrowid
 
@@ -165,9 +170,11 @@ class Portfolio:
             id=trade_id, ticker=ticker, action="BUY", trade_type=trade_type,
             quantity=quantity, entry_price=price, entry_time=entry_time,
             reason=reason, stop_price=stop_price, target_price=target_price,
+            conviction=conviction,
         )
 
-    def execute_sell(self, trade_id: int, price: float, reason: str = "") -> Trade:
+    def execute_sell(self, trade_id: int, price: float, reason: str = "",
+                     exit_type: str = None) -> Trade:
         """Close an open position by selling."""
         with sqlite3.connect(self.db_path) as conn:
             row = conn.execute(
@@ -183,8 +190,8 @@ class Portfolio:
             self._update_cash(conn, proceeds)
             conn.execute(
                 """UPDATE trades SET exit_price = ?, exit_time = ?,
-                   status = 'closed', pnl = ?, exit_reason = ? WHERE id = ?""",
-                (price, datetime.now().isoformat(), pnl, reason, trade_id)
+                   status = 'closed', pnl = ?, exit_reason = ?, exit_type = ? WHERE id = ?""",
+                (price, datetime.now().isoformat(), pnl, reason, exit_type or "manual", trade_id)
             )
 
         trade.exit_price = price
@@ -192,12 +199,14 @@ class Portfolio:
         trade.status = "closed"
         trade.pnl = pnl
         trade.exit_reason = reason
+        trade.exit_type = exit_type or "manual"
         return trade
 
     def execute_short(self, ticker: str, quantity: int, price: float,
                       reason: str = "",
                       stop_price: float = None,
-                      target_price: float = None) -> Trade:
+                      target_price: float = None,
+                      conviction: int = None) -> Trade:
         """
         Open a paper SHORT position (sell first, cover later).
         Intraday only — must be covered by EOD.
@@ -211,9 +220,9 @@ class Portfolio:
             self._update_cash(conn, proceeds)
             cursor = conn.execute(
                 """INSERT INTO trades (ticker, action, trade_type, quantity,
-                   entry_price, entry_time, status, reason, stop_price, target_price, direction)
-                   VALUES (?, 'SHORT', 'intraday', ?, ?, ?, 'open', ?, ?, ?, 'short')""",
-                (ticker, quantity, price, entry_time, reason, stop_price, target_price)
+                   entry_price, entry_time, status, reason, stop_price, target_price, direction, conviction)
+                   VALUES (?, 'SHORT', 'intraday', ?, ?, ?, 'open', ?, ?, ?, 'short', ?)""",
+                (ticker, quantity, price, entry_time, reason, stop_price, target_price, conviction)
             )
             trade_id = cursor.lastrowid
 
@@ -221,10 +230,11 @@ class Portfolio:
             id=trade_id, ticker=ticker, action="SHORT", trade_type="intraday",
             quantity=quantity, entry_price=price, entry_time=entry_time,
             reason=reason, stop_price=stop_price, target_price=target_price,
-            direction="short",
+            direction="short", conviction=conviction,
         )
 
-    def execute_cover(self, trade_id: int, price: float, reason: str = "") -> Trade:
+    def execute_cover(self, trade_id: int, price: float, reason: str = "",
+                      exit_type: str = None) -> Trade:
         """
         Close a SHORT position by buying to cover.
         P&L = (entry_price - cover_price) × quantity  (positive when price fell)
@@ -245,8 +255,8 @@ class Portfolio:
             self._update_cash(conn, -cost)
             conn.execute(
                 """UPDATE trades SET exit_price = ?, exit_time = ?,
-                   status = 'closed', pnl = ?, exit_reason = ? WHERE id = ?""",
-                (price, datetime.now().isoformat(), pnl, reason, trade_id)
+                   status = 'closed', pnl = ?, exit_reason = ?, exit_type = ? WHERE id = ?""",
+                (price, datetime.now().isoformat(), pnl, reason, exit_type or "manual", trade_id)
             )
 
         trade.exit_price = price
@@ -254,6 +264,7 @@ class Portfolio:
         trade.status = "closed"
         trade.pnl = pnl
         trade.exit_reason = reason
+        trade.exit_type = exit_type or "manual"
         return trade
 
     # ── Queries ───────────────────────────────────────────────
@@ -375,8 +386,10 @@ class Portfolio:
             quantity=row[4], entry_price=row[5], entry_time=row[6],
             exit_price=row[7], exit_time=row[8], status=row[9],
             pnl=row[10], reason=row[11], exit_reason=row[12],
-            # Columns 13/14/15 added by migration — guard for pre-migration rows
+            # Columns 13-17 added by migration — guard for pre-migration rows
             stop_price=row[13] if len(row) > 13 else None,
             target_price=row[14] if len(row) > 14 else None,
             direction=row[15] if len(row) > 15 else "long",
+            conviction=row[16] if len(row) > 16 else None,
+            exit_type=row[17] if len(row) > 17 else None,
         )
