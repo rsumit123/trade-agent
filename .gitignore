@@ -32,6 +32,9 @@ Thumbs.db
 .env
 .env.local
 
+# Local deploy script (not for git — contains host-specific paths)
+deploy-prod.sh
+
 # Don't ignore learnings journal — it's part of the agent's memory
 # !learnings/journal.md
 
