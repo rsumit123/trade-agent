@@ -547,6 +547,93 @@ def get_performance(session: str = None):
     return c["learner"].get_performance_stats()
 
 
+@app.get("/api/performance/detailed")
+def get_detailed_performance(session: str = None):
+    """Get detailed performance breakdown by category + distilled rules."""
+    c = _get_components(session)
+    learner = c["learner"]
+    stats = learner.get_performance_stats()
+
+    # Category breakdowns
+    closed = c["portfolio"].get_closed_trades(limit=200)
+    categories = {}
+    for label, filter_fn in [
+        ("long", lambda t: getattr(t, 'direction', 'long') == 'long'),
+        ("short", lambda t: getattr(t, 'direction', 'long') == 'short'),
+        ("intraday", lambda t: t.trade_type == 'intraday'),
+        ("swing", lambda t: t.trade_type == 'swing'),
+    ]:
+        subset = [t for t in closed if filter_fn(t)]
+        if not subset:
+            continue
+        wins = sum(1 for t in subset if (t.pnl or 0) > 0)
+        categories[label] = {
+            "total": len(subset),
+            "wins": wins,
+            "losses": len(subset) - wins,
+            "win_rate": round(wins / len(subset) * 100, 1),
+            "avg_pnl": round(sum(t.pnl or 0 for t in subset) / len(subset), 2),
+            "total_pnl": round(sum(t.pnl or 0 for t in subset), 2),
+        }
+
+    # Exit type breakdown
+    exit_types = {}
+    for label, keyword in [
+        ("stop_hit", "stop"),
+        ("target_hit", "target"),
+        ("forced_close", "forced"),
+        ("manual", "manual"),
+    ]:
+        # Check both exit_type field and exit_reason text for backward compat
+        subset = [t for t in closed if (
+            getattr(t, 'exit_type', None) == label or
+            keyword.lower() in (t.exit_reason or '').lower()
+        )]
+        if subset:
+            exit_types[label] = {
+                "total": len(subset),
+                "avg_pnl": round(sum(t.pnl or 0 for t in subset) / len(subset), 2),
+            }
+
+    # Conviction breakdown (only for trades with conviction set)
+    conviction_stats = {}
+    for t in closed:
+        conv = getattr(t, 'conviction', None)
+        if conv is not None:
+            if conv not in conviction_stats:
+                conviction_stats[conv] = {"total": 0, "wins": 0, "total_pnl": 0}
+            conviction_stats[conv]["total"] += 1
+            if (t.pnl or 0) > 0:
+                conviction_stats[conv]["wins"] += 1
+            conviction_stats[conv]["total_pnl"] += (t.pnl or 0)
+    for k, v in conviction_stats.items():
+        v["win_rate"] = round(v["wins"] / v["total"] * 100, 1) if v["total"] > 0 else 0
+        v["total_pnl"] = round(v["total_pnl"], 2)
+
+    # Extract distilled rules from journal
+    rules = ""
+    try:
+        content = learner.journal_path.read_text()
+        rules_marker = "\n## 📌 Distilled Rules"
+        rules_end_marker = "\n---"
+        rules_start = content.find(rules_marker)
+        if rules_start >= 0:
+            rules_end = content.find(rules_end_marker, rules_start + len(rules_marker))
+            if rules_end >= 0:
+                rules = content[rules_start:rules_end].strip()
+    except Exception:
+        pass
+
+    return {
+        "overall": stats,
+        "by_direction": {k: v for k, v in categories.items() if k in ("long", "short")},
+        "by_type": {k: v for k, v in categories.items() if k in ("intraday", "swing")},
+        "by_exit": exit_types,
+        "by_conviction": {str(k): v for k, v in sorted(conviction_stats.items())},
+        "distilled_rules": rules,
+    }
+
+
 @app.get("/api/learnings")
 def get_learnings(session: str = None):
     """Get the learning journal contents."""

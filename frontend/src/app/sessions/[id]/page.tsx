@@ -12,6 +12,7 @@ import { PerformancePanel } from "@/components/PerformancePanel";
 import { LogViewer } from "@/components/LogViewer";
 import { JournalPanel } from "@/components/JournalPanel";
 import { AgentControl } from "@/components/AgentControl";
+import { LearningInsights } from "@/components/LearningInsights";
 import type {
   PortfolioSummary, ClosedTrade, RiskStatus, Performance,
   WatchlistItem, SessionConfig, AgentStatus,
@@ -115,6 +116,11 @@ export default function SessionDashboard() {
         <div className="animate-fade-in delay-5">
           <JournalPanel content={journal} />
         </div>
+      </div>
+
+      {/* Agent Learning Insights */}
+      <div className="mb-4 md:mb-5 animate-fade-in delay-5">
+        <LearningInsights sessionId={sessionId} currencySymbol={config?.currency_symbol || "$"} />
       </div>
 
       {/* Logs */}
