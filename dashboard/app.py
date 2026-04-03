@@ -171,6 +171,65 @@ def _is_agent_running(session_id: str) -> dict:
         return {"running": False, "pid": None}
 
 
+def _auto_restart_agents():
+    """On server startup, restart agents that had stale lock files.
+
+    If a lock file exists but the PID is dead, it means the agent was running
+    when the container restarted. Re-launch it automatically.
+    """
+    import logging
+    logger = logging.getLogger("dashboard")
+    try:
+        from agent.session import SESSIONS_DIR
+        if not SESSIONS_DIR.exists():
+            return
+        for session_dir in SESSIONS_DIR.iterdir():
+            if not session_dir.is_dir():
+                continue
+            lock_path = session_dir / "agent.lock"
+            config_path = session_dir / "config.yaml"
+            if not lock_path.exists() or not config_path.exists():
+                continue
+            session_id = session_dir.name
+            status = _is_agent_running(session_id)
+            if status["running"]:
+                continue  # Already alive, skip
+
+            # Stale lock file — agent was running but died (container restart)
+            logger.info(f"🔄 Auto-restarting agent for session '{session_id}' (stale lock detected)")
+            lock_path.unlink(missing_ok=True)
+
+            # Re-launch the agent
+            python_exe = str(PROJECT_ROOT / ".venv" / "bin" / "python3")
+            if not Path(python_exe).exists():
+                python_exe = sys.executable
+
+            env = os.environ.copy()
+            env_file = PROJECT_ROOT / ".env"
+            if env_file.exists():
+                for line in env_file.read_text().splitlines():
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        key, _, val = line.partition("=")
+                        env[key.strip()] = val.strip().strip("'\"")
+
+            proc = subprocess.Popen(
+                [python_exe, str(PROJECT_ROOT / "run.py"), "--session", session_id, "--loop"],
+                cwd=str(PROJECT_ROOT),
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            logger.info(f"✅ Restarted agent '{session_id}' with PID {proc.pid}")
+    except Exception as e:
+        logger.error(f"Auto-restart failed: {e}")
+
+
+# Run auto-restart on module load (when uvicorn starts)
+_auto_restart_agents()
+
+
 @app.get("/api/sessions")
 def get_sessions():
     """List all available sessions with running status."""
@@ -341,12 +400,17 @@ def start_agent(session_id: str):
                 env[key.strip()] = val.strip().strip("'\"")
 
     # Spawn the agent as a background process
+    # stderr goes to session log so crashes are visible
+    from agent.session import SESSIONS_DIR
+    stderr_log = SESSIONS_DIR / session_id / "agent_stderr.log"
+    stderr_file = open(stderr_log, "a")
+
     proc = subprocess.Popen(
         [python_exe, run_script, "--session", session_id, "--loop"],
         cwd=str(PROJECT_ROOT),
         env=env,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=stderr_file,
         start_new_session=True,  # Detach from parent
     )
 
