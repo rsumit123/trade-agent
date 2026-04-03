@@ -224,8 +224,8 @@ export default function CreateSessionPage() {
               >
                 <optgroup label="Anthropic (via OpenRouter)">
                   <option value="anthropic/claude-haiku-4-5">Claude Haiku 4.5 — fast, cheap ($0.80/M)</option>
-                  <option value="anthropic/claude-sonnet-4-5-20250929">Claude Sonnet 4.5 — balanced ($3/M)</option>
-                  <option value="anthropic/claude-opus-4-0-20250514">Claude Opus 4 — smartest ($15/M)</option>
+                  <option value="anthropic/claude-sonnet-4-5">Claude Sonnet 4.5 — balanced ($3/M)</option>
+                  <option value="anthropic/claude-opus-4">Claude Opus 4 — smartest ($15/M)</option>
                 </optgroup>
                 <optgroup label="Google (via OpenRouter)">
                   <option value="google/gemini-2.5-flash">Gemini 2.5 Flash — fast ($0.15/M)</option>
