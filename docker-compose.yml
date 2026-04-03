@@ -16,8 +16,8 @@ services:
       - ./logs:/app/logs
     env_file:
       - .env
-    mem_limit: 1g
-    memswap_limit: 1536m
+    # No mem_limit — let it use the full VM memory (1.9 GB)
+    # The Linux OOM killer handles the edge case if it ever overflows
     stop_grace_period: 30s
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/sessions"]
