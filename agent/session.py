@@ -169,6 +169,8 @@ def list_sessions() -> List[Dict]:
                 "market": data.get("market", "unknown"),
                 "currency_symbol": preset.currency_symbol,
                 "starting_capital": data.get("starting_capital", preset.default_starting_capital),
+                "llm_provider": data.get("llm_provider", "openrouter"),
+                "llm_model": data.get("llm_model", ""),
             })
         except Exception:
             # Skip broken sessions

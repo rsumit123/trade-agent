@@ -232,14 +232,34 @@ _auto_restart_agents()
 
 @app.get("/api/sessions")
 def get_sessions():
-    """List all available sessions with running status."""
+    """List all available sessions with running status and performance stats."""
     try:
-        from agent.session import list_sessions
+        from agent.session import list_sessions, SESSIONS_DIR
+        import sqlite3
         sessions = list_sessions()
         for s in sessions:
             status = _is_agent_running(s["session_id"])
             s["is_running"] = status["running"]
             s["pid"] = status["pid"]
+            # Quick win rate from trades DB
+            try:
+                db_path = SESSIONS_DIR / s["session_id"] / "trades.db"
+                if db_path.exists():
+                    conn = sqlite3.connect(str(db_path))
+                    row = conn.execute(
+                        "SELECT COUNT(*) as total, SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins "
+                        "FROM trades WHERE status = 'closed'"
+                    ).fetchone()
+                    conn.close()
+                    total, wins = row[0] or 0, row[1] or 0
+                    s["total_trades"] = total
+                    s["win_rate"] = round((wins / total) * 100, 1) if total > 0 else None
+                else:
+                    s["total_trades"] = 0
+                    s["win_rate"] = None
+            except Exception:
+                s["total_trades"] = 0
+                s["win_rate"] = None
         return sessions
     except Exception:
         return []
@@ -614,6 +634,8 @@ def get_config(session: str = None):
         "max_trade_amount": config.max_trade_amount,
         "watchlist_count": len(config.watchlist),
         "llm_provider": config.llm_provider,
+        "llm_model": getattr(config, f"{config.llm_provider}_model",
+                             config.openrouter_model),
         "intraday_interval_min": config.intraday_interval_min,
         "market_open": config.market_open,
         "market_close": config.market_close,
