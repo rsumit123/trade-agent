@@ -430,6 +430,7 @@ class TradingAgent:
         mode: 'intraday' (every N minutes) or 'swing' (at scheduled times)
         """
         logger.info(f"🚀 Starting agent loop in {mode} mode")
+        self._last_review_date: str | None = None
 
         try:
             while True:
@@ -437,6 +438,9 @@ class TradingAgent:
                     logger.info("💤 Market closed, waiting...")
                     time.sleep(60)  # Check every minute
                     continue
+
+                # Run periodic daily review (every 24h for 24/7 markets, at market close for others)
+                self._maybe_run_daily_review()
 
                 result = self.run_once()
                 logger.info(f"Cycle result: {result['status']}")
@@ -455,6 +459,34 @@ class TradingAgent:
         except Exception as e:
             logger.error(f"💥 Agent crashed with unhandled exception: {e}", exc_info=True)
             raise
+
+    def _maybe_run_daily_review(self):
+        """
+        Run daily review once per calendar day (UTC).
+        For 24/7 markets (crypto), triggers at midnight UTC.
+        For regular markets, triggers near market close.
+        """
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if self._last_review_date == today:
+            return  # Already reviewed today
+
+        is_24x7 = (
+            self.market_data.market_preset
+            and self.market_data.market_preset.is_24x7
+        )
+
+        if is_24x7:
+            # For 24/7 markets: run review once per UTC day
+            # Skip if it's the first cycle ever (let some trades happen first)
+            if self._last_review_date is not None:
+                logger.info("🔄 Running scheduled daily review (24/7 market)")
+                self.run_daily_review()
+            self._last_review_date = today
+        else:
+            # For regular markets: review is handled by _close_intraday_positions
+            # and the KeyboardInterrupt handler. Just track the date.
+            self._last_review_date = today
 
     def _close_intraday_positions(self, prices: Dict[str, float]):
         """Force-close all intraday positions (longs and shorts) near market close."""
