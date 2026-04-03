@@ -193,9 +193,11 @@ class TradingAgent:
                 logger.warning(f"Stop/target calc failed for {ticker}: {e}")
 
             # Execute
+            conviction = trade_input.get("conviction")
             trade = self.portfolio.execute_buy(
                 ticker, quantity, price, trade_type, reason,
                 stop_price=stop_price, target_price=target_price,
+                conviction=conviction,
             )
             self.learner.write_trade_log(trade)
             return {
@@ -283,9 +285,11 @@ class TradingAgent:
             except Exception as e:
                 logger.warning(f"Stop/target calc failed for SHORT {ticker}: {e}")
 
+            conviction = trade_input.get("conviction")
             trade = self.portfolio.execute_short(
                 ticker, quantity, price, reason,
                 stop_price=stop_price, target_price=target_price,
+                conviction=conviction,
             )
             self.learner.write_trade_log(trade)
             return {
@@ -497,8 +501,8 @@ class TradingAgent:
             price = prices.get(pos.ticker, pos.entry_price)
             if pos.direction == "short":
                 logger.info(f"⏰ Force-covering intraday SHORT: {pos.ticker}")
-                trade = self.portfolio.execute_cover(pos.id, price, reason="End-of-day forced cover")
+                trade = self.portfolio.execute_cover(pos.id, price, reason="End-of-day forced cover", exit_type="forced_close")
             else:
                 logger.info(f"⏰ Force-closing intraday LONG: {pos.ticker}")
-                trade = self.portfolio.execute_sell(pos.id, price, reason="End-of-day forced close")
+                trade = self.portfolio.execute_sell(pos.id, price, reason="End-of-day forced close", exit_type="forced_close")
             self.learner.write_trade_log(trade, llm_client=self.engine.client)

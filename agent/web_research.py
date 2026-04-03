@@ -333,9 +333,13 @@ class LLMWebSearchTool:
                     },
                     "reason": {
                         "type": "string",
-                        "description": "Brief reasoning for this trade"
+                        "description": "Detailed reasoning: include ticker, RSI, volume ratio, support/resistance levels, news catalyst if any, and which Distilled Rule supports this trade"
+                    },
+                    "conviction": {
+                        "type": "integer",
+                        "description": "Your conviction level 1-5. 1=speculative guess, 2=weak signal, 3=moderate, 4=strong setup, 5=textbook setup with multiple confirmations. Only trade at 4-5 conviction."
                     }
                 },
-                "required": ["action", "reason"]
+                "required": ["action", "reason", "conviction"]
             }
         }

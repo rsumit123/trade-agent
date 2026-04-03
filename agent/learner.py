@@ -123,6 +123,10 @@ class Learner:
                 "exit_reason": t.exit_reason,
             })
 
+        # Compute stats to ground the review in numbers, not just narrative
+        stats = self.get_performance_stats()
+        stats_by_type = self._get_stats_by_category()
+
         review_prompt = f"""Review today's trading activity and write a brief learning reflection.
 
 ## Today's Trades
@@ -135,15 +139,21 @@ class Learner:
 {json.dumps(summary, indent=2)}
 ```
 
+## Quantitative Performance (all-time)
+```
+Overall:  {stats.get('total_trades', 0)} trades | Win rate: {stats.get('win_rate', 0)}% | Avg win: {self._sym}{stats.get('avg_win', 0)} | Avg loss: {self._sym}{stats.get('avg_loss', 0)}
+{stats_by_type}
+```
+
 ## Previous Learnings
 {self.get_learnings(max_chars=1500)}
 
 ---
 
 Write a concise reflection (3-5 bullet points) covering:
-1. What worked well today and why
+1. What worked well today and why — reference the quantitative stats above
 2. What didn't work and what you'd do differently
-3. Any patterns you notice across recent trades
+3. Patterns you notice — cite specific win rates by category (long vs short, intraday vs swing)
 4. One specific rule or insight to apply going forward
 
 Format as markdown. Be honest and specific — vague platitudes are useless.
@@ -220,20 +230,32 @@ Start with `## {date.today().strftime("%Y-%m-%d")} — Daily Review`
         if len(content_without_rules.strip()) < 500:
             return
 
-        prompt = f"""You are a trading journal assistant. Read ALL the trade entries and reflections below and extract the most important, actionable trading rules this agent has learned so far.
+        # Inject quantitative stats so rules are grounded in data
+        stats = self.get_performance_stats()
+        stats_by_type = self._get_stats_by_category()
 
+        prompt = f"""You are a trading journal assistant. Read ALL the trade entries, reflections, AND quantitative stats below. Extract the most important, actionable trading rules.
+
+## Quantitative Performance
+```
+Overall:  {stats.get('total_trades', 0)} trades | Win rate: {stats.get('win_rate', 0)}% | Avg win: {self._sym}{stats.get('avg_win', 0)} | Avg loss: {self._sym}{stats.get('avg_loss', 0)}
+{stats_by_type}
+```
+
+## Journal Entries
 {content_without_rules[-8000:]}
 
 ---
 
 Write a "## 📌 Distilled Rules" section (max 20 bullet points) that captures:
-- Setups that WORK (with conditions: which stocks, RSI levels, volume, time of day)
-- Setups that FAIL (with conditions to avoid)
-- Position sizing / stop-loss lessons
-- Intraday vs swing timing rules
-- Sector-specific patterns observed
+- Setups that WORK — cite the win rate or avg P&L that proves it
+- Setups that FAIL — cite the loss rate or avg loss
+- Position sizing / stop-loss lessons — are stops too tight? targets too ambitious?
+- Long vs Short performance — which direction is more profitable?
+- Intraday vs Swing — which holding period works better?
+- Ticker/sector-specific patterns observed
 
-Rules must be SPECIFIC (e.g. "HAVELLS RSI <30 + VWAP support = reliable intraday bounce") not generic.
+Rules must be SPECIFIC and DATA-BACKED (e.g. "Long RSI<30 bounces: 8/11 wins (73% WR), avg +1.2%. Reliable setup.") not generic platitudes.
 Format as a bullet list under `## 📌 Distilled Rules`. No preamble, just the section."""
 
         try:
@@ -410,6 +432,39 @@ Keep it under 120 words. Be honest and specific. No fluff."""
             f"- **Exit reason**: {trade.exit_reason or 'not recorded'}\n"
             f"- *LLM reflection unavailable — review manually*"
         )
+
+    def _get_stats_by_category(self) -> str:
+        """Compute win rate breakdowns by direction and trade type for prompt injection."""
+        closed = self.portfolio.get_closed_trades(limit=200)
+        if not closed:
+            return "No closed trades yet."
+
+        lines = []
+        for label, filter_fn in [
+            ("Long", lambda t: getattr(t, 'direction', 'long') == 'long'),
+            ("Short", lambda t: getattr(t, 'direction', 'long') == 'short'),
+            ("Intraday", lambda t: t.trade_type == 'intraday'),
+            ("Swing", lambda t: t.trade_type == 'swing'),
+        ]:
+            subset = [t for t in closed if filter_fn(t)]
+            if not subset:
+                continue
+            wins = sum(1 for t in subset if (t.pnl or 0) > 0)
+            wr = round(wins / len(subset) * 100, 1) if subset else 0
+            avg_pnl = round(sum(t.pnl or 0 for t in subset) / len(subset), 2)
+            lines.append(f"{label:10s}: {len(subset):3d} trades | WR: {wr}% | Avg P&L: {self._sym}{avg_pnl}")
+
+        # Per-exit-type breakdown if exit_type is tracked
+        for label, keyword in [
+            ("Stop hits", "stop"),
+            ("Target hits", "target"),
+        ]:
+            subset = [t for t in closed if keyword.lower() in (t.exit_reason or '').lower()]
+            if subset:
+                avg_pnl = round(sum(t.pnl or 0 for t in subset) / len(subset), 2)
+                lines.append(f"{label:10s}: {len(subset):3d} trades | Avg P&L: {self._sym}{avg_pnl}")
+
+        return "\n".join(lines) if lines else "No closed trades yet."
 
     def get_performance_stats(self, days: int = 30) -> Dict[str, Any]:
         """Calculate aggregate performance stats for the review."""

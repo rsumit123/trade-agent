@@ -167,7 +167,7 @@ class RiskManager:
                             f"≥ stop {self._sym}{pos.stop_price:.2f}"
                         )
                         logger.warning(f"🛑 SHORT STOP: {reason}")
-                        trade = self.portfolio.execute_cover(pos.id, price, reason=reason)
+                        trade = self.portfolio.execute_cover(pos.id, price, reason=reason, exit_type="stop_hit")
                         closed.append(trade)
                     elif price <= pos.target_price:
                         reason = (
@@ -175,7 +175,7 @@ class RiskManager:
                             f"≤ target {self._sym}{pos.target_price:.2f}"
                         )
                         logger.info(f"🎯 SHORT TARGET: {reason}")
-                        trade = self.portfolio.execute_cover(pos.id, price, reason=reason)
+                        trade = self.portfolio.execute_cover(pos.id, price, reason=reason, exit_type="target_hit")
                         closed.append(trade)
                 else:
                     # ── Long: stop = price falls below stop_price ────────
@@ -185,7 +185,7 @@ class RiskManager:
                             f"≤ stop {self._sym}{pos.stop_price:.2f}"
                         )
                         logger.warning(f"🛑 STOP: {reason}")
-                        trade = self.portfolio.execute_sell(pos.id, price, reason=reason)
+                        trade = self.portfolio.execute_sell(pos.id, price, reason=reason, exit_type="stop_hit")
                         closed.append(trade)
                     elif price >= pos.target_price:
                         reason = (
@@ -193,7 +193,7 @@ class RiskManager:
                             f"≥ target {self._sym}{pos.target_price:.2f}"
                         )
                         logger.info(f"🎯 TARGET: {reason}")
-                        trade = self.portfolio.execute_sell(pos.id, price, reason=reason)
+                        trade = self.portfolio.execute_sell(pos.id, price, reason=reason, exit_type="target_hit")
                         closed.append(trade)
             else:
                 # ── Branch 3: legacy % stop (longs only) ───────────────
