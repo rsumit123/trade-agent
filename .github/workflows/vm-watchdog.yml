@@ -1,0 +1,45 @@
+name: VM Watchdog — Auto-restart Spot VM
+
+on:
+  schedule:
+    # Check every 5 minutes
+    - cron: '*/5 * * * *'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  check-and-restart:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Check VM status and restart if needed
+        run: |
+          STATUS=$(gcloud compute instances describe socialflow \
+            --zone us-east1-d \
+            --format="value(status)" 2>/dev/null || echo "UNKNOWN")
+
+          echo "VM status: $STATUS"
+
+          if [ "$STATUS" = "TERMINATED" ] || [ "$STATUS" = "STOPPED" ]; then
+            echo "⚠️ VM is $STATUS — restarting..."
+            gcloud compute instances start socialflow --zone us-east1-d
+            echo "✅ VM restart triggered"
+
+            # Send Telegram alert about auto-restart
+            curl -s -X POST \
+              "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+              --data-urlencode "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+              --data-urlencode "text=🔄 VM Auto-Restart Triggered
+
+The Spot VM was found in $STATUS state.
+GitHub Actions watchdog triggered a restart.
+Boot alert will follow once containers are up."
+          else
+            echo "✅ VM is $STATUS — no action needed"
+          fi
