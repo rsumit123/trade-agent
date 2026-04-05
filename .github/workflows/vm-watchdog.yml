@@ -1,10 +1,9 @@
-name: VM Watchdog — Auto-restart Spot VM
+name: VM Watchdog
 
 on:
   schedule:
-    # Check every 5 minutes
     - cron: '*/5 * * * *'
-  workflow_dispatch: # Allow manual trigger
+  workflow_dispatch:
 
 jobs:
   check-and-restart:
@@ -19,6 +18,9 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Check VM status and restart if needed
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           STATUS=$(gcloud compute instances describe socialflow \
             --zone us-east1-d \
@@ -27,19 +29,14 @@ jobs:
           echo "VM status: $STATUS"
 
           if [ "$STATUS" = "TERMINATED" ] || [ "$STATUS" = "STOPPED" ]; then
-            echo "⚠️ VM is $STATUS — restarting..."
+            echo "VM is $STATUS - restarting..."
             gcloud compute instances start socialflow --zone us-east1-d
-            echo "✅ VM restart triggered"
+            echo "VM restart triggered"
 
-            # Send Telegram alert about auto-restart
             curl -s -X POST \
-              "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
-              --data-urlencode "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
-              --data-urlencode "text=🔄 VM Auto-Restart Triggered
-
-The Spot VM was found in $STATUS state.
-GitHub Actions watchdog triggered a restart.
-Boot alert will follow once containers are up."
+              "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+              --data-urlencode "text=VM Auto-Restart: Spot VM was ${STATUS}. GitHub Actions watchdog triggered restart. Boot alert will follow."
           else
-            echo "✅ VM is $STATUS — no action needed"
+            echo "VM is $STATUS - no action needed"
           fi
