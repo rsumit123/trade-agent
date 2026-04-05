@@ -2,11 +2,12 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, cn } from "@/lib/api";
-import type { MarketPreset } from "@/lib/types";
+import type { MarketPreset, Session } from "@/lib/types";
 
 export default function CreateSessionPage() {
   const router = useRouter();
   const [presets, setPresets] = useState<Record<string, MarketPreset>>({});
+  const [sessions, setSessions] = useState<Session[]>([]);
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
 
@@ -25,6 +26,7 @@ export default function CreateSessionPage() {
     llm_model: "anthropic/claude-haiku-4-5",
     api_key_env: "OPENROUTER_API_KEY",
     personality: "",
+    import_learnings_from: "",
   });
 
   useEffect(() => {
@@ -36,6 +38,7 @@ export default function CreateSessionPage() {
         setCapitalDisplay(cap.toLocaleString("en-IN"));
       }
     });
+    api<Session[]>("/api/sessions").then(setSessions).catch(() => {});
   }, []);
 
   const selectMarket = (m: string) => {
@@ -222,25 +225,21 @@ export default function CreateSessionPage() {
                 onChange={(e) => setForm({ ...form, llm_model: e.target.value })}
                 className="w-full text-sm"
               >
-                <optgroup label="Anthropic (via OpenRouter)">
-                  <option value="anthropic/claude-haiku-4-5">Claude Haiku 4.5 — fast, cheap ($0.80/M)</option>
-                  <option value="anthropic/claude-sonnet-4-5">Claude Sonnet 4.5 — balanced ($3/M)</option>
-                  <option value="anthropic/claude-opus-4">Claude Opus 4 — smartest ($15/M)</option>
+                <optgroup label="Anthropic">
+                  <option value="anthropic/claude-haiku-4-5">Claude Haiku 4.5 — fast ($0.80/M)</option>
                 </optgroup>
-                <optgroup label="Google (via OpenRouter)">
+                <optgroup label="Google">
                   <option value="google/gemini-2.5-flash">Gemini 2.5 Flash — fast ($0.15/M)</option>
-                  <option value="google/gemini-2.5-pro">Gemini 2.5 Pro — strong ($1.25/M)</option>
                 </optgroup>
-                <optgroup label="OpenAI (via OpenRouter)">
-                  <option value="openai/gpt-4o">GPT-4o ($2.50/M)</option>
-                  <option value="openai/gpt-4o-mini">GPT-4o Mini — cheap ($0.15/M)</option>
+                <optgroup label="OpenAI">
+                  <option value="openai/gpt-4o-mini">GPT-4o Mini ($0.15/M)</option>
                 </optgroup>
-                <optgroup label="Meta (via OpenRouter)">
+                <optgroup label="Meta">
                   <option value="meta-llama/llama-4-maverick">Llama 4 Maverick ($0.20/M)</option>
                   <option value="meta-llama/llama-4-scout">Llama 4 Scout ($0.10/M)</option>
                 </optgroup>
-                <optgroup label="DeepSeek (via OpenRouter)">
-                  <option value="deepseek/deepseek-chat-v3-0324">DeepSeek V3 — very cheap ($0.14/M)</option>
+                <optgroup label="DeepSeek">
+                  <option value="deepseek/deepseek-chat-v3-0324">DeepSeek V3 ($0.14/M)</option>
                   <option value="deepseek/deepseek-r1">DeepSeek R1 — reasoning ($0.55/M)</option>
                 </optgroup>
               </select>
@@ -283,8 +282,38 @@ export default function CreateSessionPage() {
         </div>
       </Section>
 
+      {/* Import Learnings */}
+      {sessions.length > 0 && (
+        <Section title="Import Learnings" number={5}>
+          <div>
+            <label className="block text-xs text-text-muted mb-1.5">Copy learnings from an existing session</label>
+            <select
+              value={form.import_learnings_from}
+              onChange={(e) => setForm({ ...form, import_learnings_from: e.target.value })}
+              className="w-full"
+            >
+              <option value="">Start fresh (no import)</option>
+              {sessions.map((s) => (
+                <option key={s.session_id} value={s.session_id}>
+                  {s.display_name} ({s.market}) — {s.total_trades ?? 0} trades, {s.win_rate != null ? `${s.win_rate}% WR` : "no data"}
+                </option>
+              ))}
+            </select>
+            <span className="text-[10px] text-text-muted block mt-1.5">
+              {form.import_learnings_from ? (
+                sessions.find((s) => s.session_id === form.import_learnings_from)?.market === form.market
+                  ? "Same market — full journal will be copied (all trade entries + distilled rules)"
+                  : "Different market — only distilled rules will be imported (market-specific entries skipped)"
+              ) : (
+                "New agents start with no learnings. Import from a session with good trade history to skip the learning curve."
+              )}
+            </span>
+          </div>
+        </Section>
+      )}
+
       {/* Personality */}
-      <Section title="Trading Personality" number={5}>
+      <Section title="Trading Personality" number={sessions.length > 0 ? 6 : 5}>
         <textarea
           value={form.personality}
           onChange={(e) => setForm({ ...form, personality: e.target.value })}

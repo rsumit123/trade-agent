@@ -120,6 +120,9 @@ app.add_middleware(
 
 # ── Pydantic models for request bodies ───────────────────────
 
+MAX_RUNNING_AGENTS = 4  # Safety limit for VM memory
+
+
 class CreateSessionRequest(BaseModel):
     session_id: str
     display_name: str = ""
@@ -136,6 +139,7 @@ class CreateSessionRequest(BaseModel):
     api_key_env: str = "OPENROUTER_API_KEY"
     intraday_interval_min: int = 15
     personality: str = ""
+    import_learnings_from: Optional[str] = None  # session_id to copy learnings from
 
 
 class UpdateSessionRequest(BaseModel):
@@ -317,6 +321,51 @@ def create_session(req: CreateSessionRequest):
     )
     sc.resolve_defaults()
     save_session(sc)
+
+    # Import learnings from another session if requested
+    if req.import_learnings_from:
+        try:
+            source_dir = SESSIONS_DIR / req.import_learnings_from
+            source_journal = source_dir / "journal.md"
+            if source_journal.exists():
+                source_content = source_journal.read_text()
+                # Check if same market
+                source_config = source_dir / "config.yaml"
+                same_market = False
+                if source_config.exists():
+                    import yaml
+                    with open(source_config) as f:
+                        src_data = yaml.safe_load(f) or {}
+                    same_market = src_data.get("market") == req.market
+
+                target_journal = SESSIONS_DIR / req.session_id / "journal.md"
+                if same_market:
+                    # Same market: copy full journal (tickers are relevant)
+                    target_journal.write_text(source_content)
+                else:
+                    # Cross-market: extract only the distilled rules block
+                    rules_marker = "\n## 📌 Distilled Rules"
+                    rules_end = "\n---"
+                    rules_start = source_content.find(rules_marker)
+                    if rules_start >= 0:
+                        rules_end_pos = source_content.find(rules_end, rules_start + len(rules_marker))
+                        if rules_end_pos >= 0:
+                            rules_block = source_content[rules_start:rules_end_pos + len(rules_end)].strip()
+                        else:
+                            rules_block = source_content[rules_start:].strip()
+                        # Write new journal with imported rules
+                        target_journal.write_text(
+                            "# 🧠 Trading Agent — Learning Journal\n\n"
+                            "This file is automatically updated by the AI trading agent.\n\n"
+                            "---\n\n"
+                            f"{rules_block}\n\n---\n\n"
+                            f"*Distilled rules imported from session '{req.import_learnings_from}' (cross-market transfer)*\n\n"
+                        )
+        except Exception as e:
+            # Non-fatal — session still created, just without learnings
+            import logging
+            logging.getLogger("dashboard").warning(f"Failed to import learnings: {e}")
+
     return {"session_id": sc.session_id, "status": "created", "session_dir": str(sc.session_dir)}
 
 
@@ -388,6 +437,15 @@ def get_agent_status(session_id: str):
     return _is_agent_running(session_id)
 
 
+@app.get("/api/agent/limits")
+def get_agent_limits():
+    """Get agent concurrency limits."""
+    from agent.session import list_sessions
+    all_sessions = list_sessions()
+    running = sum(1 for s in all_sessions if _is_agent_running(s["session_id"])["running"])
+    return {"max_agents": MAX_RUNNING_AGENTS, "running": running, "available": MAX_RUNNING_AGENTS - running}
+
+
 @app.post("/api/agent/start/{session_id}")
 def start_agent(session_id: str):
     """Start the agent loop for a session."""
@@ -401,6 +459,17 @@ def start_agent(session_id: str):
     status = _is_agent_running(session_id)
     if status["running"]:
         return {"status": "already_running", "pid": status["pid"]}
+
+    # Check session limit
+    from agent.session import list_sessions
+    all_sessions = list_sessions()
+    running_count = sum(1 for s in all_sessions if _is_agent_running(s["session_id"])["running"])
+    if running_count >= MAX_RUNNING_AGENTS:
+        raise HTTPException(
+            429,
+            f"Maximum {MAX_RUNNING_AGENTS} concurrent agents allowed. "
+            f"Stop another agent before starting a new one."
+        )
 
     # Find the right Python executable (prefer venv)
     python_exe = str(PROJECT_ROOT / ".venv" / "bin" / "python3")

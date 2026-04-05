@@ -93,12 +93,9 @@ export default function SessionSettingsPage() {
           <Field label="Display Name">
             <input value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} className="w-full" />
           </Field>
-          <Field label="Starting Capital">
-            <input type="number" value={form.starting_capital} onChange={(e) => setForm({ ...form, starting_capital: parseFloat(e.target.value) || 0 })} className="w-full font-mono" />
-          </Field>
         </SettingsSection>
 
-        {/* Risk */}
+        {/* Risk — these can be tuned while running */}
         <SettingsSection title="Risk Limits">
           <div className="grid grid-cols-2 gap-4">
             <Field label="Max Position %">
@@ -116,31 +113,24 @@ export default function SessionSettingsPage() {
           </div>
         </SettingsSection>
 
-        {/* LLM */}
-        <SettingsSection title="LLM Configuration">
-          <div className="grid grid-cols-2 gap-4">
-            <Field label="Provider">
-              <select value={form.llm_provider} onChange={(e) => setForm({ ...form, llm_provider: e.target.value })} className="w-full">
-                <option value="openrouter">OpenRouter</option>
-                <option value="anthropic">Anthropic</option>
-                <option value="openai">OpenAI</option>
-              </select>
-            </Field>
-            <Field label="Cycle Interval (min)">
-              <input type="number" value={form.intraday_interval_min} onChange={(e) => setForm({ ...form, intraday_interval_min: parseInt(e.target.value) || 15 })} className="w-full font-mono" />
-            </Field>
-          </div>
+        {/* Cycle Interval */}
+        <SettingsSection title="Agent Settings">
+          <Field label="Cycle Interval (minutes)">
+            <input type="number" value={form.intraday_interval_min} onChange={(e) => setForm({ ...form, intraday_interval_min: parseInt(e.target.value) || 15 })} className="w-full font-mono" min={5} max={120} />
+          </Field>
+          <span className="text-[10px] text-text-muted">How often the agent analyzes the market and makes decisions. Changes take effect next cycle.</span>
         </SettingsSection>
 
-        {/* Personality */}
+        {/* Personality — can be updated anytime */}
         <SettingsSection title="Trading Personality">
           <textarea
             value={form.personality}
             onChange={(e) => setForm({ ...form, personality: e.target.value })}
-            placeholder="Custom instructions for the LLM..."
+            placeholder="Custom instructions for the LLM. e.g. Be aggressive. Target 2% daily returns. Focus on momentum plays."
             rows={4}
             className="w-full resize-none"
           />
+          <span className="text-[10px] text-text-muted">These instructions are injected into the LLM system prompt every cycle. Changes take effect on the next restart.</span>
         </SettingsSection>
       </div>
 
