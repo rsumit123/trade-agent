@@ -389,6 +389,12 @@ class TradingAgent:
         portfolio_summary = self.portfolio.get_portfolio_summary(prices)
         learnings = self.learner.get_learnings(max_chars=6000)
 
+        # Load live directives from operator and prepend to learnings
+        directives_text = self._load_directives()
+        if directives_text:
+            logger.info(f"📋 Live directives active ({directives_text.count(chr(10))} items)")
+            learnings = directives_text + "\n\n" + learnings
+
         actions = self.engine.run_decision_loop(
             portfolio_summary=portfolio_summary,
             watchlist_data=watchlist_data,
@@ -402,6 +408,7 @@ class TradingAgent:
         )
 
         logger.info(f"✅ Cycle complete — {len(actions)} actions taken")
+        self._cleanup_cycle_directives()
         return {
             "status": "ok",
             "actions": actions,
@@ -491,6 +498,66 @@ class TradingAgent:
             # For regular markets: review is handled by _close_intraday_positions
             # and the KeyboardInterrupt handler. Just track the date.
             self._last_review_date = today
+
+    def _load_directives(self) -> str:
+        """Load active directives from directive.json for system prompt injection."""
+        if not self.session:
+            return ""
+        directive_path = self.session.session_dir / "directive.json"
+        if not directive_path.exists():
+            return ""
+
+        try:
+            data = json.loads(directive_path.read_text())
+            directives = data.get("directives", [])
+        except Exception:
+            return ""
+
+        now = datetime.now()
+        active = []
+        expired_ids = []
+
+        for d in directives:
+            if d.get("expires_at"):
+                try:
+                    exp = datetime.fromisoformat(d["expires_at"])
+                    if now > exp:
+                        expired_ids.append(d["id"])
+                        continue
+                except Exception:
+                    pass
+            active.append(d)
+
+        # Clean up expired directives from file
+        if expired_ids:
+            data["directives"] = [d for d in data["directives"] if d["id"] not in expired_ids]
+            directive_path.write_text(json.dumps(data, indent=2))
+
+        if not active:
+            return ""
+
+        lines = []
+        for d in active:
+            expiry_label = {"this_cycle": "this cycle only", "today": "today", "until_cleared": "ongoing"}.get(d.get("expiry", ""), "")
+            lines.append(f"- {d['text']} [{expiry_label}]")
+
+        return "## 📋 Live Directives (from the operator — FOLLOW THESE)\n" + "\n".join(lines)
+
+    def _cleanup_cycle_directives(self):
+        """Remove 'this_cycle' directives after a cycle completes."""
+        if not self.session:
+            return
+        directive_path = self.session.session_dir / "directive.json"
+        if not directive_path.exists():
+            return
+        try:
+            data = json.loads(directive_path.read_text())
+            before = len(data["directives"])
+            data["directives"] = [d for d in data["directives"] if d.get("expiry") != "this_cycle"]
+            if len(data["directives"]) < before:
+                directive_path.write_text(json.dumps(data, indent=2))
+        except Exception:
+            pass
 
     def _close_intraday_positions(self, prices: Dict[str, float]):
         """Force-close all intraday positions (longs and shorts) near market close."""

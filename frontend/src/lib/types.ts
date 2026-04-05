@@ -138,3 +138,25 @@ export interface AgentStatus {
   running: boolean;
   pid: number | null;
 }
+
+export interface Directive {
+  id: string;
+  text: string;
+  type: "quick" | "custom";
+  expiry: "this_cycle" | "today" | "until_cleared";
+  created_at: string;
+  expires_at: string | null;
+}
+
+export interface DailyPerformance {
+  date: string;
+  cash: number | null;
+  portfolio_value: number | null;
+  total_value: number | null;
+  daily_pnl: number;
+  trades_taken: number;
+  wins: number;
+  losses: number;
+  cumulative_return: number | null;
+  cumulative_return_pct: number | null;
+}
