@@ -142,6 +142,12 @@ class CreateSessionRequest(BaseModel):
     import_learnings_from: Optional[str] = None  # session_id to copy learnings from
 
 
+class AddDirectiveRequest(BaseModel):
+    text: str
+    type: str = "custom"  # "quick" or "custom"
+    expiry: str = "today"  # "this_cycle", "today", "until_cleared"
+
+
 class UpdateSessionRequest(BaseModel):
     display_name: Optional[str] = None
     starting_capital: Optional[float] = None
@@ -708,6 +714,148 @@ def get_learnings(session: str = None):
     """Get the learning journal contents."""
     c = _get_components(session)
     return {"content": c["learner"].get_learnings(max_chars=10000)}
+
+
+# ── Live Directives ──────────────────────────────────────────
+
+@app.get("/api/directives")
+def get_directives(session: str = None):
+    """Get active directives for a session."""
+    from agent.session import SESSIONS_DIR
+    sid = session or _current_session_id
+    if not sid:
+        return {"directives": []}
+    directive_path = SESSIONS_DIR / sid / "directive.json"
+    if not directive_path.exists():
+        return {"directives": []}
+    try:
+        data = json.loads(directive_path.read_text())
+        directives = data.get("directives", [])
+        now = datetime.now()
+        active = []
+        for d in directives:
+            if d.get("expires_at"):
+                exp = datetime.fromisoformat(d["expires_at"])
+                if now > exp:
+                    continue
+            active.append(d)
+        return {"directives": active}
+    except Exception:
+        return {"directives": []}
+
+
+@app.post("/api/directives")
+def add_directive(req: AddDirectiveRequest, session: str = None):
+    """Add a new directive to a session."""
+    from agent.session import SESSIONS_DIR
+    import random, string, time as _time
+
+    sid = session or _current_session_id
+    if not sid:
+        raise HTTPException(400, "No session specified")
+    directive_path = SESSIONS_DIR / sid / "directive.json"
+
+    if directive_path.exists():
+        data = json.loads(directive_path.read_text())
+    else:
+        data = {"directives": []}
+
+    now = datetime.now()
+    if req.expiry == "today":
+        expires_at = now.replace(hour=23, minute=59, second=59).isoformat()
+    else:
+        expires_at = None  # "this_cycle" handled by agent, "until_cleared" never expires
+
+    rand_suffix = ''.join(random.choices(string.ascii_lowercase, k=3))
+    directive = {
+        "id": f"d_{int(_time.time())}_{rand_suffix}",
+        "text": req.text.strip()[:500],
+        "type": req.type,
+        "expiry": req.expiry,
+        "created_at": now.isoformat(),
+        "expires_at": expires_at,
+    }
+    data["directives"].append(directive)
+    directive_path.write_text(json.dumps(data, indent=2))
+    return {"status": "added", "directive": directive}
+
+
+@app.delete("/api/directives/{directive_id}")
+def delete_directive(directive_id: str, session: str = None):
+    """Remove a specific directive."""
+    from agent.session import SESSIONS_DIR
+
+    sid = session or _current_session_id
+    if not sid:
+        raise HTTPException(400, "No session specified")
+    directive_path = SESSIONS_DIR / sid / "directive.json"
+    if not directive_path.exists():
+        raise HTTPException(404, "No directives found")
+
+    data = json.loads(directive_path.read_text())
+    original_count = len(data["directives"])
+    data["directives"] = [d for d in data["directives"] if d["id"] != directive_id]
+    if len(data["directives"]) == original_count:
+        raise HTTPException(404, f"Directive '{directive_id}' not found")
+    directive_path.write_text(json.dumps(data, indent=2))
+    return {"status": "deleted", "directive_id": directive_id}
+
+
+# ── Daily Performance ────────────────────────────────────────
+
+@app.get("/api/performance/daily")
+def get_daily_performance(limit: int = 30, session: str = None):
+    """Get per-day performance breakdown from snapshots + trades."""
+    import sqlite3
+    c = _get_components(session)
+    db_path = c["config"].db_path
+    starting_capital = c["config"].starting_capital
+
+    try:
+        with sqlite3.connect(db_path) as conn:
+            snapshots = conn.execute(
+                "SELECT date, cash, portfolio_value, total_value, daily_pnl, trades_taken, wins, losses "
+                "FROM daily_snapshots ORDER BY date DESC LIMIT ?", (limit,)
+            ).fetchall()
+
+            trade_days = conn.execute(
+                """SELECT date(entry_time) as day,
+                          COUNT(*) as trades_entered,
+                          SUM(CASE WHEN status != 'open' AND pnl > 0 THEN 1 ELSE 0 END) as wins,
+                          SUM(CASE WHEN status != 'open' AND pnl <= 0 THEN 1 ELSE 0 END) as losses,
+                          ROUND(SUM(CASE WHEN status != 'open' THEN COALESCE(pnl, 0) ELSE 0 END), 2) as realized_pnl
+                   FROM trades GROUP BY day ORDER BY day DESC LIMIT ?""", (limit,)
+            ).fetchall()
+
+        days = {}
+        for row in snapshots:
+            d = row[0]
+            days[d] = {
+                "date": d, "cash": row[1], "portfolio_value": row[2],
+                "total_value": row[3], "daily_pnl": row[4],
+                "trades_taken": row[5], "wins": row[6], "losses": row[7],
+                "cumulative_return": round(row[3] - starting_capital, 2),
+                "cumulative_return_pct": round(((row[3] - starting_capital) / starting_capital) * 100, 2),
+            }
+
+        for row in trade_days:
+            d = row[0]
+            if d not in days:
+                days[d] = {
+                    "date": d, "cash": None, "portfolio_value": None,
+                    "total_value": None, "daily_pnl": row[4] or 0,
+                    "trades_taken": row[1] or 0, "wins": row[2] or 0, "losses": row[3] or 0,
+                    "cumulative_return": None, "cumulative_return_pct": None,
+                }
+            elif days[d]["trades_taken"] == 0 and (row[1] or 0) > 0:
+                days[d]["trades_taken"] = row[1] or 0
+                days[d]["wins"] = row[2] or 0
+                days[d]["losses"] = row[3] or 0
+
+        result = sorted(days.values(), key=lambda x: x["date"], reverse=True)
+        return result[:limit]
+    except Exception:
+        return []
 
 
 @app.get("/api/watchlist")

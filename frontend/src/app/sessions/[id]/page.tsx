@@ -13,6 +13,8 @@ import { LogViewer } from "@/components/LogViewer";
 import { JournalPanel } from "@/components/JournalPanel";
 import { AgentControl } from "@/components/AgentControl";
 import { LearningInsights } from "@/components/LearningInsights";
+import { DirectivePanel } from "@/components/DirectivePanel";
+import { DailyTracker } from "@/components/DailyTracker";
 import type {
   PortfolioSummary, ClosedTrade, RiskStatus, Performance,
   WatchlistItem, SessionConfig, AgentStatus,
@@ -85,6 +87,11 @@ export default function SessionDashboard() {
         </div>
       </div>
 
+      {/* Live Directives */}
+      <div className="mb-4 md:mb-5 animate-fade-in delay-1">
+        <DirectivePanel sessionId={sessionId} />
+      </div>
+
       {/* Metrics Row */}
       <MetricsRow portfolio={portfolio} perf={perf} config={config} />
 
@@ -116,6 +123,11 @@ export default function SessionDashboard() {
         <div className="animate-fade-in delay-5">
           <JournalPanel content={journal} />
         </div>
+      </div>
+
+      {/* Daily Performance */}
+      <div className="mb-4 md:mb-5 animate-fade-in delay-5">
+        <DailyTracker sessionId={sessionId} config={config} />
       </div>
 
       {/* Agent Learning Insights */}
