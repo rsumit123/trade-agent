@@ -141,7 +141,7 @@ export default function SessionSettingsPage() {
               <input type="number" value={form.intraday_interval_min} onChange={(e) => setForm({ ...form, intraday_interval_min: parseInt(e.target.value) || 15 })} className="w-full font-mono" min={5} max={120} />
             </Field>
           </div>
-          <span className="text-[10px] text-text-muted">Model changes require stopping and restarting the agent. Trades made with each model are tracked separately.</span>
+          <span className="text-[10px] text-text-muted">Model and interval changes auto-restart the agent if it&apos;s running. Trades made with each model are tracked separately.</span>
         </SettingsSection>
 
         {/* Personality — can be updated anytime */}
