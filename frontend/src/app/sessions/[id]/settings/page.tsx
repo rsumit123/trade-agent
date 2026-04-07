@@ -38,10 +38,10 @@ export default function SessionSettingsPage() {
         per_trade_loss_limit_pct: cfg.per_trade_loss_limit_pct as number || 0.01,
         max_trade_amount: cfg.max_trade_amount as number || 0,
         llm_provider: cfg.llm_provider as string || "openrouter",
-        llm_model: "",
+        llm_model: (cfg.llm_model as string) || "anthropic/claude-haiku-4-5",
         api_key_env: "OPENROUTER_API_KEY",
         intraday_interval_min: cfg.intraday_interval_min as number || 15,
-        personality: "",
+        personality: (cfg.personality as string) || "",
       });
     });
   }, [sessionId]);
@@ -113,12 +113,35 @@ export default function SessionSettingsPage() {
           </div>
         </SettingsSection>
 
-        {/* Cycle Interval */}
+        {/* Agent Settings */}
         <SettingsSection title="Agent Settings">
-          <Field label="Cycle Interval (minutes)">
-            <input type="number" value={form.intraday_interval_min} onChange={(e) => setForm({ ...form, intraday_interval_min: parseInt(e.target.value) || 15 })} className="w-full font-mono" min={5} max={120} />
-          </Field>
-          <span className="text-[10px] text-text-muted">How often the agent analyzes the market and makes decisions. Changes take effect next cycle.</span>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Field label="Model">
+              <select value={form.llm_model} onChange={(e) => setForm({ ...form, llm_model: e.target.value })} className="w-full text-sm">
+                <optgroup label="Anthropic">
+                  <option value="anthropic/claude-haiku-4-5">Claude Haiku 4.5 ($0.80/M)</option>
+                </optgroup>
+                <optgroup label="Google">
+                  <option value="google/gemini-2.5-flash">Gemini 2.5 Flash ($0.15/M)</option>
+                </optgroup>
+                <optgroup label="OpenAI">
+                  <option value="openai/gpt-4o-mini">GPT-4o Mini ($0.15/M)</option>
+                </optgroup>
+                <optgroup label="Meta">
+                  <option value="meta-llama/llama-4-maverick">Llama 4 Maverick ($0.20/M)</option>
+                  <option value="meta-llama/llama-4-scout">Llama 4 Scout ($0.10/M)</option>
+                </optgroup>
+                <optgroup label="DeepSeek">
+                  <option value="deepseek/deepseek-chat-v3-0324">DeepSeek V3 ($0.14/M)</option>
+                  <option value="deepseek/deepseek-r1">DeepSeek R1 ($0.55/M)</option>
+                </optgroup>
+              </select>
+            </Field>
+            <Field label="Cycle Interval (minutes)">
+              <input type="number" value={form.intraday_interval_min} onChange={(e) => setForm({ ...form, intraday_interval_min: parseInt(e.target.value) || 15 })} className="w-full font-mono" min={5} max={120} />
+            </Field>
+          </div>
+          <span className="text-[10px] text-text-muted">Model changes require stopping and restarting the agent. Trades made with each model are tracked separately.</span>
         </SettingsSection>
 
         {/* Personality — can be updated anytime */}
