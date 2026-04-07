@@ -395,7 +395,43 @@ def update_session(session_id: str, req: UpdateSessionRequest):
 
     # Clear cached components so changes take effect
     _components.pop(session_id, None)
-    return {"session_id": session_id, "status": "updated"}
+
+    # If model or interval changed and agent is running, auto-restart it
+    restart_fields = {"llm_model", "llm_provider", "intraday_interval_min"}
+    changed_fields = set(req.model_dump(exclude_none=True).keys())
+    needs_restart = bool(restart_fields & changed_fields)
+
+    restarted = False
+    if needs_restart:
+        status = _is_agent_running(session_id)
+        if status["running"]:
+            # Stop the agent
+            try:
+                os.kill(status["pid"], signal.SIGTERM)
+                import time as _time
+                _time.sleep(3)
+                # Clear stale lock if process didn't clean up
+                from agent.session import SESSIONS_DIR
+                lock_path = SESSIONS_DIR / session_id / "agent.lock"
+                if lock_path.exists():
+                    try:
+                        os.kill(status["pid"], 0)
+                        os.kill(status["pid"], signal.SIGKILL)
+                        _time.sleep(1)
+                    except ProcessLookupError:
+                        pass
+                    lock_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+            # Restart with new config
+            try:
+                start_agent(session_id)
+                restarted = True
+            except Exception:
+                pass
+
+    return {"session_id": session_id, "status": "updated", "restarted": restarted}
 
 
 @app.delete("/api/sessions/{session_id}")
