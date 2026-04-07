@@ -47,6 +47,7 @@ class Trade:
     direction: str = "long"               # "long" or "short"
     conviction: Optional[int] = None      # 1-5 scale, set by LLM at entry
     exit_type: Optional[str] = None       # stop_hit, target_hit, manual, forced_close
+    llm_model: Optional[str] = None       # model that made this trade decision
 
 
 class Portfolio:
@@ -103,6 +104,7 @@ class Portfolio:
                 ("direction", "TEXT DEFAULT 'long'"),
                 ("conviction", "INTEGER"),
                 ("exit_type", "TEXT"),
+                ("llm_model", "TEXT"),
             ]:
                 try:
                     conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {col_def}")
@@ -147,7 +149,8 @@ class Portfolio:
                     trade_type: str, reason: str = "",
                     stop_price: float = None,
                     target_price: float = None,
-                    conviction: int = None) -> Trade:
+                    conviction: int = None,
+                    llm_model: str = None) -> Trade:
         """Execute a paper BUY order."""
         cost = quantity * price
         cash = self.get_cash()
@@ -159,10 +162,10 @@ class Portfolio:
             self._update_cash(conn, -cost)
             cursor = conn.execute(
                 """INSERT INTO trades (ticker, action, trade_type, quantity,
-                   entry_price, entry_time, status, reason, stop_price, target_price, conviction)
-                   VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)""",
+                   entry_price, entry_time, status, reason, stop_price, target_price, conviction, llm_model)
+                   VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)""",
                 (ticker, "BUY", trade_type, quantity, price,
-                 entry_time, reason, stop_price, target_price, conviction)
+                 entry_time, reason, stop_price, target_price, conviction, llm_model)
             )
             trade_id = cursor.lastrowid
 
@@ -170,7 +173,7 @@ class Portfolio:
             id=trade_id, ticker=ticker, action="BUY", trade_type=trade_type,
             quantity=quantity, entry_price=price, entry_time=entry_time,
             reason=reason, stop_price=stop_price, target_price=target_price,
-            conviction=conviction,
+            conviction=conviction, llm_model=llm_model,
         )
 
     def execute_sell(self, trade_id: int, price: float, reason: str = "",
@@ -206,7 +209,8 @@ class Portfolio:
                       reason: str = "",
                       stop_price: float = None,
                       target_price: float = None,
-                      conviction: int = None) -> Trade:
+                      conviction: int = None,
+                      llm_model: str = None) -> Trade:
         """
         Open a paper SHORT position (sell first, cover later).
         Intraday only — must be covered by EOD.
@@ -220,9 +224,9 @@ class Portfolio:
             self._update_cash(conn, proceeds)
             cursor = conn.execute(
                 """INSERT INTO trades (ticker, action, trade_type, quantity,
-                   entry_price, entry_time, status, reason, stop_price, target_price, direction, conviction)
-                   VALUES (?, 'SHORT', 'intraday', ?, ?, ?, 'open', ?, ?, ?, 'short', ?)""",
-                (ticker, quantity, price, entry_time, reason, stop_price, target_price, conviction)
+                   entry_price, entry_time, status, reason, stop_price, target_price, direction, conviction, llm_model)
+                   VALUES (?, 'SHORT', 'intraday', ?, ?, ?, 'open', ?, ?, ?, 'short', ?, ?)""",
+                (ticker, quantity, price, entry_time, reason, stop_price, target_price, conviction, llm_model)
             )
             trade_id = cursor.lastrowid
 
@@ -230,7 +234,7 @@ class Portfolio:
             id=trade_id, ticker=ticker, action="SHORT", trade_type="intraday",
             quantity=quantity, entry_price=price, entry_time=entry_time,
             reason=reason, stop_price=stop_price, target_price=target_price,
-            direction="short", conviction=conviction,
+            direction="short", conviction=conviction, llm_model=llm_model,
         )
 
     def execute_cover(self, trade_id: int, price: float, reason: str = "",
@@ -386,10 +390,11 @@ class Portfolio:
             quantity=row[4], entry_price=row[5], entry_time=row[6],
             exit_price=row[7], exit_time=row[8], status=row[9],
             pnl=row[10], reason=row[11], exit_reason=row[12],
-            # Columns 13-17 added by migration — guard for pre-migration rows
+            # Columns 13-18 added by migration — guard for pre-migration rows
             stop_price=row[13] if len(row) > 13 else None,
             target_price=row[14] if len(row) > 14 else None,
             direction=row[15] if len(row) > 15 else "long",
             conviction=row[16] if len(row) > 16 else None,
             exit_type=row[17] if len(row) > 17 else None,
+            llm_model=row[18] if len(row) > 18 else None,
         )

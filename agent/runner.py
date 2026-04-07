@@ -140,6 +140,12 @@ class TradingAgent:
         else:
             return {"error": f"Unknown tool: {tool_name}"}
 
+    @property
+    def _active_model(self) -> str:
+        """Get the currently active LLM model name."""
+        provider = self.config.llm_provider
+        return getattr(self.config, f"{provider}_model", "unknown")
+
     def _execute_trade(self, trade_input: Dict) -> Dict:
         """Execute a trade with risk checks."""
         action = trade_input.get("action", "")
@@ -197,7 +203,7 @@ class TradingAgent:
             trade = self.portfolio.execute_buy(
                 ticker, quantity, price, trade_type, reason,
                 stop_price=stop_price, target_price=target_price,
-                conviction=conviction,
+                conviction=conviction, llm_model=self._active_model,
             )
             self.learner.write_trade_log(trade)
             return {
@@ -289,7 +295,7 @@ class TradingAgent:
             trade = self.portfolio.execute_short(
                 ticker, quantity, price, reason,
                 stop_price=stop_price, target_price=target_price,
-                conviction=conviction,
+                conviction=conviction, llm_model=self._active_model,
             )
             self.learner.write_trade_log(trade)
             return {
