@@ -968,6 +968,7 @@ def get_config(session: str = None):
     if sc:
         result["session_id"] = sc.session_id
         result["session_name"] = sc.display_name
+        result["personality"] = sc.personality or ""
 
     return result
 
