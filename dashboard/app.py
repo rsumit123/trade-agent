@@ -168,7 +168,11 @@ class UpdateSessionRequest(BaseModel):
 
 
 def _is_agent_running(session_id: str) -> dict:
-    """Check if an agent process is running for a session."""
+    """Check if an agent process is running for a session.
+
+    Uses /proc/<pid>/cmdline to verify the PID actually belongs to our agent,
+    not a recycled PID from a different process after container restart.
+    """
     from agent.session import SESSIONS_DIR
     lock_path = SESSIONS_DIR / session_id / "agent.lock"
     if not lock_path.exists():
@@ -176,6 +180,20 @@ def _is_agent_running(session_id: str) -> dict:
     try:
         pid = int(lock_path.read_text().strip())
         os.kill(pid, 0)  # signal 0 = just check if alive
+
+        # Verify this PID is actually our agent (not a recycled PID)
+        try:
+            cmdline_path = Path(f"/proc/{pid}/cmdline")
+            if cmdline_path.exists():
+                cmdline = cmdline_path.read_bytes().decode("utf-8", errors="replace")
+                # Our agent processes have "run.py" and the session_id in their cmdline
+                if "run.py" not in cmdline or session_id not in cmdline:
+                    # PID exists but it's not our agent — stale lock
+                    lock_path.unlink(missing_ok=True)
+                    return {"running": False, "pid": None}
+        except Exception:
+            pass  # /proc not available (non-Linux) — fall back to PID-only check
+
         return {"running": True, "pid": pid}
     except (ProcessLookupError, ValueError):
         return {"running": False, "pid": None}
@@ -238,6 +256,26 @@ def _auto_restart_agents():
 
 # Run auto-restart on module load (when uvicorn starts)
 _auto_restart_agents()
+
+
+def _start_health_checker():
+    """Background thread that periodically checks agent health and restarts dead ones."""
+    import threading
+
+    def _check_loop():
+        import time as _time
+        while True:
+            _time.sleep(300)  # Check every 5 minutes
+            try:
+                _auto_restart_agents()
+            except Exception:
+                pass
+
+    t = threading.Thread(target=_check_loop, daemon=True)
+    t.start()
+
+
+_start_health_checker()
 
 
 @app.get("/api/sessions")
