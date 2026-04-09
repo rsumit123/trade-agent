@@ -108,6 +108,40 @@ class BacktestEngine:
 
         return result
 
+    def _fetch_daily_candles_fast(self, tickers: List[str], end_date: date, lookback_days: int = 5) -> Dict[str, pd.DataFrame]:
+        """Fast bulk fetch of short-lookback daily candles for scanner.
+        Uses minimal sleep (0.05s) and skips failures silently.
+        Good for scanning 2000+ stocks where we just need recent OHLC."""
+        start = (end_date - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        end = end_date.strftime("%Y-%m-%d")
+        result = {}
+        failed = 0
+
+        for idx, ticker in enumerate(tickers):
+            token = self._get_token(ticker)
+            if not token:
+                continue
+            try:
+                candles = self.kite.historical_data(
+                    instrument_token=token,
+                    from_date=start,
+                    to_date=end,
+                    interval="day",
+                )
+                if candles and len(candles) >= 2:
+                    result[ticker] = pd.DataFrame(candles)
+            except Exception:
+                failed += 1
+            # Light rate limiting — 0.05s per ticker
+            if (idx + 1) % 100 == 0:
+                logger.info(f"    Scanner fetch: {idx + 1}/{len(tickers)} done ({len(result)} ok, {failed} failed)")
+                _time.sleep(0.5)  # Brief pause every 100 tickers
+            else:
+                _time.sleep(0.05)
+
+        logger.info(f"  📊 Scanner fetch complete: {len(result)}/{len(tickers)} stocks with data")
+        return result
+
     def _get_previous_day_ohlc(self, tickers: List[str], trade_date: date) -> Dict[str, Dict]:
         """Get previous trading day's OHLC for pre-market scanner input."""
         prev_date = trade_date - timedelta(days=1)
@@ -170,9 +204,12 @@ class BacktestEngine:
         # Pre-market scanner for dynamic stock selection each day
         from .premarket_scanner import PreMarketScanner
         scanner = PreMarketScanner(self.kite)
-        # Use the base watchlist as the scanner pool (111 liquid stocks)
-        # Fetching all ~3000 instruments per day would be too slow for backtest
-        scan_pool = list(base_tickers)
+        # Build scan pool from cached instrument list (all ~3000 NSE equities)
+        scan_instruments = scanner._ensure_instrument_cache()
+        scan_pool = [f"{i['tradingsymbol']}.NS" for i in scan_instruments]
+        if len(scan_pool) < 100:
+            # Fallback to base watchlist if instrument cache is empty
+            scan_pool = list(base_tickers)
         logger.info(f"📋 Scanner pool: {len(scan_pool)} stocks (will pick top 25 each day)")
 
         results = {
@@ -195,9 +232,9 @@ class BacktestEngine:
 
             try:
                 # 0. Run historical pre-market scanner to pick today's stocks
-                #    Uses daily candles from the scan pool (111 liquid stocks)
-                logger.info(f"  🔍 Running pre-market scanner for {trade_date}...")
-                broad_daily = self._fetch_daily_candles(scan_pool, trade_date, lookback_days=5)
+                #    Scans all ~3000 NSE equities — fast fetch with 2-day lookback
+                logger.info(f"  🔍 Running pre-market scanner ({len(scan_pool)} stocks) for {trade_date}...")
+                broad_daily = self._fetch_daily_candles_fast(scan_pool, trade_date, lookback_days=5)
 
                 if broad_daily:
                     # Get agent's learnings for LLM Phase 2
