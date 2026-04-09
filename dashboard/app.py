@@ -13,7 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -146,6 +146,12 @@ class AddDirectiveRequest(BaseModel):
     text: str
     type: str = "custom"  # "quick" or "custom"
     expiry: str = "today"  # "this_cycle", "today", "until_cleared"
+
+
+class BacktestRequest(BaseModel):
+    start_date: str          # "YYYY-MM-DD"
+    end_date: str            # "YYYY-MM-DD"
+    interval: str = "15minute"
 
 
 class UpdateSessionRequest(BaseModel):
@@ -601,6 +607,97 @@ def stop_agent(session_id: str):
         return {"status": "not_running"}
     except PermissionError:
         raise HTTPException(403, f"Cannot stop process {pid} — permission denied")
+
+
+# ── Backtest Endpoints ────────────────────────────────────────
+
+_backtest_threads: Dict[str, Any] = {}  # session_id → thread
+
+
+@app.post("/api/backtest/start/{session_id}")
+def start_backtest(session_id: str, req: BacktestRequest):
+    """Start a historical backtest in the background."""
+    from agent.session import load_session, save_session, SESSIONS_DIR
+    import threading
+    from datetime import date as _date
+
+    # Validate session
+    try:
+        sc = load_session(session_id)
+    except FileNotFoundError:
+        raise HTTPException(404, f"Session '{session_id}' not found")
+
+    # Check not already running
+    if session_id in _backtest_threads and _backtest_threads[session_id].is_alive():
+        return {"status": "already_running", "session_id": session_id}
+
+    # Update session config
+    sc.backtest_mode = True
+    sc.backtest_start_date = req.start_date
+    sc.backtest_end_date = req.end_date
+    sc.backtest_status = "running"
+    save_session(sc)
+
+    def _run_backtest():
+        try:
+            from agent.kite_auth import KiteAuth
+            from agent.backtest_engine import BacktestEngine
+
+            auth = KiteAuth()
+            kite = auth.get_authenticated_client()
+
+            engine = BacktestEngine(sc, kite)
+            engine.run(
+                start_date=_date.fromisoformat(req.start_date),
+                end_date=_date.fromisoformat(req.end_date),
+                interval=req.interval,
+            )
+            sc.backtest_status = "completed"
+            save_session(sc)
+        except Exception as e:
+            import logging
+            logging.getLogger("dashboard").error(f"Backtest failed: {e}")
+            sc.backtest_status = f"failed: {str(e)[:100]}"
+            save_session(sc)
+
+    thread = threading.Thread(target=_run_backtest, daemon=True)
+    thread.start()
+    _backtest_threads[session_id] = thread
+
+    return {"status": "started", "session_id": session_id, "start_date": req.start_date, "end_date": req.end_date}
+
+
+@app.get("/api/backtest/status/{session_id}")
+def get_backtest_status(session_id: str):
+    """Get backtest progress."""
+    from agent.session import SESSIONS_DIR
+
+    progress_path = SESSIONS_DIR / session_id / "backtest_progress.json"
+    if not progress_path.exists():
+        return {"status": "not_started"}
+
+    try:
+        return json.loads(progress_path.read_text())
+    except Exception:
+        return {"status": "unknown"}
+
+
+@app.get("/api/backtest/results/{session_id}")
+def get_backtest_results(session_id: str):
+    """Get final backtest results."""
+    from agent.session import SESSIONS_DIR
+
+    progress_path = SESSIONS_DIR / session_id / "backtest_progress.json"
+    if not progress_path.exists():
+        raise HTTPException(404, "No backtest results found")
+
+    try:
+        data = json.loads(progress_path.read_text())
+        if data.get("status") != "completed":
+            return {"status": data.get("status", "unknown"), "message": "Backtest not yet completed"}
+        return data
+    except Exception as e:
+        raise HTTPException(500, f"Failed to read results: {e}")
 
 
 # ── Market Presets Endpoint ────────────────────────────────────

@@ -61,6 +61,12 @@ class SessionConfig:
     # ── Data Source ────────────────────────────────────────
     data_source: str = "yfinance"                # "yfinance" or "kite"
 
+    # ── Backtest ──────────────────────────────────────────
+    backtest_mode: bool = False                  # True = backtest before live
+    backtest_start_date: Optional[str] = None    # "YYYY-MM-DD"
+    backtest_end_date: Optional[str] = None      # "YYYY-MM-DD"
+    backtest_status: str = ""                    # "running", "completed", "failed", ""
+
     # ── Metadata ────────────────────────────────────────────
     created_at: str = ""
 
