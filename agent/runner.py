@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .config import AgentConfig
 from .portfolio import Portfolio
-from .market_data import MarketData
+from .market_data import MarketData, create_market_data
 from .web_research import WebResearcher
 from .decision_engine import create_engine
 from .risk_manager import RiskManager
@@ -63,7 +63,7 @@ class TradingAgent:
 
         # Initialize components — pass market_preset for market-aware behaviour
         self.portfolio = Portfolio(self.config.db_path, self.config.starting_capital)
-        self.market_data = MarketData(self.config.watchlist, market_preset=self.preset)
+        self.market_data = create_market_data(self.config, market_preset=self.preset)
         self.researcher = WebResearcher(self.config.news_sources, market_preset=self.preset)
         self.risk_manager = RiskManager(self.config, self.portfolio)
         self.learner = Learner(self.config, self.portfolio)

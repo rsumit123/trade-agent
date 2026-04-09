@@ -45,3 +45,4 @@ sessions/*/agent.lock
 # Keep session configs and journals in git
 !sessions/*/config.yaml
 !sessions/*/journal.md
+.zerodha-api-tokens
