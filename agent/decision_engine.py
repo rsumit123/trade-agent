@@ -78,6 +78,33 @@ def _build_trading_rules(preset) -> str:
             "- Consider both technical signals AND news/sentiment\n"
             "- When in doubt, do nothing — cash is a position too"
         )
+    elif preset and preset.market_id == "nse-intraday":
+        close_time = preset.market_close or "15:30"
+        buffer = preset.intraday_close_buffer_min or 15
+        close_h, close_m = map(int, close_time.split(":"))
+        trigger_m = close_m - buffer
+        trigger_h = close_h
+        if trigger_m < 0:
+            trigger_m += 60
+            trigger_h -= 1
+        trigger_str = f"{trigger_h}:{trigger_m:02d}"
+        return (
+            "## INTRADAY SCALPING RULES\n"
+            f"- ALL trades are INTRADAY ONLY — auto-closed at {trigger_str} IST\n"
+            "- NO swing trades allowed — you must exit everything before market close\n"
+            "- Target: +0.3% to +1.0% per trade (tight scalps)\n"
+            "- Stop loss: -0.3% to -0.5% max per trade (cut fast)\n"
+            "- Hold time: 5-45 minutes typical, rarely more than 1 hour\n"
+            "- Position sizing: use full allocation, multiple simultaneous positions OK\n"
+            "- LONG setups: gap-up + volume spike + RSI not overbought + VWAP support\n"
+            "- SHORT setups: gap-down + high volume + RSI overbought + below VWAP\n"
+            "- First 15 min (9:15-9:30): OBSERVE ONLY — let volatility settle\n"
+            "- Prime scalping window: 9:30 AM - 2:30 PM IST\n"
+            "- After 2:30 PM: NO new entries, only exits\n"
+            "- Exit immediately if thesis breaks (price below VWAP for longs, above for shorts)\n"
+            "- Pre-market watchlist was built by scanning ALL NSE stocks — trade these high-quality picks\n"
+            "- Focus on stocks with volume 1.5x+ average — liquidity enables clean entries/exits\n"
+        )
     else:
         close_time = preset.market_close if preset else "15:30"
         buffer = preset.intraday_close_buffer_min if preset else 15
