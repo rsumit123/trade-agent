@@ -2,239 +2,234 @@
 Pre-Market Scanner — Scans ALL NSE stocks before market open to build
 a dynamic watchlist for the day's intraday scalping.
 
-Runs at ~8:30 AM IST (before 9:15 open). Uses Kite Connect to:
-1. Fetch previous close for all ~1800 NSE equities
-2. Identify gap-ups, gap-downs, high-volume pre-market movers
-3. Rank by tradability (liquidity, volatility, gap size)
-4. Return top 20-30 stocks as today's scalping watchlist
+Architecture:
+1. ONE-TIME: Download full NSE instrument master → cache to disk as JSON
+   (includes tradingsymbol, instrument_token, lot_size, etc.)
+   Only re-downloads if cache is older than 7 days.
+2. DAILY (8:30 AM): Fetch OHLC for all cached equities via Kite API
+3. Rank by gap %, intraday range, sector momentum
+4. Return top 30 stocks as today's dynamic watchlist
 
-The watchlist feeds into the agent's decision loop, replacing the
-static 111-stock default with a focused, high-quality set.
+The cached file means no redundant instrument downloads.
+The LLM then gets the top 30 with context, and can call get_stock_details()
+on ANY ticker for deeper analysis.
 """
 
+import json
 import logging
+import time as _time
 from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional
+from pathlib import Path
+from typing import Dict, List, Any
 
 logger = logging.getLogger(__name__)
 
-
-# Minimum filters for scalping candidates
-MIN_PRICE = 50            # Skip penny stocks
-MAX_PRICE = 10000         # Skip ultra-expensive (Hermes, MRF)
-MIN_AVG_VOLUME = 1_000_000  # Minimum 1M avg volume for scalping liquidity
-MIN_GAP_PCT = 0.5         # Minimum 0.5% gap to be interesting
-MIN_MARKET_CAP_PROXY = 100_000_000  # Rough filter: price * volume > 10Cr
+MIN_PRICE = 50
+MAX_PRICE = 10000
+MIN_GAP_PCT = 0.3
+INSTRUMENT_CACHE = Path("sessions/_nse_instruments.json")
+CACHE_MAX_AGE_DAYS = 7
 
 
 class PreMarketScanner:
-    """Scans all NSE stocks to build a dynamic scalping watchlist."""
+    """Scans ALL NSE stocks to build a dynamic scalping watchlist."""
 
     def __init__(self, kite_client):
         self.kite = kite_client
-        self._instruments = None
 
-    def _load_nse_equities(self) -> List[Dict]:
-        """Load all NSE equity instruments."""
-        if self._instruments is None:
-            all_instruments = self.kite.instruments("NSE")
-            # Filter to equities only (exclude indices, ETFs with specific segment)
-            # Filter to equities only — skip indices, ETFs, commodity products
-            SKIP_PATTERNS = {
-                "NIFTY", "BANK", "GOLD", "SILVER", "LIQUID", "BEES",
-                "CPSE", "NEXT", "ALPHA", "BETA", "ETFGOLD", "ETFSILVER",
-                "ICICIGOLD", "HDFCGOLD", "HDFCSILVER", "SBISILVER",
-                "SILVERBEES", "GOLDBEES", "CPSEETF", "MOM", "JUNIORBEES",
-            }
-            self._instruments = [
-                i for i in all_instruments
-                if i.get("instrument_type") == "EQ"
-                and i.get("exchange") == "NSE"
-                and i.get("tradingsymbol", "") != ""
-                and not any(skip in i.get("tradingsymbol", "").upper() for skip in SKIP_PATTERNS)
-            ]
-            logger.info(f"📊 Loaded {len(self._instruments)} NSE equities")
-        return self._instruments
+    def _ensure_instrument_cache(self) -> List[Dict]:
+        """Load instrument cache from disk, refresh if stale."""
+        INSTRUMENT_CACHE.parent.mkdir(parents=True, exist_ok=True)
 
-    def _get_nifty500_symbols(self) -> List[str]:
-        """Get Nifty 500 constituents — the most liquid NSE stocks.
-
-        These are the top 500 stocks by market cap and liquidity.
-        Scanning 500 instead of 9599 avoids API rate limits.
-        """
-        # Curated list of ~200 most traded NSE stocks (covers Nifty 50 + Nifty Next 50 + top midcaps)
-        # This is a pragmatic subset — catches 90%+ of intraday volume
-        TOP_LIQUID = [
-            # Nifty 50
-            "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "SBIN", "BHARTIARTL",
-            "HINDUNILVR", "LT", "KOTAKBANK", "AXISBANK", "ITC", "BAJFINANCE",
-            "MARUTI", "TATAMOTORS", "SUNPHARMA", "WIPRO", "HCLTECH", "TATASTEEL",
-            "NTPC", "POWERGRID", "ADANIENT", "ADANIPORTS", "M&M", "TITAN",
-            "NESTLEIND", "ULTRACEMCO", "TECHM", "ONGC", "BAJAJFINSV",
-            "INDUSINDBK", "JSWSTEEL", "DRREDDY", "CIPLA", "COALINDIA",
-            "BPCL", "EICHERMOT", "GRASIM", "DIVISLAB", "TATAPOWER",
-            "BRITANNIA", "HEROMOTOCO", "APOLLOHOSP", "ASIANPAINT", "PIDILITIND",
-            "SBILIFE", "HDFCLIFE", "VEDL", "HINDALCO", "HAL",
-            # Nifty Next 50 & popular midcaps
-            "BEL", "TRENT", "DLF", "DMART", "GODREJPROP", "ZOMATO",
-            "PAYTM", "NYKAA", "POLICYBZR", "IRFC", "IRCTC", "RAILTEL",
-            "MUTHOOTFIN", "CHOLAFIN", "SHRIRAMFIN", "BAJAJ-AUTO", "M&MFIN",
-            "PRESTIGE", "OBEROIRLTY", "PHOENIXLTD", "LICI", "GICRE",
-            "PERSISTENT", "COFORGE", "MPHASIS", "LTTS", "KPITTECH",
-            "ADANIGREEN", "ADANIPOWER", "ABB", "SIEMENS", "CUMMINSIND",
-            "SRF", "DEEPAKNTR", "NAVINFLUOR", "FINEORG", "UPL",
-            "DELHIVERY", "BLUEDART", "ZEEL", "SUNTV", "IDEA",
-            "HAVELLS", "VOLTAS", "BLUESTARCO", "WHIRLPOOL",
-            "DABUR", "MARICO", "GODREJCP", "JUBLFOOD", "WESTLIFE",
-            "INDHOTEL", "LEMONTREE", "AUROPHARMA", "TORNTPHARM",
-            "TATACHEM", "PCBL", "TANLA", "MOTHERSON", "BANDHANBNK",
-            "MAZDOCK", "BEML", "BHEL", "IOC", "GAIL",
-            "CONCOR", "RVNL", "IREDA", "JIOFIN", "JSWINFRA",
-            # High beta / momentum favourites
-            "TATAELXSI", "DIXON", "KAYNES", "COCHINSHIP", "GRSE",
-            "MAZAGON", "TIINDIA", "CDSL", "BSE", "CAMS",
-            "ANGELONE", "MOTILALOFS", "ICICIGI", "STARHEALTH",
-            "REDTAPE", "HONASA", "STLTECH", "KEC", "RITES",
-            "ATUL", "COROMANDEL", "PIIND", "FLUOROCHEM",
-        ]
-        return TOP_LIQUID
-
-    def scan(self, max_stocks: int = 25) -> List[Dict[str, Any]]:
-        """
-        Run the pre-market scan and return top stocks for scalping.
-
-        Scans ~150 most liquid NSE stocks (not all 9599 — avoids rate limits).
-        """
-        logger.info("🔍 Starting pre-market scan of top NSE stocks...")
-
-        top_symbols = self._get_nifty500_symbols()
-        kite_symbols = [f"NSE:{sym}" for sym in top_symbols]
-
-        # Fetch quotes in batches of 500 (should be 1 batch for ~150 stocks)
-        all_quotes = {}
-        for i in range(0, len(kite_symbols), 500):
-            batch = kite_symbols[i:i+500]
+        # Check if cache exists and is recent
+        if INSTRUMENT_CACHE.exists():
             try:
-                quotes = self.kite.quote(batch)
-                all_quotes.update(quotes)
-            except Exception as e:
-                logger.warning(f"Quote batch {i//500} failed: {e}")
+                data = json.loads(INSTRUMENT_CACHE.read_text())
+                cached_date = data.get("date", "")
+                if cached_date:
+                    age = (datetime.now() - datetime.fromisoformat(cached_date)).days
+                    if age < CACHE_MAX_AGE_DAYS:
+                        instruments = data.get("instruments", [])
+                        logger.info(f"📋 Using cached instrument list ({len(instruments)} stocks, {age}d old)")
+                        return instruments
+            except Exception:
+                pass
 
-        equities = [{"tradingsymbol": sym} for sym in top_symbols]
+        # Download fresh instrument list
+        logger.info("📥 Downloading fresh NSE instrument list...")
+        return self._refresh_instrument_cache()
 
-        logger.info(f"📊 Got quotes for {len(all_quotes)} stocks")
+    def _refresh_instrument_cache(self) -> List[Dict]:
+        """Download all NSE instruments and cache to disk."""
+        try:
+            all_instruments = self.kite.instruments("NSE")
+        except Exception as e:
+            logger.error(f"Failed to download instruments: {e}")
+            return []
 
-        # Score and rank each stock
-        candidates = []
-        for sym in top_symbols:
-            kite_sym = f"NSE:{sym}"
-            quote = all_quotes.get(kite_sym, {})
-
-            if not quote:
+        # Filter to tradable equities only
+        SKIP_KEYWORDS = {"NIFTY", "GOLD", "SILVER", "LIQUID", "BEES", "CPSE", "ETF", "MIDCAP", "VIX", "BHARATBOND"}
+        equities = []
+        for i in all_instruments:
+            sym = i.get("tradingsymbol", "")
+            if not sym or i.get("instrument_type") != "EQ" or i.get("exchange") != "NSE":
+                continue
+            if any(skip in sym.upper() for skip in SKIP_KEYWORDS):
+                continue
+            # Skip bonds (digits in first 3 chars) and SME (-SM, -P1, etc.)
+            if any(c.isdigit() for c in sym[:3]):
+                continue
+            if any(tag in sym for tag in ["-SM", "-P1", "-NZ", "-N9", "-NM", "-YY", "-N2", "-RE", "-PP"]):
                 continue
 
-            ltp = quote.get("last_price", 0)
-            ohlc = quote.get("ohlc", {})
+            equities.append({
+                "tradingsymbol": sym,
+                "instrument_token": i.get("instrument_token"),
+                "name": i.get("name", ""),
+                "lot_size": i.get("lot_size", 1),
+                "tick_size": i.get("tick_size", 0.05),
+            })
+
+        # Save to cache
+        cache_data = {
+            "date": datetime.now().isoformat(),
+            "count": len(equities),
+            "instruments": equities,
+        }
+        INSTRUMENT_CACHE.write_text(json.dumps(cache_data, indent=2))
+        logger.info(f"📋 Cached {len(equities)} NSE equities to {INSTRUMENT_CACHE}")
+        return equities
+
+    def scan(self, max_stocks: int = 30) -> List[Dict[str, Any]]:
+        """
+        Scan ALL cached NSE equities and return top movers for scalping.
+
+        Uses kite.ohlc() for bulk OHLC data. Batches with 1s delay
+        between calls to avoid Cloudflare rate limits.
+        """
+        instruments = self._ensure_instrument_cache()
+        if not instruments:
+            logger.warning("No instruments available for scanning")
+            return []
+
+        symbols = [i["tradingsymbol"] for i in instruments]
+        logger.info(f"🔍 Scanning {len(symbols)} NSE equities...")
+
+        # Fetch OHLC in batches of 500 with rate limit handling
+        all_data = {}
+        kite_symbols = [f"NSE:{sym}" for sym in symbols]
+
+        for i in range(0, len(kite_symbols), 500):
+            batch = kite_symbols[i:i + 500]
+            try:
+                data = self.kite.ohlc(batch)
+                all_data.update(data)
+                logger.info(f"  Batch {i // 500 + 1}: got {len(data)} quotes")
+            except Exception as e:
+                logger.warning(f"  Batch {i // 500 + 1} failed: {e}")
+                # Retry after delay
+                _time.sleep(3)
+                try:
+                    data = self.kite.ohlc(batch)
+                    all_data.update(data)
+                    logger.info(f"  Batch {i // 500 + 1} retry: got {len(data)} quotes")
+                except Exception:
+                    logger.warning(f"  Batch {i // 500 + 1} retry also failed — skipping")
+            # Rate limit: 1s between batches
+            if i + 500 < len(kite_symbols):
+                _time.sleep(1)
+
+        logger.info(f"📊 Got data for {len(all_data)} / {len(symbols)} stocks")
+
+        # Score and rank
+        candidates = []
+        for sym in symbols:
+            kite_sym = f"NSE:{sym}"
+            data = all_data.get(kite_sym, {})
+            if not data:
+                continue
+
+            ltp = data.get("last_price", 0)
+            ohlc = data.get("ohlc", {})
             prev_close = ohlc.get("close", 0)
             day_open = ohlc.get("open", 0) or prev_close
-            volume = quote.get("volume", 0) or quote.get("last_quantity", 0)
-            # average_traded_quantity may not be in quote — use volume as proxy
-            avg_volume = quote.get("average_traded_quantity", 0) or max(volume, 1)
+            day_high = ohlc.get("high", 0)
+            day_low = ohlc.get("low", 0)
 
-            if not prev_close or not ltp:
+            if not prev_close or not ltp or ltp < MIN_PRICE or ltp > MAX_PRICE:
                 continue
 
-            # Basic filters
-            if ltp < MIN_PRICE or ltp > MAX_PRICE:
-                continue
-            if avg_volume < MIN_AVG_VOLUME:
-                continue
-
-            # Gap calculation
             gap_pct = ((day_open - prev_close) / prev_close) * 100 if prev_close else 0
             change_pct = ((ltp - prev_close) / prev_close) * 100 if prev_close else 0
+            day_range_pct = ((day_high - day_low) / prev_close) * 100 if prev_close and day_high > day_low else 0
 
-            # Volume ratio (today vs average)
-            vol_ratio = volume / avg_volume if avg_volume > 0 else 0
-
-            # Skip if gap is too small and no volume spike
-            if abs(gap_pct) < MIN_GAP_PCT and vol_ratio < 1.5:
+            # Skip if no movement at all
+            if abs(gap_pct) < MIN_GAP_PCT and abs(change_pct) < 1.0 and day_range_pct < 1.0:
                 continue
 
-            # Composite score for ranking
-            # Higher is better for scalping potential
+            # Score
             score = 0
-
-            # Gap size (bigger gaps = more momentum)
-            score += min(abs(gap_pct), 5) * 2  # Cap at 5% gap, weight 2x
-
-            # Volume spike (institutional activity)
-            score += min(vol_ratio, 5) * 1.5  # Cap at 5x, weight 1.5x
-
-            # Liquidity bonus (higher avg volume = easier to trade)
-            if avg_volume > 2_000_000:
-                score += 2
-            elif avg_volume > 1_000_000:
-                score += 1
-
-            # Price range bonus (₹100-2000 is ideal for scalping)
+            score += min(abs(gap_pct), 5) * 2.0
+            score += min(abs(change_pct), 10) * 1.0
+            score += min(day_range_pct, 8) * 0.5
             if 100 <= ltp <= 2000:
-                score += 1
+                score += 1.5
+            elif 50 <= ltp <= 3000:
+                score += 0.5
 
-            # Determine reason
             reasons = []
             if abs(gap_pct) >= 2:
                 reasons.append(f"{'Gap-up' if gap_pct > 0 else 'Gap-down'} {gap_pct:+.1f}%")
             elif abs(gap_pct) >= 0.5:
-                reasons.append(f"Small gap {gap_pct:+.1f}%")
-            if vol_ratio >= 2:
-                reasons.append(f"High volume {vol_ratio:.1f}x")
-            elif vol_ratio >= 1.5:
-                reasons.append(f"Above-avg volume {vol_ratio:.1f}x")
+                reasons.append(f"Gap {gap_pct:+.1f}%")
             if abs(change_pct) >= 3:
                 reasons.append(f"Big move {change_pct:+.1f}%")
+            if day_range_pct >= 3:
+                reasons.append(f"Wide range {day_range_pct:.1f}%")
+
+            # Find the instrument name from cache
+            inst = next((i for i in instruments if i["tradingsymbol"] == sym), {})
 
             candidates.append({
                 "ticker": f"{sym}.NS",
                 "tradingsymbol": sym,
+                "name": inst.get("name", ""),
                 "prev_close": round(prev_close, 2),
                 "open_price": round(day_open, 2),
                 "ltp": round(ltp, 2),
                 "gap_pct": round(gap_pct, 2),
                 "change_pct": round(change_pct, 2),
-                "volume": volume,
-                "avg_volume": int(avg_volume),
-                "vol_ratio": round(vol_ratio, 2),
+                "day_range_pct": round(day_range_pct, 2),
                 "score": round(score, 2),
-                "reason": " | ".join(reasons) if reasons else "Moderate activity",
+                "reason": " | ".join(reasons) if reasons else "Active",
             })
 
-        # Sort by score descending, take top N
         candidates.sort(key=lambda x: x["score"], reverse=True)
         top = candidates[:max_stocks]
 
-        logger.info(f"🎯 Pre-market scan complete: {len(candidates)} candidates → top {len(top)} selected")
-        for i, s in enumerate(top[:5]):
-            logger.info(f"  {i+1}. {s['ticker']:15s} gap={s['gap_pct']:+5.1f}% vol={s['vol_ratio']:.1f}x score={s['score']:.1f} — {s['reason']}")
+        logger.info(f"🎯 Scan: {len(candidates)} movers → top {len(top)} selected")
+        for i, s in enumerate(top[:10]):
+            logger.info(f"  {i + 1:2d}. {s['ticker']:15s} gap={s['gap_pct']:+5.1f}% chg={s['change_pct']:+5.1f}% — {s['reason']}")
 
         return top
 
-    def get_watchlist_tickers(self, max_stocks: int = 25) -> List[str]:
-        """Run scan and return just the ticker list (for session watchlist)."""
-        results = self.scan(max_stocks)
-        return [r["ticker"] for r in results]
+    def get_watchlist_tickers(self, max_stocks: int = 30) -> List[str]:
+        """Run scan and return just the ticker list."""
+        return [r["ticker"] for r in self.scan(max_stocks)]
 
-    def get_scan_summary(self, max_stocks: int = 25) -> str:
-        """Run scan and return a formatted summary for LLM context."""
+    def get_scan_summary(self, max_stocks: int = 30) -> str:
+        """Run scan and return formatted summary for LLM context."""
         results = self.scan(max_stocks)
         if not results:
             return "Pre-market scan: No significant movers found."
 
         lines = [f"## Pre-Market Scan — Top {len(results)} Stocks for Today"]
-        lines.append(f"{'Ticker':15s} {'Gap%':>6s} {'Vol':>5s} {'Score':>6s} Reason")
-        lines.append("-" * 65)
+        lines.append(f"{'Ticker':15s} {'Name':20s} {'LTP':>8s} {'Gap%':>7s} {'Chg%':>7s} {'Range%':>7s} {'Score':>6s} Reason")
+        lines.append("-" * 95)
         for s in results:
+            name = (s.get("name", "") or "")[:20]
             lines.append(
-                f"{s['ticker']:15s} {s['gap_pct']:>+5.1f}% {s['vol_ratio']:>4.1f}x {s['score']:>5.1f}  {s['reason']}"
+                f"{s['ticker']:15s} {name:20s} {s['ltp']:>8.1f} {s['gap_pct']:>+6.1f}% {s['change_pct']:>+6.1f}% "
+                f"{s['day_range_pct']:>6.1f}% {s['score']:>5.1f}  {s['reason']}"
             )
         return "\n".join(lines)
