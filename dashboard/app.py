@@ -618,7 +618,7 @@ def get_market_presets():
             "currency_symbol": preset.currency_symbol,
             "is_24x7": preset.is_24x7,
             "default_starting_capital": preset.default_starting_capital,
-            "default_watchlist_count": len(preset.default_watchlist),
+            "default_watchlist_count": preset.default_watchlist_count or len(preset.default_watchlist),
             "timezone": preset.timezone,
             "ticker_suffix": preset.ticker_suffix,
             "trade_types": preset.trade_types,

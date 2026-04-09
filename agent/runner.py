@@ -401,6 +401,11 @@ class TradingAgent:
             logger.info(f"📋 Live directives active ({directives_text.count(chr(10))} items)")
             learnings = directives_text + "\n\n" + learnings
 
+        # Add pre-market scan summary to news context if available
+        premarket_summary = getattr(self, '_premarket_summary', '')
+        if premarket_summary:
+            news = premarket_summary + "\n\n" + news
+
         actions = self.engine.run_decision_loop(
             portfolio_summary=portfolio_summary,
             watchlist_data=watchlist_data,
@@ -459,6 +464,9 @@ class TradingAgent:
                 # Run periodic daily review (every 24h for 24/7 markets, at market close for others)
                 self._maybe_run_daily_review()
 
+                # Run pre-market scanner if enabled (once per day, before first cycle)
+                self._maybe_run_premarket_scan()
+
                 result = self.run_once()
                 logger.info(f"Cycle result: {result['status']}")
 
@@ -514,6 +522,57 @@ class TradingAgent:
                 logger.info("🔄 Running scheduled daily review (market closing)")
                 self.run_daily_review()
                 self._review_done_today = True
+
+    def _maybe_run_premarket_scan(self):
+        """Run pre-market scanner once per day to build dynamic watchlist."""
+        if not hasattr(self, '_scan_done_today'):
+            self._scan_done_today = False
+            self._scan_date = None
+
+        from datetime import date
+        today = date.today().isoformat()
+        if self._scan_date == today and self._scan_done_today:
+            return  # Already scanned today
+
+        # Check if preset enables scanner
+        use_scanner = (
+            self.preset
+            and getattr(self.preset, 'use_premarket_scanner', False)
+            and hasattr(self.market_data, 'kite')  # Only works with Kite data
+        )
+        if not use_scanner:
+            self._scan_done_today = True
+            self._scan_date = today
+            return
+
+        try:
+            from .premarket_scanner import PreMarketScanner
+            scanner = PreMarketScanner(self.market_data.kite)
+            scan_results = scanner.scan(max_stocks=25)
+
+            if scan_results:
+                new_watchlist = [s["ticker"] for s in scan_results]
+                old_count = len(self.config.watchlist)
+                self.config.watchlist = new_watchlist
+                self.market_data.watchlist = new_watchlist
+
+                # Log the scan results
+                logger.info(f"🎯 Pre-market scan: replaced {old_count} stocks with {len(new_watchlist)} dynamic picks")
+                for s in scan_results[:5]:
+                    logger.info(f"  📈 {s['ticker']:15s} gap={s['gap_pct']:+5.1f}% vol={s['vol_ratio']:.1f}x — {s['reason']}")
+
+                # Save scan summary for LLM context
+                self._premarket_summary = scanner.get_scan_summary(max_stocks=25)
+            else:
+                logger.warning("Pre-market scan returned no results — keeping existing watchlist")
+                self._premarket_summary = ""
+
+        except Exception as e:
+            logger.error(f"Pre-market scan failed: {e}")
+            self._premarket_summary = ""
+
+        self._scan_done_today = True
+        self._scan_date = today
 
     def _load_directives(self) -> str:
         """Load active directives from directive.json for system prompt injection."""

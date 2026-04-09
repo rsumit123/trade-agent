@@ -30,6 +30,8 @@ class MarketPreset:
     trade_types: List[str] = field(default_factory=lambda: ["swing"])
     short_allowed: bool = True
     locale: str = "en-US"                   # for number formatting
+    default_watchlist_count: int = 0         # for UI display (0 = use len(watchlist))
+    use_premarket_scanner: bool = False      # run pre-market scan before first cycle
 
 
 # ── NSE (Indian Stock Markets) ─────────────────────────────────────────
@@ -149,10 +151,47 @@ CRYPTO_PRESET = MarketPreset(
 )
 
 
+# ── NSE Intraday Scalping ──────────────────────────────────────────────
+
+NSE_INTRADAY_PRESET = MarketPreset(
+    market_id="nse-intraday",
+    display_name="NSE Intraday Scalping",
+    currency="INR",
+    currency_symbol="₹",
+    timezone="Asia/Kolkata",
+    market_open="09:15",
+    market_close="15:30",
+    intraday_close_buffer_min=15,
+    is_24x7=False,
+    locale="en-IN",
+    # Watchlist is DYNAMIC — built by pre-market scanner each morning
+    # This default is a fallback if scanner doesn't run
+    default_watchlist=[
+        "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
+        "SBIN.NS", "BHARTIARTL.NS", "HINDUNILVR.NS", "LT.NS", "KOTAKBANK.NS",
+        "AXISBANK.NS", "MARUTI.NS", "TATASTEEL.NS", "SUNPHARMA.NS", "TITAN.NS",
+        "WIPRO.NS", "BAJFINANCE.NS", "TATAMOTORS.NS", "ADANIENT.NS", "NTPC.NS",
+    ],
+    news_region="in-en",
+    news_queries=[
+        "Indian stock market today {date} news",
+        "NSE Nifty intraday movers today",
+    ],
+    news_sources=["moneycontrol", "economictimes", "livemint", "business-standard"],
+    ticker_suffix=".NS",
+    default_starting_capital=5_00_000.0,   # ₹5L for scalping
+    trade_types=["intraday"],               # ONLY intraday — no swing trades
+    short_allowed=True,
+    default_watchlist_count=25,
+    use_premarket_scanner=True,             # Build dynamic watchlist each morning
+)
+
+
 # ── Registry ───────────────────────────────────────────────────────────
 
 MARKET_PRESETS = {
     "nse": NSE_PRESET,
+    "nse-intraday": NSE_INTRADAY_PRESET,
     "crypto": CRYPTO_PRESET,
 }
 
