@@ -456,15 +456,29 @@ class TradingAgent:
 
         try:
             while True:
-                if not self.market_data.is_market_open():
+                market_open = self.market_data.is_market_open()
+
+                # For intraday scalping: wake up early for pre-market scan
+                is_premarket_window = False
+                if not market_open and self.preset and getattr(self.preset, 'use_premarket_scanner', False):
+                    is_premarket_window = self._is_premarket_window()
+
+                if not market_open and not is_premarket_window:
                     logger.info("💤 Market closed, waiting...")
-                    time.sleep(60)  # Check every minute
+                    time.sleep(60)
+                    continue
+
+                # Run pre-market scanner if in pre-market window (8:30-9:15)
+                if is_premarket_window and not market_open:
+                    self._maybe_run_premarket_scan()
+                    logger.info("📋 Pre-market scan done. Waiting for market open...")
+                    time.sleep(60)
                     continue
 
                 # Run periodic daily review (every 24h for 24/7 markets, at market close for others)
                 self._maybe_run_daily_review()
 
-                # Run pre-market scanner if enabled (once per day, before first cycle)
+                # Run scanner at market open if not already done in pre-market
                 self._maybe_run_premarket_scan()
 
                 result = self.run_once()
@@ -522,6 +536,26 @@ class TradingAgent:
                 logger.info("🔄 Running scheduled daily review (market closing)")
                 self.run_daily_review()
                 self._review_done_today = True
+
+    def _is_premarket_window(self) -> bool:
+        """Check if we're in the pre-market window (8:30 AM - market open)."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        tz = self.preset.timezone if self.preset else "Asia/Kolkata"
+        now = datetime.now(ZoneInfo(tz))
+
+        # Only on weekdays
+        if now.weekday() > 4:
+            return False
+
+        # Pre-market: 8:30 AM to market open (9:15 AM default)
+        premarket_start = now.replace(hour=8, minute=30, second=0, microsecond=0)
+        open_str = self.preset.market_open if self.preset else "09:15"
+        open_h, open_m = map(int, open_str.split(":"))
+        market_open = now.replace(hour=open_h, minute=open_m, second=0, microsecond=0)
+
+        return premarket_start <= now < market_open
 
     def _maybe_run_premarket_scan(self):
         """Run pre-market scanner once per day to build dynamic watchlist."""
