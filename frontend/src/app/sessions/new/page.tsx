@@ -27,6 +27,10 @@ export default function CreateSessionPage() {
     api_key_env: "OPENROUTER_API_KEY",
     personality: "",
     import_learnings_from: "",
+    // Backtest
+    backtest_mode: false,
+    backtest_start_date: "",
+    backtest_end_date: "",
   });
 
   useEffect(() => {
@@ -52,6 +56,10 @@ export default function CreateSessionPage() {
     setError("");
     if (!form.session_id.trim()) { setError("Session ID is required"); return; }
     if (!/^[a-z0-9_-]+$/.test(form.session_id)) { setError("Session ID: lowercase letters, numbers, hyphens, underscores only"); return; }
+    if (form.backtest_mode && (!form.backtest_start_date || !form.backtest_end_date)) {
+      setError("Backtest mode requires both start and end dates");
+      return;
+    }
 
     setCreating(true);
     try {
@@ -60,9 +68,22 @@ export default function CreateSessionPage() {
         body: JSON.stringify({
           ...form,
           display_name: form.display_name || form.session_id,
+          // Don't send empty date strings
+          backtest_start_date: form.backtest_start_date || null,
+          backtest_end_date: form.backtest_end_date || null,
         }),
       });
-      if (startAfter) {
+
+      if (form.backtest_mode) {
+        // Auto-start the backtest
+        await api(`/api/backtest/start/${form.session_id}`, {
+          method: "POST",
+          body: JSON.stringify({
+            start_date: form.backtest_start_date,
+            end_date: form.backtest_end_date,
+          }),
+        });
+      } else if (startAfter) {
         await api(`/api/agent/start/${form.session_id}`, { method: "POST" });
       }
       router.push(`/sessions/${form.session_id}`);
@@ -73,6 +94,7 @@ export default function CreateSessionPage() {
   };
 
   const preset = presets[form.market];
+  let sectionNum = 0;
 
   return (
     <div className="px-4 md:px-8 py-4 md:py-8 max-w-3xl mx-auto">
@@ -81,8 +103,44 @@ export default function CreateSessionPage() {
         <p className="text-text-secondary text-sm mt-1">Configure a new AI trading agent</p>
       </div>
 
+      {/* Mode Selection */}
+      <Section title="Mode" number={++sectionNum}>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <button
+            onClick={() => setForm({ ...form, backtest_mode: false })}
+            className={cn(
+              "p-5 rounded-xl border-2 text-left transition-all",
+              !form.backtest_mode
+                ? "border-accent-green bg-accent-green/5 shadow-lg shadow-accent-green/10"
+                : "border-border hover:border-border-accent bg-bg-card"
+            )}
+          >
+            <div className="text-2xl mb-2">{"\u{1F4C8}"}</div>
+            <div className="font-semibold text-text-primary">Live Trading</div>
+            <div className="text-xs text-text-muted mt-1">
+              Paper trade in real-time with live market data
+            </div>
+          </button>
+          <button
+            onClick={() => setForm({ ...form, backtest_mode: true })}
+            className={cn(
+              "p-5 rounded-xl border-2 text-left transition-all",
+              form.backtest_mode
+                ? "border-[#8b5cf6] bg-[#8b5cf6]/5 shadow-lg shadow-[#8b5cf6]/10"
+                : "border-border hover:border-border-accent bg-bg-card"
+            )}
+          >
+            <div className="text-2xl mb-2">{"\u{23F3}"}</div>
+            <div className="font-semibold text-text-primary">Backtest First</div>
+            <div className="text-xs text-text-muted mt-1">
+              Replay historical data to train the agent before going live
+            </div>
+          </button>
+        </div>
+      </Section>
+
       {/* Market Selection */}
-      <Section title="Market" number={1}>
+      <Section title="Market" number={++sectionNum}>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {Object.entries(presets).map(([id, p]) => (
             <button
@@ -107,15 +165,111 @@ export default function CreateSessionPage() {
         </div>
       </Section>
 
+      {/* Backtest Date Range (only when backtest mode) */}
+      {form.backtest_mode && (
+        <Section title="Backtest Period" number={++sectionNum}>
+          <p className="text-text-muted text-sm mb-4">
+            Select the date range to replay. The agent will step through each trading day,
+            making decisions at every 15-minute candle.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+            <div>
+              <label className="block text-xs text-text-muted mb-1.5">Start Date</label>
+              <input
+                type="date"
+                value={form.backtest_start_date}
+                onChange={(e) => setForm({ ...form, backtest_start_date: e.target.value })}
+                className="w-full font-mono"
+                style={{
+                  background: "#0f172a",
+                  border: "1px solid #334155",
+                  borderRadius: 8,
+                  padding: "10px 12px",
+                  color: "#e2e8f0",
+                  fontSize: 14,
+                }}
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-text-muted mb-1.5">End Date</label>
+              <input
+                type="date"
+                value={form.backtest_end_date}
+                onChange={(e) => setForm({ ...form, backtest_end_date: e.target.value })}
+                className="w-full font-mono"
+                style={{
+                  background: "#0f172a",
+                  border: "1px solid #334155",
+                  borderRadius: 8,
+                  padding: "10px 12px",
+                  color: "#e2e8f0",
+                  fontSize: 14,
+                }}
+              />
+            </div>
+          </div>
+          {/* Quick presets */}
+          <div className="flex flex-wrap gap-2">
+            {[
+              { label: "1 Week", days: 7 },
+              { label: "2 Weeks", days: 14 },
+              { label: "1 Month", days: 30 },
+              { label: "3 Months", days: 90 },
+            ].map(({ label, days }) => (
+              <button
+                key={label}
+                onClick={() => {
+                  const end = new Date();
+                  end.setDate(end.getDate() - 1);
+                  const start = new Date(end);
+                  start.setDate(start.getDate() - days);
+                  setForm({
+                    ...form,
+                    backtest_start_date: start.toISOString().split("T")[0],
+                    backtest_end_date: end.toISOString().split("T")[0],
+                  });
+                }}
+                style={{
+                  padding: "6px 14px",
+                  minHeight: 36,
+                  background: "rgba(139,92,246,0.1)",
+                  border: "1px solid rgba(139,92,246,0.25)",
+                  borderRadius: 8,
+                  color: "#a78bfa",
+                  fontSize: 12,
+                  fontWeight: 500,
+                  cursor: "pointer",
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {form.backtest_start_date && form.backtest_end_date && (
+            <div className="mt-3">
+              <span className="text-[10px] text-text-muted">
+                {(() => {
+                  const start = new Date(form.backtest_start_date);
+                  const end = new Date(form.backtest_end_date);
+                  const days = Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
+                  const tradingDays = Math.floor(days * 5 / 7);
+                  return `~${tradingDays} trading days. Each day takes 1-3 minutes to simulate.`;
+                })()}
+              </span>
+            </div>
+          )}
+        </Section>
+      )}
+
       {/* Basics */}
-      <Section title="Basics" number={2}>
+      <Section title="Basics" number={++sectionNum}>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="block text-xs text-text-muted mb-1.5">Session ID</label>
             <input
               value={form.session_id}
               onChange={(e) => setForm({ ...form, session_id: e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '') })}
-              placeholder="crypto_aggressive"
+              placeholder={form.backtest_mode ? "nse_backtest_apr" : "crypto_aggressive"}
               className="w-full"
             />
           </div>
@@ -151,7 +305,7 @@ export default function CreateSessionPage() {
       </Section>
 
       {/* Risk */}
-      <Section title="Risk Limits" number={3}>
+      <Section title="Risk Limits" number={++sectionNum}>
         <div className="space-y-5">
           <SliderField
             label="Max Position Size"
@@ -194,7 +348,7 @@ export default function CreateSessionPage() {
       </Section>
 
       {/* LLM */}
-      <Section title="LLM Configuration" number={4}>
+      <Section title="LLM Configuration" number={++sectionNum}>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="block text-xs text-text-muted mb-1.5">Provider</label>
@@ -284,7 +438,7 @@ export default function CreateSessionPage() {
 
       {/* Import Learnings */}
       {sessions.length > 0 && (
-        <Section title="Import Learnings" number={5}>
+        <Section title="Import Learnings" number={++sectionNum}>
           <div>
             <label className="block text-xs text-text-muted mb-1.5">Copy learnings from an existing session</label>
             <select
@@ -313,7 +467,7 @@ export default function CreateSessionPage() {
       )}
 
       {/* Personality */}
-      <Section title="Trading Personality" number={sessions.length > 0 ? 6 : 5}>
+      <Section title="Trading Personality" number={++sectionNum}>
         <textarea
           value={form.personality}
           onChange={(e) => setForm({ ...form, personality: e.target.value })}
@@ -331,46 +485,73 @@ export default function CreateSessionPage() {
         </div>
       )}
       <div className="flex flex-col sm:flex-row gap-3 sm:justify-end mt-8 mb-12 animate-fade-in delay-5">
-        <button
-          onClick={() => handleSubmit(false)}
-          disabled={creating}
-          style={{
-            width: "100%",
-            maxWidth: "none",
-            padding: "14px 24px",
-            minHeight: 48,
-            background: "#151d2e",
-            border: "1px solid #1e293b",
-            borderRadius: 10,
-            color: "#e2e8f0",
-            fontSize: 15,
-            fontWeight: 500,
-            opacity: creating ? 0.5 : 1,
-            cursor: creating ? "not-allowed" : "pointer",
-          }}
-        >
-          {creating ? "Creating..." : "Create Session"}
-        </button>
-        <button
-          onClick={() => handleSubmit(true)}
-          disabled={creating}
-          style={{
-            width: "100%",
-            maxWidth: "none",
-            padding: "14px 24px",
-            minHeight: 48,
-            background: "#22c55e",
-            border: "none",
-            borderRadius: 10,
-            color: "#fff",
-            fontSize: 15,
-            fontWeight: 600,
-            opacity: creating ? 0.5 : 1,
-            cursor: creating ? "not-allowed" : "pointer",
-          }}
-        >
-          {creating ? "Creating..." : "Create & Start Agent"}
-        </button>
+        {form.backtest_mode ? (
+          /* Backtest mode: single button */
+          <button
+            onClick={() => handleSubmit(false)}
+            disabled={creating}
+            style={{
+              width: "100%",
+              maxWidth: "none",
+              padding: "14px 24px",
+              minHeight: 48,
+              background: creating ? "#334155" : "#8b5cf6",
+              border: "none",
+              borderRadius: 10,
+              color: "#fff",
+              fontSize: 15,
+              fontWeight: 600,
+              opacity: creating ? 0.6 : 1,
+              cursor: creating ? "not-allowed" : "pointer",
+            }}
+          >
+            {creating ? "Creating & Starting Backtest..." : "Create & Run Backtest"}
+          </button>
+        ) : (
+          /* Live mode: two buttons */
+          <>
+            <button
+              onClick={() => handleSubmit(false)}
+              disabled={creating}
+              style={{
+                width: "100%",
+                maxWidth: "none",
+                padding: "14px 24px",
+                minHeight: 48,
+                background: "#151d2e",
+                border: "1px solid #1e293b",
+                borderRadius: 10,
+                color: "#e2e8f0",
+                fontSize: 15,
+                fontWeight: 500,
+                opacity: creating ? 0.5 : 1,
+                cursor: creating ? "not-allowed" : "pointer",
+              }}
+            >
+              {creating ? "Creating..." : "Create Session"}
+            </button>
+            <button
+              onClick={() => handleSubmit(true)}
+              disabled={creating}
+              style={{
+                width: "100%",
+                maxWidth: "none",
+                padding: "14px 24px",
+                minHeight: 48,
+                background: "#22c55e",
+                border: "none",
+                borderRadius: 10,
+                color: "#fff",
+                fontSize: 15,
+                fontWeight: 600,
+                opacity: creating ? 0.5 : 1,
+                cursor: creating ? "not-allowed" : "pointer",
+              }}
+            >
+              {creating ? "Creating..." : "Create & Start Agent"}
+            </button>
+          </>
+        )}
       </div>
     </div>
   );

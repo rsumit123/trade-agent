@@ -134,6 +134,8 @@ _YAML_FIELDS = {
     "daily_loss_limit_pct", "per_trade_loss_limit_pct", "max_trade_amount",
     "watchlist", "llm_provider", "llm_model", "api_key_env",
     "intraday_interval_min", "personality", "created_at",
+    "data_source",
+    "backtest_mode", "backtest_start_date", "backtest_end_date", "backtest_status",
 }
 
 
@@ -180,6 +182,8 @@ def list_sessions() -> List[Dict]:
                 "starting_capital": data.get("starting_capital", preset.default_starting_capital),
                 "llm_provider": data.get("llm_provider", "openrouter"),
                 "llm_model": data.get("llm_model", ""),
+                "backtest_mode": data.get("backtest_mode", False),
+                "backtest_status": data.get("backtest_status", ""),
             })
         except Exception:
             # Skip broken sessions

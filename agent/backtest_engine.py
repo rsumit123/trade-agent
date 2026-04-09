@@ -198,6 +198,14 @@ class BacktestEngine:
                     logger.warning(f"  No intraday data for {trade_date} — skipping (holiday?)")
                     continue
 
+                # Log candle key → watchlist match
+                candle_keys = set(intraday_candles.keys())
+                watchlist_set = set(tickers)
+                matched = candle_keys & watchlist_set
+                unmatched = watchlist_set - candle_keys
+                logger.info(f"  📋 Candle keys matched: {len(matched)}/{len(tickers)} "
+                           f"| unmatched: {list(unmatched)[:5] if unmatched else 'none'}")
+
                 # 3. Create BacktestMarketData
                 backtest_data = BacktestMarketData(
                     watchlist=tickers,
@@ -238,7 +246,7 @@ class BacktestEngine:
 
                     # Run one agent cycle
                     try:
-                        result = agent.run_once(force_intraday=True)
+                        result = agent.run_once(force_intraday=True, is_backtest=True)
                         actions = len(result.get("actions", []))
                         day_trades += actions
                         if actions > 0:

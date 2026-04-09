@@ -74,6 +74,8 @@ class BacktestMarketData:
         for ticker in symbols:
             candles = self.intraday_candles.get(ticker)
             if candles is None or candles.empty:
+                logger.debug(f"  get_current_prices: no candles for {ticker} "
+                            f"(available keys: {list(self.intraday_candles.keys())[:5]}...)")
                 continue
 
             # Strip timezone from candle dates for comparison
@@ -204,6 +206,11 @@ class BacktestMarketData:
         """Return summary for all watchlist stocks at current simulation time."""
         prices = self.get_current_prices()
         summaries = []
+
+        if not prices:
+            logger.warning(f"  get_watchlist_summary: NO prices returned for {len(self.watchlist)} watchlist tickers "
+                          f"at time {self.current_time}. "
+                          f"Intraday candle keys: {list(self.intraday_candles.keys())[:5]}")
 
         for ticker in self.watchlist:
             price = prices.get(ticker, 0)

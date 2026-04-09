@@ -10,6 +10,8 @@ export interface Session {
   llm_model?: string;
   total_trades?: number;
   win_rate?: number | null;
+  backtest_mode?: boolean;
+  backtest_status?: string;
 }
 
 export interface MarketPreset {
@@ -132,6 +134,8 @@ export interface SessionConfig {
   timezone: string;
   session_id?: string;
   session_name?: string;
+  backtest_mode?: boolean;
+  backtest_status?: string;
 }
 
 export interface AgentStatus {
@@ -159,4 +163,30 @@ export interface DailyPerformance {
   losses: number;
   cumulative_return: number | null;
   cumulative_return_pct: number | null;
+}
+
+// ── Backtest Types ─────────────────────────────────────────
+
+export interface BacktestDayResult {
+  date: string;
+  trades: number;
+  total_value: number;
+  daily_pnl: number;
+  total_return_pct: number;
+  win_rate: number;
+  total_trades: number;
+  duration_sec: number;
+  error?: string;
+}
+
+export interface BacktestProgress {
+  status: "not_started" | "running" | "completed" | "failed";
+  start_date?: string;
+  end_date?: string;
+  trading_days?: number;
+  current_day?: number;
+  current_date?: string;
+  daily_results?: BacktestDayResult[];
+  final_stats?: Performance;
+  error?: string;
 }
