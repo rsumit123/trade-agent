@@ -165,7 +165,15 @@ class BacktestEngine:
         session = load_session(self.session_config.session_id)
         agent = TradingAgent(session=session)
         preset = agent.preset
-        tickers = watchlist or agent.config.watchlist
+        base_tickers = watchlist or agent.config.watchlist
+
+        # Pre-market scanner for dynamic stock selection each day
+        from .premarket_scanner import PreMarketScanner
+        scanner = PreMarketScanner(self.kite)
+        # Use the base watchlist as the scanner pool (111 liquid stocks)
+        # Fetching all ~3000 instruments per day would be too slow for backtest
+        scan_pool = list(base_tickers)
+        logger.info(f"📋 Scanner pool: {len(scan_pool)} stocks (will pick top 25 each day)")
 
         results = {
             "start_date": start_date.isoformat(),
@@ -186,7 +194,43 @@ class BacktestEngine:
             logger.info(f"{'='*60}")
 
             try:
+                # 0. Run historical pre-market scanner to pick today's stocks
+                #    Uses daily candles from the scan pool (111 liquid stocks)
+                logger.info(f"  🔍 Running pre-market scanner for {trade_date}...")
+                broad_daily = self._fetch_daily_candles(scan_pool, trade_date, lookback_days=5)
+
+                if broad_daily:
+                    # Get agent's learnings for LLM Phase 2
+                    learnings = agent.learner.get_learnings(max_chars=3000)
+                    scan_results = scanner.scan_historical(
+                        daily_candles=broad_daily,
+                        max_stocks=25,
+                        llm_client=agent.engine.client if agent.engine else None,
+                        llm_config=agent.config if agent.engine else None,
+                        learnings=learnings,
+                    )
+                    if scan_results:
+                        tickers = [s["ticker"] for s in scan_results]
+                        # Build scan summary for agent context
+                        scan_lines = [f"📊 Pre-market scan picked {len(tickers)} stocks:"]
+                        for s in scan_results[:10]:
+                            d = s.get("llm_direction", "?")
+                            scan_lines.append(f"  {'📈' if d == 'long' else '📉'} {s['ticker']} ({s.get('llm_reason', s.get('reason', ''))[:50]})")
+                        agent._premarket_summary = "\n".join(scan_lines)
+                        logger.info(f"  🎯 Scanner selected {len(tickers)} stocks for today")
+                    else:
+                        tickers = base_tickers
+                        logger.info(f"  ⚠️ Scanner returned no picks — using default {len(tickers)} watchlist")
+                else:
+                    tickers = base_tickers
+                    logger.info(f"  ⚠️ No broad daily data — using default {len(tickers)} watchlist")
+
+                # Update agent's watchlist and config for this day
+                agent.config.watchlist = list(tickers)
+                agent.market_data.watchlist = list(tickers)
+
                 # 1. Fetch daily candles for technical indicators (35-day lookback)
+                #    Only for the selected tickers (not all instruments)
                 logger.info(f"  📊 Fetching daily candles for {len(tickers)} stocks...")
                 daily_candles = self._fetch_daily_candles(tickers, trade_date, lookback_days=35)
 
