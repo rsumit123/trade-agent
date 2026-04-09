@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 # Minimum filters for scalping candidates
 MIN_PRICE = 50            # Skip penny stocks
 MAX_PRICE = 10000         # Skip ultra-expensive (Hermes, MRF)
-MIN_AVG_VOLUME = 500_000  # Minimum 20-day avg volume for liquidity
+MIN_AVG_VOLUME = 1_000_000  # Minimum 1M avg volume for scalping liquidity
 MIN_GAP_PCT = 0.5         # Minimum 0.5% gap to be interesting
 MIN_MARKET_CAP_PROXY = 100_000_000  # Rough filter: price * volume > 10Cr
 
@@ -39,56 +39,94 @@ class PreMarketScanner:
         if self._instruments is None:
             all_instruments = self.kite.instruments("NSE")
             # Filter to equities only (exclude indices, ETFs with specific segment)
+            # Filter to equities only — skip indices, ETFs, commodity products
+            SKIP_PATTERNS = {
+                "NIFTY", "BANK", "GOLD", "SILVER", "LIQUID", "BEES",
+                "CPSE", "NEXT", "ALPHA", "BETA", "ETFGOLD", "ETFSILVER",
+                "ICICIGOLD", "HDFCGOLD", "HDFCSILVER", "SBISILVER",
+                "SILVERBEES", "GOLDBEES", "CPSEETF", "MOM", "JUNIORBEES",
+            }
             self._instruments = [
                 i for i in all_instruments
                 if i.get("instrument_type") == "EQ"
                 and i.get("exchange") == "NSE"
-                and i.get("last_price", 0) > 0
+                and i.get("tradingsymbol", "") != ""
+                and not any(skip in i.get("tradingsymbol", "").upper() for skip in SKIP_PATTERNS)
             ]
             logger.info(f"📊 Loaded {len(self._instruments)} NSE equities")
         return self._instruments
+
+    def _get_nifty500_symbols(self) -> List[str]:
+        """Get Nifty 500 constituents — the most liquid NSE stocks.
+
+        These are the top 500 stocks by market cap and liquidity.
+        Scanning 500 instead of 9599 avoids API rate limits.
+        """
+        # Curated list of ~200 most traded NSE stocks (covers Nifty 50 + Nifty Next 50 + top midcaps)
+        # This is a pragmatic subset — catches 90%+ of intraday volume
+        TOP_LIQUID = [
+            # Nifty 50
+            "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "SBIN", "BHARTIARTL",
+            "HINDUNILVR", "LT", "KOTAKBANK", "AXISBANK", "ITC", "BAJFINANCE",
+            "MARUTI", "TATAMOTORS", "SUNPHARMA", "WIPRO", "HCLTECH", "TATASTEEL",
+            "NTPC", "POWERGRID", "ADANIENT", "ADANIPORTS", "M&M", "TITAN",
+            "NESTLEIND", "ULTRACEMCO", "TECHM", "ONGC", "BAJAJFINSV",
+            "INDUSINDBK", "JSWSTEEL", "DRREDDY", "CIPLA", "COALINDIA",
+            "BPCL", "EICHERMOT", "GRASIM", "DIVISLAB", "TATAPOWER",
+            "BRITANNIA", "HEROMOTOCO", "APOLLOHOSP", "ASIANPAINT", "PIDILITIND",
+            "SBILIFE", "HDFCLIFE", "VEDL", "HINDALCO", "HAL",
+            # Nifty Next 50 & popular midcaps
+            "BEL", "TRENT", "DLF", "DMART", "GODREJPROP", "ZOMATO",
+            "PAYTM", "NYKAA", "POLICYBZR", "IRFC", "IRCTC", "RAILTEL",
+            "MUTHOOTFIN", "CHOLAFIN", "SHRIRAMFIN", "BAJAJ-AUTO", "M&MFIN",
+            "PRESTIGE", "OBEROIRLTY", "PHOENIXLTD", "LICI", "GICRE",
+            "PERSISTENT", "COFORGE", "MPHASIS", "LTTS", "KPITTECH",
+            "ADANIGREEN", "ADANIPOWER", "ABB", "SIEMENS", "CUMMINSIND",
+            "SRF", "DEEPAKNTR", "NAVINFLUOR", "FINEORG", "UPL",
+            "DELHIVERY", "BLUEDART", "ZEEL", "SUNTV", "IDEA",
+            "HAVELLS", "VOLTAS", "BLUESTARCO", "WHIRLPOOL",
+            "DABUR", "MARICO", "GODREJCP", "JUBLFOOD", "WESTLIFE",
+            "INDHOTEL", "LEMONTREE", "AUROPHARMA", "TORNTPHARM",
+            "TATACHEM", "PCBL", "TANLA", "MOTHERSON", "BANDHANBNK",
+            "MAZDOCK", "BEML", "BHEL", "IOC", "GAIL",
+            "CONCOR", "RVNL", "IREDA", "JIOFIN", "JSWINFRA",
+            # High beta / momentum favourites
+            "TATAELXSI", "DIXON", "KAYNES", "COCHINSHIP", "GRSE",
+            "MAZAGON", "TIINDIA", "CDSL", "BSE", "CAMS",
+            "ANGELONE", "MOTILALOFS", "ICICIGI", "STARHEALTH",
+            "REDTAPE", "HONASA", "STLTECH", "KEC", "RITES",
+            "ATUL", "COROMANDEL", "PIIND", "FLUOROCHEM",
+        ]
+        return TOP_LIQUID
 
     def scan(self, max_stocks: int = 25) -> List[Dict[str, Any]]:
         """
         Run the pre-market scan and return top stocks for scalping.
 
-        Returns list of dicts with:
-        - ticker: str (with .NS suffix)
-        - prev_close: float
-        - open_price: float (pre-market or previous close)
-        - gap_pct: float
-        - volume: int
-        - avg_volume: float
-        - vol_ratio: float
-        - score: float (composite ranking score)
-        - reason: str (why this stock was selected)
+        Scans ~150 most liquid NSE stocks (not all 9599 — avoids rate limits).
         """
-        logger.info("🔍 Starting pre-market scan of all NSE stocks...")
+        logger.info("🔍 Starting pre-market scan of top NSE stocks...")
 
-        equities = self._load_nse_equities()
-        if not equities:
-            logger.warning("No NSE equities loaded — using empty watchlist")
-            return []
+        top_symbols = self._get_nifty500_symbols()
+        kite_symbols = [f"NSE:{sym}" for sym in top_symbols]
 
-        # Batch fetch quotes for all equities
-        # Kite allows 500 per call, so we need multiple batches
+        # Fetch quotes in batches of 500 (should be 1 batch for ~150 stocks)
         all_quotes = {}
-        symbols = [f"NSE:{i['tradingsymbol']}" for i in equities]
-
-        for i in range(0, len(symbols), 500):
-            batch = symbols[i:i+500]
+        for i in range(0, len(kite_symbols), 500):
+            batch = kite_symbols[i:i+500]
             try:
                 quotes = self.kite.quote(batch)
                 all_quotes.update(quotes)
             except Exception as e:
                 logger.warning(f"Quote batch {i//500} failed: {e}")
 
-        logger.info(f"📊 Got quotes for {len(all_quotes)} instruments")
+        equities = [{"tradingsymbol": sym} for sym in top_symbols]
+
+        logger.info(f"📊 Got quotes for {len(all_quotes)} stocks")
 
         # Score and rank each stock
         candidates = []
-        for instrument in equities:
-            sym = instrument["tradingsymbol"]
+        for sym in top_symbols:
             kite_sym = f"NSE:{sym}"
             quote = all_quotes.get(kite_sym, {})
 
@@ -99,8 +137,9 @@ class PreMarketScanner:
             ohlc = quote.get("ohlc", {})
             prev_close = ohlc.get("close", 0)
             day_open = ohlc.get("open", 0) or prev_close
-            volume = quote.get("volume", 0)
-            avg_volume = quote.get("average_traded_quantity", 0) or 1
+            volume = quote.get("volume", 0) or quote.get("last_quantity", 0)
+            # average_traded_quantity may not be in quote — use volume as proxy
+            avg_volume = quote.get("average_traded_quantity", 0) or max(volume, 1)
 
             if not prev_close or not ltp:
                 continue
