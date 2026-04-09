@@ -15,6 +15,7 @@ import { AgentControl } from "@/components/AgentControl";
 import { LearningInsights } from "@/components/LearningInsights";
 import { DirectivePanel } from "@/components/DirectivePanel";
 import { DailyTracker } from "@/components/DailyTracker";
+import { BacktestPanel } from "@/components/BacktestPanel";
 import type {
   PortfolioSummary, ClosedTrade, RiskStatus, Performance,
   WatchlistItem, SessionConfig, AgentStatus,
@@ -54,6 +55,8 @@ export default function SessionDashboard() {
     return () => clearInterval(interval);
   }, [loadAll]);
 
+  const isBacktest = config?.backtest_mode === true;
+
   const marketBadge = config?.market_id === "crypto"
     ? "bg-accent-blue/15 text-accent-blue border-accent-blue/30"
     : "bg-accent-green/15 text-accent-green border-accent-green/30";
@@ -68,6 +71,18 @@ export default function SessionDashboard() {
             <span className={cn("text-[10px] uppercase tracking-wider font-semibold px-2 py-0.5 rounded border", marketBadge)}>
               {config?.market_id || "nse"}
             </span>
+            {isBacktest && (
+              <span
+                className="text-[10px] uppercase tracking-wider font-semibold px-2 py-0.5 rounded border"
+                style={{
+                  background: "rgba(139,92,246,0.15)",
+                  color: "#a78bfa",
+                  borderColor: "rgba(139,92,246,0.3)",
+                }}
+              >
+                backtest
+              </span>
+            )}
           </h1>
           <p className="text-text-muted text-xs mt-0.5">
             {config?.market_name || ""} {config?.is_24x7 ? " \u00B7 24/7" : ""}
@@ -75,7 +90,9 @@ export default function SessionDashboard() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <AgentControl sessionId={sessionId} status={agentStatus} onStatusChange={loadAll} />
+          {!isBacktest && (
+            <AgentControl sessionId={sessionId} status={agentStatus} onStatusChange={loadAll} />
+          )}
           <Link
             href={`/sessions/${sessionId}/settings`}
             className="flex items-center justify-center rounded-xl border border-border hover:border-border-accent hover:bg-bg-card transition-all text-text-muted hover:text-text-primary"
@@ -87,10 +104,19 @@ export default function SessionDashboard() {
         </div>
       </div>
 
-      {/* Live Directives */}
-      <div className="mb-4 md:mb-5 animate-fade-in delay-1">
-        <DirectivePanel sessionId={sessionId} />
-      </div>
+      {/* Backtest Panel (shown for backtest sessions) */}
+      {isBacktest && (
+        <div className="mb-4 md:mb-5 animate-fade-in delay-1">
+          <BacktestPanel sessionId={sessionId} config={config} onComplete={loadAll} />
+        </div>
+      )}
+
+      {/* Live Directives (only for live sessions) */}
+      {!isBacktest && (
+        <div className="mb-4 md:mb-5 animate-fade-in delay-1">
+          <DirectivePanel sessionId={sessionId} />
+        </div>
+      )}
 
       {/* Metrics Row */}
       <MetricsRow portfolio={portfolio} perf={perf} config={config} />

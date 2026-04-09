@@ -140,6 +140,10 @@ class CreateSessionRequest(BaseModel):
     intraday_interval_min: int = 15
     personality: str = ""
     import_learnings_from: Optional[str] = None  # session_id to copy learnings from
+    # Backtest fields
+    backtest_mode: bool = False
+    backtest_start_date: Optional[str] = None     # "YYYY-MM-DD"
+    backtest_end_date: Optional[str] = None       # "YYYY-MM-DD"
 
 
 class AddDirectiveRequest(BaseModel):
@@ -368,6 +372,11 @@ def create_session(req: CreateSessionRequest):
         intraday_interval_min=req.intraday_interval_min,
         personality=req.personality,
         created_at=datetime.now().isoformat(),
+        # Backtest
+        backtest_mode=req.backtest_mode,
+        backtest_start_date=req.backtest_start_date,
+        backtest_end_date=req.backtest_end_date,
+        data_source="kite" if req.market in ("nse", "nse-intraday") else "yfinance",
     )
     sc.resolve_defaults()
     save_session(sc)
@@ -1140,6 +1149,8 @@ def get_config(session: str = None):
         result["session_id"] = sc.session_id
         result["session_name"] = sc.display_name
         result["personality"] = sc.personality or ""
+        result["backtest_mode"] = sc.backtest_mode
+        result["backtest_status"] = sc.backtest_status or ""
 
     return result
 

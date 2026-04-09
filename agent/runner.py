@@ -76,6 +76,8 @@ class TradingAgent:
             logger.warning(f"⚠️  LLM engine not available: {e}")
             self.engine = None
 
+        self._is_backtest = False  # Set True by backtest engine to skip real-time checks
+
         market_label = self.preset.display_name if self.preset else "NSE"
         session_label = f" (session: {self.session.session_id})" if self.session else ""
         logger.info(f"🤖 Trading Agent initialized{session_label}")
@@ -152,7 +154,8 @@ class TradingAgent:
         reason = trade_input.get("reason", "")
 
         # Hard guard: block new positions near market close (force-close window)
-        if action in ("BUY", "SHORT") and self.risk_manager.check_intraday_close():
+        # Skip during backtest — backtest engine manages EOD close separately
+        if action in ("BUY", "SHORT") and not self._is_backtest and self.risk_manager.check_intraday_close():
             msg = "Cannot open new positions — market closing soon"
             logger.warning(f"❌ {msg}")
             return {"success": False, "error": msg}
@@ -339,15 +342,19 @@ class TradingAgent:
 
     # ── Main Loop ────────────────────────────────────────────
 
-    def run_once(self, force_intraday: bool = False) -> Dict:
+    def run_once(self, force_intraday: bool = False, is_backtest: bool = False) -> Dict:
         """Run a single decision cycle.
         force_intraday: hint the LLM to prefer intraday trades (useful for testing).
+        is_backtest: skip real-time close check (backtest manages EOD separately).
         """
         logger.info("=" * 60)
+        # Track backtest mode on instance so _execute_trade can check it
+        if is_backtest:
+            self._is_backtest = True
         # Suppress intraday hint for 24/7 markets
         if force_intraday and self.preset and self.preset.is_24x7:
             force_intraday = False
-        logger.info("🔄 Starting decision cycle" + (" [FORCE INTRADAY]" if force_intraday else ""))
+        logger.info("🔄 Starting decision cycle" + (" [FORCE INTRADAY]" if force_intraday else "") + (" [BACKTEST]" if is_backtest else ""))
 
         # 1. OBSERVE — gather market data
         logger.info("👁️  Observing market...")
@@ -383,12 +390,14 @@ class TradingAgent:
                 self.learner.write_trade_log(trade, llm_client=self.engine.client)
 
         # 4. Force-close intraday positions near market close (≥15:15 IST)
-        near_close = self.risk_manager.check_intraday_close()
-        if near_close:
-            self._close_intraday_positions(prices)
-            # Don't let LLM open new positions when we're in the closing window
-            logger.info("⏰ Near market close — skipping new trade decisions")
-            return {"status": "ok", "actions": [], "portfolio": self.portfolio.get_portfolio_summary(prices)}
+        #    Skip during backtest — the backtest engine handles EOD close separately
+        if not is_backtest:
+            near_close = self.risk_manager.check_intraday_close()
+            if near_close:
+                self._close_intraday_positions(prices)
+                # Don't let LLM open new positions when we're in the closing window
+                logger.info("⏰ Near market close — skipping new trade decisions")
+                return {"status": "ok", "actions": [], "portfolio": self.portfolio.get_portfolio_summary(prices)}
 
         # 5. DECIDE + ACT — let the LLM make decisions
         logger.info("🧠 Running decision engine...")
