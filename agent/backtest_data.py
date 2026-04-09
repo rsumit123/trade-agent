@@ -49,7 +49,11 @@ class BacktestMarketData:
 
     def set_time(self, timestamp: datetime):
         """Advance the simulation clock. All subsequent calls use this time."""
-        self.current_time = timestamp
+        # Strip timezone for consistent comparison with candle dates
+        if hasattr(timestamp, 'tzinfo') and timestamp.tzinfo:
+            self.current_time = timestamp.replace(tzinfo=None)
+        else:
+            self.current_time = timestamp
         self._price_cache = {}  # Clear cache on time change
 
     def set_intraday_candles(self, candles: Dict[str, pd.DataFrame]):
@@ -72,11 +76,15 @@ class BacktestMarketData:
             if candles is None or candles.empty:
                 continue
 
+            # Strip timezone from candle dates for comparison
+            candle_dates = candles["date"].apply(
+                lambda x: x.replace(tzinfo=None) if hasattr(x, 'tzinfo') and x.tzinfo else x
+            )
+
             # Get the latest candle at or before current_time
-            mask = candles["date"] <= self.current_time
+            mask = candle_dates <= self.current_time
             valid = candles[mask]
             if valid.empty:
-                # Use first candle's open if we're before market data starts
                 prices[ticker] = float(candles.iloc[0]["open"])
             else:
                 prices[ticker] = float(valid.iloc[-1]["close"])
@@ -158,7 +166,10 @@ class BacktestMarketData:
             # VWAP from intraday candles up to current_time
             vwap = None
             if include_vwap and not intraday.empty:
-                valid = intraday[intraday["date"] <= self.current_time]
+                intraday_dates = intraday["date"].apply(
+                    lambda x: x.replace(tzinfo=None) if hasattr(x, 'tzinfo') and x.tzinfo else x
+                )
+                valid = intraday[intraday_dates <= self.current_time]
                 if not valid.empty and "volume" in valid.columns:
                     typical_price = (valid["high"] + valid["low"] + valid["close"]) / 3
                     vol = valid["volume"]
@@ -224,7 +235,10 @@ class BacktestMarketData:
         candles = self.intraday_candles.get(ticker, pd.DataFrame())
         if candles.empty:
             return candles
-        return candles[candles["date"] <= self.current_time].copy()
+        candle_dates = candles["date"].apply(
+            lambda x: x.replace(tzinfo=None) if hasattr(x, 'tzinfo') and x.tzinfo else x
+        )
+        return candles[candle_dates <= self.current_time].copy()
 
     def is_market_open(self) -> bool:
         """Check if current simulation time is within market hours."""
