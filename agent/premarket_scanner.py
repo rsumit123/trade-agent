@@ -308,6 +308,115 @@ Return ONLY the JSON array, no other text."""
             logger.error(f"Phase 2 LLM selection failed: {e}")
             return candidates[:max_picks]
 
+    # ── Phase 1 Historical: For Backtesting ─────────────────────
+
+    def scan_phase1_historical(
+        self,
+        daily_candles: Dict[str, "pd.DataFrame"],
+        max_candidates: int = 60,
+    ) -> List[Dict[str, Any]]:
+        """
+        Phase 1 for backtesting: same filtering logic as scan_phase1,
+        but uses pre-fetched daily candle data instead of live kite.ohlc().
+
+        daily_candles: {ticker: DataFrame[date, open, high, low, close, volume]}
+                       Must have at least 2 rows (prev day + current day).
+        """
+        import pandas as pd
+
+        # Load instrument cache for company names
+        name_map = {}
+        if INSTRUMENT_CACHE.exists():
+            try:
+                data = json.loads(INSTRUMENT_CACHE.read_text())
+                for i in data.get("instruments", []):
+                    sym = i.get("tradingsymbol", "")
+                    name_map[f"{sym}.NS"] = i.get("name", "")
+                    name_map[sym] = i.get("name", "")
+            except Exception:
+                pass
+
+        candidates = []
+        for ticker, df in daily_candles.items():
+            if df is None or len(df) < 2:
+                continue
+
+            # Last row = trade day, second-to-last = previous close
+            today = df.iloc[-1]
+            prev = df.iloc[-2]
+
+            ltp = float(today["close"])
+            prev_close = float(prev["close"])
+            day_open = float(today["open"])
+            day_high = float(today["high"])
+            day_low = float(today["low"])
+
+            if not prev_close or not ltp or ltp < MIN_PRICE or ltp > MAX_PRICE:
+                continue
+
+            gap_pct = ((day_open - prev_close) / prev_close) * 100
+            change_pct = ((ltp - prev_close) / prev_close) * 100
+            day_range_pct = ((day_high - day_low) / prev_close) * 100 if day_high > day_low else 0
+
+            # Same filter as live scan
+            if abs(gap_pct) < MIN_GAP_PCT and abs(change_pct) < 1.0 and day_range_pct < 1.0:
+                continue
+
+            score = min(abs(gap_pct), 5) * 2 + min(abs(change_pct), 10) * 1 + min(day_range_pct, 8) * 0.5
+            if 100 <= ltp <= 2000:
+                score += 1.5
+
+            reasons = []
+            if abs(gap_pct) >= 2:
+                reasons.append(f"{'Gap-up' if gap_pct > 0 else 'Gap-down'} {gap_pct:+.1f}%")
+            elif abs(gap_pct) >= 0.5:
+                reasons.append(f"Gap {gap_pct:+.1f}%")
+            if abs(change_pct) >= 3:
+                reasons.append(f"Move {change_pct:+.1f}%")
+            if day_range_pct >= 3:
+                reasons.append(f"Range {day_range_pct:.1f}%")
+
+            candidates.append({
+                "ticker": ticker if ".NS" in ticker else f"{ticker}.NS",
+                "name": name_map.get(ticker, name_map.get(ticker.replace(".NS", ""), "")),
+                "ltp": round(ltp, 2),
+                "prev_close": round(prev_close, 2),
+                "gap_pct": round(gap_pct, 2),
+                "change_pct": round(change_pct, 2),
+                "day_range_pct": round(day_range_pct, 2),
+                "score": round(score, 2),
+                "reason": " | ".join(reasons) if reasons else "Active",
+            })
+
+        candidates.sort(key=lambda x: x["score"], reverse=True)
+        top = candidates[:max_candidates]
+        logger.info(f"🎯 Historical Phase 1: {len(candidates)} active → top {len(top)} candidates")
+        return top
+
+    def scan_historical(
+        self,
+        daily_candles: Dict[str, "pd.DataFrame"],
+        max_stocks: int = 25,
+        llm_client=None,
+        llm_config=None,
+        learnings: str = "",
+        news: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Full historical scan: Phase 1 (quantitative) + Phase 2 (LLM)."""
+        candidates = self.scan_phase1_historical(daily_candles, max_candidates=60)
+        if not candidates:
+            return []
+
+        if llm_client and llm_config:
+            return self.scan_phase2_llm(
+                candidates, llm_client, llm_config,
+                learnings=learnings, news=news,
+                max_picks=max_stocks,
+            )
+
+        logger.info("⚠️ No LLM client for Phase 2 — using quantitative ranking only")
+        return candidates[:max_stocks]
+
     # ── Combined Scan ─────────────────────────────────────────
 
     def scan(self, max_stocks: int = 30, llm_client=None, llm_config=None,
