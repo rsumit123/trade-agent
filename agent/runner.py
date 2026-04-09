@@ -582,7 +582,20 @@ class TradingAgent:
         try:
             from .premarket_scanner import PreMarketScanner
             scanner = PreMarketScanner(self.market_data.kite)
-            scan_results = scanner.scan(max_stocks=25)
+
+            # Get learnings and news for LLM-powered Phase 2
+            learnings = self.learner.get_learnings(max_chars=3000) if hasattr(self, 'learner') else ""
+
+            # Get LLM client for Phase 2 (intelligent stock selection)
+            llm_client = getattr(self.engine, 'client', None) if hasattr(self, 'engine') else None
+
+            scan_results = scanner.scan(
+                max_stocks=25,
+                llm_client=llm_client,
+                llm_config=self.config,
+                learnings=learnings,
+                news="",  # News not available yet during pre-market
+            )
 
             if scan_results:
                 new_watchlist = [s["ticker"] for s in scan_results]
@@ -590,13 +603,19 @@ class TradingAgent:
                 self.config.watchlist = new_watchlist
                 self.market_data.watchlist = new_watchlist
 
-                # Log the scan results
                 logger.info(f"🎯 Pre-market scan: replaced {old_count} stocks with {len(new_watchlist)} dynamic picks")
                 for s in scan_results[:5]:
-                    logger.info(f"  📈 {s['ticker']:15s} gap={s['gap_pct']:+5.1f}% vol={s['vol_ratio']:.1f}x — {s['reason']}")
+                    dir_icon = "📈" if s.get("llm_direction", "long") == "long" else "📉"
+                    reason = s.get("llm_reason", s.get("reason", ""))[:50]
+                    logger.info(f"  {dir_icon} {s['ticker']:15s} gap={s['gap_pct']:+5.1f}% — {reason}")
 
-                # Save scan summary for LLM context
-                self._premarket_summary = scanner.get_scan_summary(max_stocks=25)
+                # Build scan summary from the already-selected results (don't re-scan)
+                lines = [f"## Pre-Market Picks — {len(scan_results)} Stocks Selected by AI"]
+                for i, s in enumerate(scan_results):
+                    direction = s.get("llm_direction", "?")
+                    reason = s.get("llm_reason", s.get("reason", ""))
+                    lines.append(f"  {i+1}. {s['ticker']} (Rs{s['ltp']}) gap={s['gap_pct']:+.1f}% [{direction}] — {reason}")
+                self._premarket_summary = "\n".join(lines)
             else:
                 logger.warning("Pre-market scan returned no results — keeping existing watchlist")
                 self._premarket_summary = ""

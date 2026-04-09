@@ -1,26 +1,23 @@
 """
-Pre-Market Scanner — Scans ALL NSE stocks before market open to build
-a dynamic watchlist for the day's intraday scalping.
+Pre-Market Scanner — Two-phase intelligent stock picker for intraday scalping.
 
-Architecture:
-1. ONE-TIME: Download full NSE instrument master → cache to disk as JSON
-   (includes tradingsymbol, instrument_token, lot_size, etc.)
-   Only re-downloads if cache is older than 7 days.
-2. DAILY (8:30 AM): Fetch OHLC for all cached equities via Kite API
-3. Rank by gap %, intraday range, sector momentum
-4. Return top 30 stocks as today's dynamic watchlist
+Phase 1 (Quantitative): Scan ALL ~3000 NSE equities via Kite OHLC,
+    filter by price/gap/range to ~50-80 candidates.
 
-The cached file means no redundant instrument downloads.
-The LLM then gets the top 30 with context, and can call get_stock_details()
-on ANY ticker for deeper analysis.
+Phase 2 (LLM Intelligence): Give candidates to the LLM with market news
+    and distilled rules. LLM picks the final 25-30 with reasoning.
+    Stock picks are tracked and fed back into learning — the agent
+    learns WHAT to trade, not just HOW.
+
+Instrument master is cached to disk (weekly refresh).
 """
 
 import json
 import logging
 import time as _time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -32,31 +29,26 @@ CACHE_MAX_AGE_DAYS = 7
 
 
 class PreMarketScanner:
-    """Scans ALL NSE stocks to build a dynamic scalping watchlist."""
+    """Two-phase stock picker: quantitative filter + LLM intelligence."""
 
     def __init__(self, kite_client):
         self.kite = kite_client
 
-    def _ensure_instrument_cache(self) -> List[Dict]:
-        """Load instrument cache from disk, refresh if stale."""
-        INSTRUMENT_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    # ── Phase 0: Instrument Cache ─────────────────────────────
 
-        # Check if cache exists and is recent
+    def _ensure_instrument_cache(self) -> List[Dict]:
+        """Load cached instruments from disk, refresh if stale."""
+        INSTRUMENT_CACHE.parent.mkdir(parents=True, exist_ok=True)
         if INSTRUMENT_CACHE.exists():
             try:
                 data = json.loads(INSTRUMENT_CACHE.read_text())
-                cached_date = data.get("date", "")
-                if cached_date:
-                    age = (datetime.now() - datetime.fromisoformat(cached_date)).days
-                    if age < CACHE_MAX_AGE_DAYS:
-                        instruments = data.get("instruments", [])
-                        logger.info(f"📋 Using cached instrument list ({len(instruments)} stocks, {age}d old)")
-                        return instruments
+                age = (datetime.now() - datetime.fromisoformat(data.get("date", "2000-01-01"))).days
+                if age < CACHE_MAX_AGE_DAYS:
+                    instruments = data.get("instruments", [])
+                    logger.info(f"📋 Using cached instruments ({len(instruments)} stocks, {age}d old)")
+                    return instruments
             except Exception:
                 pass
-
-        # Download fresh instrument list
-        logger.info("📥 Downloading fresh NSE instrument list...")
         return self._refresh_instrument_cache()
 
     def _refresh_instrument_cache(self) -> List[Dict]:
@@ -67,7 +59,6 @@ class PreMarketScanner:
             logger.error(f"Failed to download instruments: {e}")
             return []
 
-        # Filter to tradable equities only
         SKIP_KEYWORDS = {"NIFTY", "GOLD", "SILVER", "LIQUID", "BEES", "CPSE", "ETF", "MIDCAP", "VIX", "BHARATBOND"}
         equities = []
         for i in all_instruments:
@@ -76,76 +67,63 @@ class PreMarketScanner:
                 continue
             if any(skip in sym.upper() for skip in SKIP_KEYWORDS):
                 continue
-            # Skip bonds (digits in first 3 chars) and SME (-SM, -P1, etc.)
             if any(c.isdigit() for c in sym[:3]):
                 continue
-            if any(tag in sym for tag in ["-SM", "-P1", "-NZ", "-N9", "-NM", "-YY", "-N2", "-RE", "-PP"]):
+            if any(tag in sym for tag in ["-SM", "-P1", "-NZ", "-N9", "-NM", "-YY", "-N2", "-RE", "-PP", "-ST", "-BE"]):
                 continue
-
             equities.append({
                 "tradingsymbol": sym,
                 "instrument_token": i.get("instrument_token"),
                 "name": i.get("name", ""),
-                "lot_size": i.get("lot_size", 1),
-                "tick_size": i.get("tick_size", 0.05),
             })
 
-        # Save to cache
-        cache_data = {
-            "date": datetime.now().isoformat(),
-            "count": len(equities),
-            "instruments": equities,
-        }
+        cache_data = {"date": datetime.now().isoformat(), "count": len(equities), "instruments": equities}
         INSTRUMENT_CACHE.write_text(json.dumps(cache_data, indent=2))
-        logger.info(f"📋 Cached {len(equities)} NSE equities to {INSTRUMENT_CACHE}")
+        logger.info(f"📋 Cached {len(equities)} NSE equities")
         return equities
 
-    def scan(self, max_stocks: int = 30) -> List[Dict[str, Any]]:
-        """
-        Scan ALL cached NSE equities and return top movers for scalping.
+    # ── Phase 1: Quantitative Filter ──────────────────────────
 
-        Uses kite.ohlc() for bulk OHLC data. Batches with 1s delay
-        between calls to avoid Cloudflare rate limits.
+    def scan_phase1(self, max_candidates: int = 60) -> List[Dict[str, Any]]:
+        """
+        Phase 1: Fetch OHLC for all stocks, filter and rank quantitatively.
+        Returns ~50-80 candidates for LLM to review.
         """
         instruments = self._ensure_instrument_cache()
         if not instruments:
-            logger.warning("No instruments available for scanning")
             return []
 
         symbols = [i["tradingsymbol"] for i in instruments]
-        logger.info(f"🔍 Scanning {len(symbols)} NSE equities...")
+        logger.info(f"🔍 Phase 1: Scanning {len(symbols)} NSE equities...")
 
-        # Fetch OHLC in batches of 500 with rate limit handling
+        # Fetch OHLC in batches
         all_data = {}
         kite_symbols = [f"NSE:{sym}" for sym in symbols]
-
         for i in range(0, len(kite_symbols), 500):
             batch = kite_symbols[i:i + 500]
             try:
                 data = self.kite.ohlc(batch)
                 all_data.update(data)
-                logger.info(f"  Batch {i // 500 + 1}: got {len(data)} quotes")
             except Exception as e:
                 logger.warning(f"  Batch {i // 500 + 1} failed: {e}")
-                # Retry after delay
                 _time.sleep(3)
                 try:
                     data = self.kite.ohlc(batch)
                     all_data.update(data)
-                    logger.info(f"  Batch {i // 500 + 1} retry: got {len(data)} quotes")
                 except Exception:
-                    logger.warning(f"  Batch {i // 500 + 1} retry also failed — skipping")
-            # Rate limit: 1s between batches
+                    pass
             if i + 500 < len(kite_symbols):
                 _time.sleep(1)
 
-        logger.info(f"📊 Got data for {len(all_data)} / {len(symbols)} stocks")
+        logger.info(f"📊 Got data for {len(all_data)} stocks")
 
-        # Score and rank
+        # Build instrument name lookup
+        name_map = {i["tradingsymbol"]: i.get("name", "") for i in instruments}
+
+        # Score and filter
         candidates = []
         for sym in symbols:
-            kite_sym = f"NSE:{sym}"
-            data = all_data.get(kite_sym, {})
+            data = all_data.get(f"NSE:{sym}", {})
             if not data:
                 continue
 
@@ -163,19 +141,13 @@ class PreMarketScanner:
             change_pct = ((ltp - prev_close) / prev_close) * 100 if prev_close else 0
             day_range_pct = ((day_high - day_low) / prev_close) * 100 if prev_close and day_high > day_low else 0
 
-            # Skip if no movement at all
             if abs(gap_pct) < MIN_GAP_PCT and abs(change_pct) < 1.0 and day_range_pct < 1.0:
                 continue
 
-            # Score
-            score = 0
-            score += min(abs(gap_pct), 5) * 2.0
-            score += min(abs(change_pct), 10) * 1.0
-            score += min(day_range_pct, 8) * 0.5
+            # Simple quantitative score for initial ranking
+            score = min(abs(gap_pct), 5) * 2 + min(abs(change_pct), 10) * 1 + min(day_range_pct, 8) * 0.5
             if 100 <= ltp <= 2000:
                 score += 1.5
-            elif 50 <= ltp <= 3000:
-                score += 0.5
 
             reasons = []
             if abs(gap_pct) >= 2:
@@ -183,20 +155,15 @@ class PreMarketScanner:
             elif abs(gap_pct) >= 0.5:
                 reasons.append(f"Gap {gap_pct:+.1f}%")
             if abs(change_pct) >= 3:
-                reasons.append(f"Big move {change_pct:+.1f}%")
+                reasons.append(f"Move {change_pct:+.1f}%")
             if day_range_pct >= 3:
-                reasons.append(f"Wide range {day_range_pct:.1f}%")
-
-            # Find the instrument name from cache
-            inst = next((i for i in instruments if i["tradingsymbol"] == sym), {})
+                reasons.append(f"Range {day_range_pct:.1f}%")
 
             candidates.append({
                 "ticker": f"{sym}.NS",
-                "tradingsymbol": sym,
-                "name": inst.get("name", ""),
-                "prev_close": round(prev_close, 2),
-                "open_price": round(day_open, 2),
+                "name": name_map.get(sym, ""),
                 "ltp": round(ltp, 2),
+                "prev_close": round(prev_close, 2),
                 "gap_pct": round(gap_pct, 2),
                 "change_pct": round(change_pct, 2),
                 "day_range_pct": round(day_range_pct, 2),
@@ -205,31 +172,187 @@ class PreMarketScanner:
             })
 
         candidates.sort(key=lambda x: x["score"], reverse=True)
-        top = candidates[:max_stocks]
-
-        logger.info(f"🎯 Scan: {len(candidates)} movers → top {len(top)} selected")
-        for i, s in enumerate(top[:10]):
-            logger.info(f"  {i + 1:2d}. {s['ticker']:15s} gap={s['gap_pct']:+5.1f}% chg={s['change_pct']:+5.1f}% — {s['reason']}")
-
+        top = candidates[:max_candidates]
+        logger.info(f"🎯 Phase 1: {len(candidates)} active → top {len(top)} candidates for LLM")
         return top
 
-    def get_watchlist_tickers(self, max_stocks: int = 30) -> List[str]:
-        """Run scan and return just the ticker list."""
-        return [r["ticker"] for r in self.scan(max_stocks)]
+    # ── Phase 2: LLM Selection ────────────────────────────────
 
-    def get_scan_summary(self, max_stocks: int = 30) -> str:
+    def scan_phase2_llm(
+        self,
+        candidates: List[Dict],
+        llm_client,
+        llm_config,
+        learnings: str = "",
+        news: str = "",
+        max_picks: int = 25,
+    ) -> List[Dict[str, Any]]:
+        """
+        Phase 2: LLM reviews candidates and picks the best 25 for scalping.
+
+        The LLM sees:
+        - All ~60 candidates with gap, range, price
+        - Today's market news/sentiment
+        - Distilled rules from past trades
+        - And returns its top picks with reasoning
+        """
+        if not candidates:
+            return []
+
+        # Build candidate table for LLM
+        table_lines = []
+        for i, c in enumerate(candidates):
+            name = (c.get("name", "") or "")[:20]
+            table_lines.append(
+                f"{i+1:2d}. {c['ticker']:15s} {name:20s} Rs{c['ltp']:>8.1f} "
+                f"gap={c['gap_pct']:+5.1f}% chg={c['change_pct']:+5.1f}% range={c['day_range_pct']:4.1f}% "
+                f"— {c['reason']}"
+            )
+        candidates_text = "\n".join(table_lines)
+
+        prompt = f"""You are an expert intraday stock picker for NSE India.
+
+## Today's Pre-Market Candidates ({len(candidates)} stocks with significant moves)
+{candidates_text}
+
+## Market Context
+{news[:2000] if news else "No news available yet."}
+
+## Your Past Learnings (what worked, what didn't)
+{learnings[:3000] if learnings else "No learnings yet — this is the first scan."}
+
+---
+
+## Task
+From the {len(candidates)} candidates above, pick the BEST {max_picks} stocks for intraday scalping today.
+
+For each pick, briefly explain WHY (1 line):
+- Is it a gap-up momentum play? Gap-down reversal? Range breakout?
+- Does your past experience (learnings) suggest this type of setup works?
+- Is the price range good for scalping? (₹100-2000 ideal)
+
+## Rules
+- Pick EXACTLY {max_picks} stocks (no more, no less)
+- Include BOTH long candidates (gap-up + momentum) AND short candidates (gap-down + overbought)
+- Prefer liquid large/mid-caps over illiquid small-caps
+- Avoid stocks you've lost money on repeatedly (check learnings)
+- Each pick should have a clear scalping thesis
+
+## Output Format
+Return a JSON array of objects, each with:
+- "ticker": the ticker symbol (e.g. "RELIANCE.NS")
+- "direction": "long" or "short" (your preferred trade direction)
+- "reason": brief 1-line thesis
+
+Example:
+```json
+[
+  {{"ticker": "RELIANCE.NS", "direction": "long", "reason": "Gap-up +2.3% with sector momentum, good for breakout scalp"}},
+  {{"ticker": "BAJFINANCE.NS", "direction": "short", "reason": "Gap-down -1.5%, likely to test lower support, short scalp"}}
+]
+```
+
+Return ONLY the JSON array, no other text."""
+
+        try:
+            logger.info(f"🧠 Phase 2: LLM reviewing {len(candidates)} candidates...")
+
+            if llm_config.llm_provider == "anthropic":
+                response = llm_client.messages.create(
+                    model=llm_config.anthropic_model,
+                    max_tokens=2000,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                text = response.content[0].text.strip()
+            else:
+                model = (
+                    llm_config.openrouter_model
+                    if llm_config.llm_provider == "openrouter"
+                    else llm_config.openai_model
+                )
+                response = llm_client.chat.completions.create(
+                    model=model,
+                    max_tokens=2000,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                text = response.choices[0].message.content.strip()
+
+            # Parse JSON from response
+            import re
+            json_match = re.search(r'\[[\s\S]*\]', text)
+            if not json_match:
+                logger.warning("LLM didn't return valid JSON — using Phase 1 ranking")
+                return candidates[:max_picks]
+
+            picks = json.loads(json_match.group())
+
+            # Enrich picks with data from candidates
+            candidate_map = {c["ticker"]: c for c in candidates}
+            enriched = []
+            for pick in picks[:max_picks]:
+                ticker = pick.get("ticker", "")
+                if ticker in candidate_map:
+                    entry = candidate_map[ticker].copy()
+                    entry["llm_direction"] = pick.get("direction", "long")
+                    entry["llm_reason"] = pick.get("reason", "")
+                    enriched.append(entry)
+
+            logger.info(f"🎯 Phase 2: LLM picked {len(enriched)} stocks")
+            for i, s in enumerate(enriched[:10]):
+                dir_icon = "📈" if s.get("llm_direction") == "long" else "📉"
+                logger.info(f"  {i+1:2d}. {dir_icon} {s['ticker']:15s} — {s.get('llm_reason', '')[:60]}")
+
+            return enriched if enriched else candidates[:max_picks]
+
+        except Exception as e:
+            logger.error(f"Phase 2 LLM selection failed: {e}")
+            return candidates[:max_picks]
+
+    # ── Combined Scan ─────────────────────────────────────────
+
+    def scan(self, max_stocks: int = 30, llm_client=None, llm_config=None,
+             learnings: str = "", news: str = "") -> List[Dict[str, Any]]:
+        """
+        Full two-phase scan: quantitative filter → LLM selection.
+        Falls back to Phase 1 only if LLM is not available.
+        """
+        # Phase 1: Quantitative filter
+        candidates = self.scan_phase1(max_candidates=60)
+
+        if not candidates:
+            return []
+
+        # Phase 2: LLM selection (if client available)
+        if llm_client and llm_config:
+            return self.scan_phase2_llm(
+                candidates, llm_client, llm_config,
+                learnings=learnings, news=news,
+                max_picks=max_stocks,
+            )
+
+        # Fallback: just use Phase 1 ranking
+        logger.info("⚠️ No LLM client for Phase 2 — using quantitative ranking only")
+        return candidates[:max_stocks]
+
+    def get_watchlist_tickers(self, max_stocks: int = 30, **kwargs) -> List[str]:
+        """Run scan and return just the ticker list."""
+        return [r["ticker"] for r in self.scan(max_stocks, **kwargs)]
+
+    def get_scan_summary(self, max_stocks: int = 30, **kwargs) -> str:
         """Run scan and return formatted summary for LLM context."""
-        results = self.scan(max_stocks)
+        results = self.scan(max_stocks, **kwargs)
         if not results:
             return "Pre-market scan: No significant movers found."
 
-        lines = [f"## Pre-Market Scan — Top {len(results)} Stocks for Today"]
-        lines.append(f"{'Ticker':15s} {'Name':20s} {'LTP':>8s} {'Gap%':>7s} {'Chg%':>7s} {'Range%':>7s} {'Score':>6s} Reason")
-        lines.append("-" * 95)
-        for s in results:
+        lines = [f"## Pre-Market Scan — Top {len(results)} Stocks Selected for Today"]
+        lines.append(f"{'#':>2s} {'Ticker':15s} {'Name':20s} {'LTP':>8s} {'Gap%':>7s} {'Dir':>5s} Thesis")
+        lines.append("-" * 90)
+        for i, s in enumerate(results):
             name = (s.get("name", "") or "")[:20]
+            direction = s.get("llm_direction", "?")
+            reason = s.get("llm_reason", s.get("reason", ""))[:40]
             lines.append(
-                f"{s['ticker']:15s} {name:20s} {s['ltp']:>8.1f} {s['gap_pct']:>+6.1f}% {s['change_pct']:>+6.1f}% "
-                f"{s['day_range_pct']:>6.1f}% {s['score']:>5.1f}  {s['reason']}"
+                f"{i+1:2d} {s['ticker']:15s} {name:20s} {s['ltp']:>8.1f} {s['gap_pct']:>+6.1f}% "
+                f"{direction:>5s} {reason}"
             )
         return "\n".join(lines)
