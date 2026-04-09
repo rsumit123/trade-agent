@@ -494,16 +494,26 @@ class TradingAgent:
         )
 
         if is_24x7:
-            # For 24/7 markets: run review once per UTC day
-            # Skip if it's the first cycle ever (let some trades happen first)
-            if self._last_review_date is not None:
+            # For 24/7 markets: run review once per UTC day at midnight
+            if self._last_review_date is not None and self._last_review_date != today:
                 logger.info("🔄 Running scheduled daily review (24/7 market)")
                 self.run_daily_review()
             self._last_review_date = today
         else:
-            # For regular markets: review is handled by _close_intraday_positions
-            # and the KeyboardInterrupt handler. Just track the date.
-            self._last_review_date = today
+            # For regular markets: run review once per day near market close
+            # Use a separate flag so we don't miss the close window
+            if not hasattr(self, '_review_done_today'):
+                self._review_done_today = False
+
+            if self._last_review_date != today:
+                # New day — reset the flag
+                self._review_done_today = False
+                self._last_review_date = today
+
+            if not self._review_done_today and self.risk_manager.check_intraday_close():
+                logger.info("🔄 Running scheduled daily review (market closing)")
+                self.run_daily_review()
+                self._review_done_today = True
 
     def _load_directives(self) -> str:
         """Load active directives from directive.json for system prompt injection."""
