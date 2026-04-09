@@ -58,6 +58,9 @@ class SessionConfig:
     # ── Personality ─────────────────────────────────────────
     personality: str = ""                        # custom instructions for LLM
 
+    # ── Data Source ────────────────────────────────────────
+    data_source: str = "yfinance"                # "yfinance" or "kite"
+
     # ── Metadata ────────────────────────────────────────────
     created_at: str = ""
 

@@ -21,3 +21,7 @@ ddgs>=0.1.0
 
 # Session config (YAML-based multi-session support)
 pyyaml>=6.0
+
+# Zerodha Kite Connect (real-time NSE data + order placement)
+kiteconnect>=5.0.0
+pyotp>=2.9.0

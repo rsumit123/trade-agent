@@ -239,3 +239,29 @@ class MarketData:
         market_open = now.replace(hour=open_h, minute=open_m, second=0)
         market_close = now.replace(hour=close_h, minute=close_m, second=0)
         return market_open <= now <= market_close
+
+
+def create_market_data(config, market_preset=None):
+    """Factory: create appropriate market data provider based on config.
+
+    Returns KiteMarketData if data_source='kite' and Kite credentials are available,
+    otherwise falls back to yfinance MarketData.
+    """
+    data_source = getattr(config, 'data_source', 'yfinance')
+    if hasattr(config, '_session_config') and config._session_config:
+        data_source = getattr(config._session_config, 'data_source', data_source)
+
+    if data_source == "kite":
+        try:
+            from .kite_auth import KiteAuth
+            from .kite_data import KiteMarketData
+
+            auth = KiteAuth()  # Reads from env vars
+            kite = auth.get_authenticated_client()
+            logger.info("📊 Using Kite Connect for market data (real-time)")
+            return KiteMarketData(config.watchlist, market_preset, kite)
+        except Exception as e:
+            logger.warning(f"Kite Connect init failed, falling back to yfinance: {e}")
+            return MarketData(config.watchlist, market_preset)
+
+    return MarketData(config.watchlist, market_preset)
