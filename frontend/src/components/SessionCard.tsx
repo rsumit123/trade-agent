@@ -174,7 +174,15 @@ export function SessionCard({ session, onDelete }: { session: Session; onDelete?
                 <span className={cn("inline-block text-[11px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded border", marketColors[session.market] || "bg-bg-secondary text-text-muted border-border")}>
                   {session.market}
                 </span>
-                {modelName && (
+                {session.backtest_mode && (
+                  <span className="inline-block text-[11px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded border"
+                    style={{ background: "rgba(139,92,246,0.15)", color: "#a78bfa", borderColor: "rgba(139,92,246,0.3)" }}>
+                    {session.backtest_status?.startsWith("running") ? "backtesting..." :
+                     session.backtest_status?.startsWith("completed") ? "backtest done" :
+                     session.backtest_status?.startsWith("failed") ? "backtest failed" : "backtest"}
+                  </span>
+                )}
+                {modelName && !session.backtest_mode && (
                   <span className="text-[11px] text-text-muted truncate max-w-[160px]" title={session.llm_model}>
                     {modelName}
                   </span>
@@ -259,34 +267,54 @@ export function SessionCard({ session, onDelete }: { session: Session; onDelete?
           )}
         </div>
 
-        {/* Primary action: full-width Start/Stop */}
-        <button
-          onClick={handleToggle}
-          disabled={toggling}
-          className={cn(
-            "relative w-full rounded-xl font-semibold text-sm transition-all disabled:opacity-60",
-            session.is_running
-              ? "bg-accent-red/10 hover:bg-accent-red/20 text-accent-red border border-accent-red/30"
-              : "bg-accent-green/15 hover:bg-accent-green/25 text-accent-green border border-accent-green/30"
-          )}
-          style={{ minHeight: 44 }}
-        >
-          <span className="inline-flex items-center justify-center gap-2">
-            {toggling ? (
-              <span className="opacity-70">...</span>
-            ) : session.is_running ? (
-              <>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" /></svg>
-                Stop Agent
-              </>
-            ) : (
-              <>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
-                Start Agent
-              </>
+        {/* Primary action */}
+        {session.backtest_mode ? (
+          <div
+            className="relative w-full rounded-xl text-sm text-center font-medium border"
+            style={{
+              minHeight: 44,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "rgba(139,92,246,0.08)",
+              borderColor: "rgba(139,92,246,0.25)",
+              color: "#a78bfa",
+            }}
+          >
+            {session.backtest_status?.startsWith("running") ? "Backtest in progress..." :
+             session.backtest_status?.startsWith("completed") ? "View Results" :
+             session.backtest_status?.startsWith("failed") ? "Backtest failed — retry" :
+             "Configure Backtest"}
+          </div>
+        ) : (
+          <button
+            onClick={handleToggle}
+            disabled={toggling}
+            className={cn(
+              "relative w-full rounded-xl font-semibold text-sm transition-all disabled:opacity-60",
+              session.is_running
+                ? "bg-accent-red/10 hover:bg-accent-red/20 text-accent-red border border-accent-red/30"
+                : "bg-accent-green/15 hover:bg-accent-green/25 text-accent-green border border-accent-green/30"
             )}
-          </span>
-        </button>
+            style={{ minHeight: 44 }}
+          >
+            <span className="inline-flex items-center justify-center gap-2">
+              {toggling ? (
+                <span className="opacity-70">...</span>
+              ) : session.is_running ? (
+                <>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" /></svg>
+                  Stop Agent
+                </>
+              ) : (
+                <>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
+                  Start Agent
+                </>
+              )}
+            </span>
+          </button>
+        )}
       </div>
     </Link>
   );
