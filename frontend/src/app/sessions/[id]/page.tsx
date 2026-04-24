@@ -90,33 +90,43 @@ export default function SessionDashboard() {
   const [tab, setTab] = useState<Tab>("overview");
 
   const hasErrored = useRef(false);
-  const q = `?session=${sessionId}`;
+
+  interface DashboardBundle {
+    config: SessionConfig;
+    portfolio: PortfolioSummary;
+    trades: ClosedTrade[];
+    risk: RiskStatus;
+    performance: Performance;
+    watchlist: WatchlistItem[];
+    logs: { lines: string[] };
+    journal: { content: string };
+    agent_status: AgentStatus;
+  }
 
   const loadAll = useCallback((isInitial = false) => {
-    const calls = [
-      api<SessionConfig>(`/api/config${q}`).then(setConfig),
-      api<PortfolioSummary>(`/api/portfolio${q}`).then(setPortfolio),
-      api<ClosedTrade[]>(`/api/trades/closed${q}&limit=30`).then(setTrades),
-      api<RiskStatus>(`/api/risk${q}`).then(setRisk),
-      api<Performance>(`/api/performance${q}`).then(setPerf),
-      api<WatchlistItem[]>(`/api/watchlist${q}`).then((d) => { if (Array.isArray(d)) setWatchlist(d); }),
-      api<{ lines: string[] }>(`/api/logs${q}&lines=100`).then((d) => setLogs(d.lines || [])),
-      api<{ content: string }>(`/api/journal${q}`).then((d) => setJournal(d.content || "")),
-      api<AgentStatus>(`/api/agent/status/${sessionId}`).then(setAgentStatus),
-    ];
-
-    Promise.allSettled(calls).then((results) => {
-      if (isInitial) setInitialLoading(false);
-      setLastUpdated(new Date());
-
-      const failures = results.filter((r) => r.status === "rejected");
-      if (failures.length > 0 && !hasErrored.current) {
-        hasErrored.current = true;
-        toast.error("Failed to load some dashboard data");
-      }
-      if (failures.length === 0) hasErrored.current = false;
-    });
-  }, [sessionId, q, toast]);
+    api<DashboardBundle>(`/api/dashboard/${sessionId}`)
+      .then((data) => {
+        setConfig(data.config);
+        setPortfolio(data.portfolio);
+        setTrades(data.trades);
+        setRisk(data.risk);
+        setPerf(data.performance);
+        if (Array.isArray(data.watchlist)) setWatchlist(data.watchlist);
+        setLogs(data.logs?.lines || []);
+        setJournal(data.journal?.content || "");
+        setAgentStatus(data.agent_status);
+        if (isInitial) setInitialLoading(false);
+        setLastUpdated(new Date());
+        hasErrored.current = false;
+      })
+      .catch(() => {
+        if (isInitial) setInitialLoading(false);
+        if (!hasErrored.current) {
+          hasErrored.current = true;
+          toast.error("Failed to load dashboard data");
+        }
+      });
+  }, [sessionId, toast]);
 
   useEffect(() => {
     loadAll(true);
