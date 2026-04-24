@@ -17,8 +17,6 @@ function formatModel(model?: string): string {
 }
 
 export function SessionCard({ session, onDelete }: { session: Session; onDelete?: () => void }) {
-  const [portfolio, setPortfolio] = useState<PortfolioSummary | null>(null);
-  const [daily, setDaily] = useState<DailyPerformance[]>([]);
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -26,14 +24,9 @@ export function SessionCard({ session, onDelete }: { session: Session; onDelete?
   const menuRef = useRef<HTMLDivElement>(null);
   const toast = useToast();
 
-  useEffect(() => {
-    api<PortfolioSummary>(`/api/portfolio?session=${session.session_id}`)
-      .then(setPortfolio)
-      .catch(() => {});
-    api<DailyPerformance[]>(`/api/performance/daily?session=${session.session_id}&limit=14`)
-      .then((d) => { if (Array.isArray(d)) setDaily(d); })
-      .catch(() => {});
-  }, [session.session_id]);
+  // Use inline data from the sessions list API (no extra API calls)
+  const portfolio = session.portfolio ?? null;
+  const daily = session.daily ?? [];
 
   // Close overflow menu on outside click
   useEffect(() => {

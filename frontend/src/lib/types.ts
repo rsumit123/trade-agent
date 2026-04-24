@@ -1,3 +1,18 @@
+export interface SessionPortfolio {
+  cash: number;
+  total_value: number;
+  total_return: number;
+  total_return_pct: number;
+  open_positions: number;
+  realized_pnl: number;
+}
+
+export interface SessionDaily {
+  date: string;
+  total_value: number | null;
+  daily_pnl: number | null;
+}
+
 export interface Session {
   session_id: string;
   display_name: string;
@@ -12,6 +27,8 @@ export interface Session {
   win_rate?: number | null;
   backtest_mode?: boolean;
   backtest_status?: string;
+  portfolio?: SessionPortfolio | null;
+  daily?: SessionDaily[];
 }
 
 export interface MarketPreset {
