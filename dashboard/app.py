@@ -787,14 +787,147 @@ def get_market_presets():
 # ── API Routes (session-aware) ───────────────────────────────
 
 
+def _fetch_prices_with_timeout(market_data, timeout=5) -> dict:
+    """Fetch live prices with a timeout. Returns {} on timeout or error."""
+    import concurrent.futures
+    try:
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            future = pool.submit(market_data.get_current_prices)
+            return future.result(timeout=timeout)
+    except Exception:
+        return {}
+
+
+def _fetch_watchlist_with_timeout(market_data, timeout=5):
+    """Fetch watchlist summary with a timeout. Returns None on timeout."""
+    import concurrent.futures
+    try:
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            future = pool.submit(market_data.get_watchlist_summary)
+            return future.result(timeout=timeout)
+    except Exception:
+        return None
+
+
+@app.get("/api/dashboard/{session_id}")
+def get_dashboard(session_id: str):
+    """Bundled dashboard endpoint — returns all data in one response."""
+    import concurrent.futures
+    c = _get_components(session_id)
+
+    # Only fetch live prices if there are open positions (avoids 10s+ timeout when idle)
+    has_open = len(c["portfolio"].get_open_positions()) > 0
+
+    prices = {}
+    watchlist_data = None
+    if has_open:
+        # Fetch prices + watchlist in parallel with shared thread pool
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            price_future = pool.submit(c["market_data"].get_current_prices)
+            wl_future = pool.submit(c["market_data"].get_watchlist_summary)
+            try:
+                prices = price_future.result(timeout=5)
+            except Exception:
+                prices = {}
+            try:
+                watchlist_data = wl_future.result(timeout=5)
+            except Exception:
+                watchlist_data = None
+
+    # Portfolio
+    portfolio = c["portfolio"].get_portfolio_summary(prices)
+
+    # Closed trades
+    closed = c["portfolio"].get_closed_trades(limit=30)
+    trades = [
+        {
+            "id": t.id, "ticker": t.ticker, "action": t.action,
+            "direction": t.direction, "trade_type": t.trade_type,
+            "quantity": t.quantity, "entry_price": t.entry_price,
+            "entry_time": t.entry_time, "exit_price": t.exit_price,
+            "exit_time": t.exit_time, "pnl": t.pnl, "status": t.status,
+            "reason": t.reason, "exit_reason": t.exit_reason,
+        }
+        for t in closed
+    ]
+
+    # Risk
+    risk = c["risk_manager"].get_risk_status(prices)
+
+    # Performance
+    perf = c["learner"].get_performance_stats()
+
+    # Watchlist fallback
+    if watchlist_data is None:
+        watchlist_data = [{"ticker": t, "current_price": None, "change_pct": None} for t in c["config"].watchlist]
+
+    # Logs
+    sc = c["session"]  # SessionConfig has session_dir
+    log_path = sc.session_dir / "agent.log"
+    try:
+        lines = log_path.read_text().splitlines()[-100:] if log_path.exists() else []
+    except Exception:
+        lines = []
+
+    # Journal
+    journal_path = sc.session_dir / "journal.md"
+    try:
+        journal_content = journal_path.read_text() if journal_path.exists() else ""
+    except Exception:
+        journal_content = ""
+
+    # Agent status
+    agent_status = _is_agent_running(session_id)
+
+    # Config — use AgentConfig (ac) for runtime fields, SessionConfig (sc) for session metadata
+    ac = c["config"]
+    preset = c["preset"]
+    config_data = {
+        "starting_capital": ac.starting_capital,
+        "currency": preset.currency,
+        "currency_symbol": preset.currency_symbol,
+        "max_position_pct": ac.max_position_pct,
+        "max_open_positions": ac.max_open_positions,
+        "daily_loss_limit_pct": ac.daily_loss_limit_pct,
+        "per_trade_loss_limit_pct": ac.per_trade_loss_limit_pct,
+        "max_trade_amount": ac.max_trade_amount,
+        "watchlist_count": len(ac.watchlist),
+        "llm_provider": ac.llm_provider,
+        "llm_model": sc.llm_model,
+        "intraday_interval_min": ac.intraday_interval_min,
+        "market_open": preset.market_open,
+        "market_close": preset.market_close,
+        "market_id": preset.market_id,
+        "market_name": preset.display_name,
+        "is_24x7": preset.is_24x7,
+        "ticker_suffix": preset.ticker_suffix,
+        "locale": preset.locale,
+        "timezone": preset.timezone,
+        "session_id": sc.session_id,
+        "session_name": sc.display_name,
+        "personality": getattr(sc, "personality", ""),
+        "backtest_mode": getattr(sc, "backtest_mode", False),
+        "backtest_status": getattr(sc, "backtest_status", ""),
+    }
+
+    return {
+        "config": config_data,
+        "portfolio": portfolio,
+        "trades": trades,
+        "risk": risk,
+        "performance": perf,
+        "watchlist": watchlist_data if isinstance(watchlist_data, list) else [],
+        "logs": {"lines": lines},
+        "journal": {"content": journal_content},
+        "agent_status": agent_status,
+    }
+
+
 @app.get("/api/portfolio")
 def get_portfolio(session: str = None):
-    """Get current portfolio summary."""
+    """Get current portfolio summary. Fetches live prices with a 5s timeout."""
     c = _get_components(session)
-    try:
-        prices = c["market_data"].get_current_prices()
-    except Exception:
-        prices = {}
+    prices = _fetch_prices_with_timeout(c["market_data"], timeout=5)
     return c["portfolio"].get_portfolio_summary(prices)
 
 
@@ -837,12 +970,9 @@ def get_closed_trades(limit: int = 30, session: str = None):
 
 @app.get("/api/risk")
 def get_risk_status(session: str = None):
-    """Get current risk metrics."""
+    """Get current risk metrics. Fetches live prices with a 5s timeout."""
     c = _get_components(session)
-    try:
-        prices = c["market_data"].get_current_prices()
-    except Exception:
-        prices = {}
+    prices = _fetch_prices_with_timeout(c["market_data"], timeout=5)
     return c["risk_manager"].get_risk_status(prices)
 
 
@@ -1091,13 +1221,17 @@ def get_daily_performance(limit: int = 30, session: str = None):
 
 @app.get("/api/watchlist")
 def get_watchlist(session: str = None):
-    """Get watchlist with current data."""
+    """Get watchlist with current data. Fetches live prices with a 5s timeout."""
+    import concurrent.futures
     c = _get_components(session)
     try:
-        summaries = c["market_data"].get_watchlist_summary()
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            future = pool.submit(c["market_data"].get_watchlist_summary)
+            summaries = future.result(timeout=5)
         return summaries
     except Exception as e:
-        return {"error": str(e), "watchlist": c["config"].watchlist}
+        # Timeout or API error — return watchlist tickers without price data
+        return [{"ticker": t, "current_price": None, "change_pct": None} for t in c["config"].watchlist]
 
 
 @app.get("/api/snapshots")
