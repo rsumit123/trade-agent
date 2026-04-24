@@ -29,134 +29,157 @@ export function DailyTracker({
   }, [rows]);
 
   return (
-    <div style={{ background: "#151d2e", border: "1px solid #1e293b", borderRadius: 12 }}>
+    <div className="bg-bg-card border border-border rounded-xl overflow-hidden">
       {/* Header */}
-      <div className="px-4 py-3" style={{ borderBottom: "1px solid #1e293b" }}>
-        <h3
-          className="text-xs uppercase tracking-wider font-semibold"
-          style={{ color: "#94a3b8" }}
-        >
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+        <h3 className="text-xs uppercase tracking-wider font-semibold text-text-secondary">
           Daily Performance
         </h3>
+        {rows.length > 0 && (
+          <span className="text-xs font-mono text-text-muted bg-bg-secondary px-2 py-0.5 rounded">
+            {rows.length}d
+          </span>
+        )}
       </div>
 
       {rows.length === 0 ? (
-        <div className="p-4">
-          <p style={{ color: "#64748b", fontSize: 13 }}>
-            No daily data yet &mdash; performance is recorded after each daily review
-          </p>
+        <div className="text-center py-10 text-text-muted text-sm px-4">
+          No daily data yet — recorded after each daily review
         </div>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full" style={{ borderCollapse: "collapse" }}>
-            <thead>
-              <tr style={{ borderBottom: "1px solid #1e293b" }}>
-                {["Date", "Trades", "W/L", "Daily P&L", "", "Cumulative %"].map(
-                  (h) => (
-                    <th
-                      key={h}
-                      className="text-left text-xs font-semibold px-4 py-2"
-                      style={{ color: "#64748b", whiteSpace: "nowrap" }}
-                    >
-                      {h}
-                    </th>
-                  )
-                )}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => {
-                const pnlPositive = r.daily_pnl >= 0;
-                const barWidth = Math.min(
-                  (Math.abs(r.daily_pnl) / maxAbsPnl) * 100,
-                  100
-                );
-
-                return (
-                  <tr
-                    key={r.date}
-                    style={{ borderBottom: "1px solid #1e293b" }}
-                  >
-                    {/* Date */}
-                    <td
-                      className="px-4 py-2.5 font-mono text-xs"
-                      style={{ color: "#94a3b8", whiteSpace: "nowrap" }}
-                    >
-                      {r.date}
-                    </td>
-
-                    {/* Trades */}
-                    <td
-                      className="px-4 py-2.5 text-xs"
-                      style={{ color: "#e2e8f0" }}
-                    >
-                      {r.trades_taken}
-                    </td>
-
-                    {/* W/L */}
-                    <td className="px-4 py-2.5 text-xs">
-                      <span style={{ color: "#22c55e" }}>{r.wins}</span>
-                      <span style={{ color: "#64748b" }}>/</span>
-                      <span style={{ color: "#ef4444" }}>{r.losses}</span>
-                    </td>
-
-                    {/* Daily P&L */}
-                    <td
-                      className="px-4 py-2.5 font-mono text-xs font-medium"
-                      style={{
-                        color: pnlPositive ? "#22c55e" : "#ef4444",
-                        whiteSpace: "nowrap",
-                      }}
+        <>
+          {/* Mobile card list */}
+          <div className="md:hidden divide-y divide-border/40 max-h-[420px] overflow-y-auto">
+            {rows.map((r) => {
+              const pnlPositive = r.daily_pnl >= 0;
+              const barWidth = Math.min((Math.abs(r.daily_pnl) / maxAbsPnl) * 100, 100);
+              return (
+                <div key={r.date} className="px-4 py-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-sm font-semibold text-text-primary">
+                        {r.date}
+                      </span>
+                      <span className="text-[10px] font-mono text-text-muted">
+                        <span className="text-accent-green">{r.wins}W</span>
+                        <span className="opacity-40"> · </span>
+                        <span className="text-accent-red">{r.losses}L</span>
+                        <span className="opacity-40"> · </span>
+                        <span className="text-text-muted">{r.trades_taken}t</span>
+                      </span>
+                    </div>
+                    <span
+                      className={cn(
+                        "font-mono text-sm font-semibold",
+                        pnlPositive ? "text-accent-green" : "text-accent-red"
+                      )}
                     >
                       {pnlPositive ? "+" : ""}
                       {fmt(r.daily_pnl, sym, "en-US", 0)}
-                    </td>
-
-                    {/* Visual P&L bar */}
-                    <td className="px-4 py-2.5" style={{ minWidth: 80 }}>
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <div
+                      className="flex-1 h-1.5 rounded-full overflow-hidden"
+                      style={{ background: "#0a0e17" }}
+                    >
                       <div
+                        className="h-full rounded-full transition-all duration-500"
                         style={{
-                          height: 6,
-                          borderRadius: 3,
-                          background: "#0a0e17",
-                          overflow: "hidden",
+                          width: `${barWidth}%`,
+                          background: pnlPositive ? "#22c55e" : "#ef4444",
                         }}
-                      >
-                        <div
-                          style={{
-                            height: "100%",
-                            width: `${barWidth}%`,
-                            borderRadius: 3,
-                            background: pnlPositive ? "#22c55e" : "#ef4444",
-                            transition: "width 0.3s ease",
-                          }}
-                        />
-                      </div>
-                    </td>
-
-                    {/* Cumulative % */}
-                    <td
-                      className="px-4 py-2.5 font-mono text-xs font-medium"
-                      style={{
-                        color:
-                          r.cumulative_return_pct == null
-                            ? "#64748b"
-                            : r.cumulative_return_pct >= 0
-                            ? "#22c55e"
-                            : "#ef4444",
-                        whiteSpace: "nowrap",
-                      }}
+                      />
+                    </div>
+                    <span
+                      className={cn(
+                        "font-mono text-[11px] font-medium min-w-[60px] text-right",
+                        r.cumulative_return_pct == null
+                          ? "text-text-muted"
+                          : r.cumulative_return_pct >= 0
+                          ? "text-accent-green"
+                          : "text-accent-red"
+                      )}
                     >
                       {r.cumulative_return_pct == null
                         ? "--"
                         : `${r.cumulative_return_pct >= 0 ? "+" : ""}${r.cumulative_return_pct.toFixed(2)}%`}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Desktop table */}
+          <div className="hidden md:block overflow-x-auto max-h-[400px] overflow-y-auto">
+            <table className="w-full">
+              <thead className="sticky top-0 bg-bg-card z-10">
+                <tr className="border-b border-border">
+                  {["Date", "Trades", "W/L", "Daily P&L", "", "Cumulative %"].map((h) => (
+                    <th
+                      key={h}
+                      className="text-left text-[10px] uppercase tracking-wider font-semibold text-text-muted px-4 py-2 whitespace-nowrap"
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => {
+                  const pnlPositive = r.daily_pnl >= 0;
+                  const barWidth = Math.min((Math.abs(r.daily_pnl) / maxAbsPnl) * 100, 100);
+                  return (
+                    <tr key={r.date} className="border-b border-border/50">
+                      <td className="px-4 py-2.5 font-mono text-xs text-text-secondary whitespace-nowrap">{r.date}</td>
+                      <td className="px-4 py-2.5 text-xs text-text-primary">{r.trades_taken}</td>
+                      <td className="px-4 py-2.5 text-xs">
+                        <span className="text-accent-green">{r.wins}</span>
+                        <span className="text-text-muted">/</span>
+                        <span className="text-accent-red">{r.losses}</span>
+                      </td>
+                      <td
+                        className={cn(
+                          "px-4 py-2.5 font-mono text-xs font-medium whitespace-nowrap",
+                          pnlPositive ? "text-accent-green" : "text-accent-red"
+                        )}
+                      >
+                        {pnlPositive ? "+" : ""}
+                        {fmt(r.daily_pnl, sym, "en-US", 0)}
+                      </td>
+                      <td className="px-4 py-2.5" style={{ minWidth: 80 }}>
+                        <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "#0a0e17" }}>
+                          <div
+                            className="h-full rounded-full transition-all duration-500"
+                            style={{
+                              width: `${barWidth}%`,
+                              background: pnlPositive ? "#22c55e" : "#ef4444",
+                            }}
+                          />
+                        </div>
+                      </td>
+                      <td
+                        className={cn(
+                          "px-4 py-2.5 font-mono text-xs font-medium whitespace-nowrap",
+                          r.cumulative_return_pct == null
+                            ? "text-text-muted"
+                            : r.cumulative_return_pct >= 0
+                            ? "text-accent-green"
+                            : "text-accent-red"
+                        )}
+                      >
+                        {r.cumulative_return_pct == null
+                          ? "--"
+                          : `${r.cumulative_return_pct >= 0 ? "+" : ""}${r.cumulative_return_pct.toFixed(2)}%`}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </div>
   );
