@@ -4,7 +4,16 @@ import type { Performance, SessionConfig } from "@/lib/types";
 
 export function PerformancePanel({ perf, config }: { perf: Performance | null; config: SessionConfig | null }) {
   const sym = config?.currency_symbol || "$";
-  if (!perf || !perf.total_trades) return null;
+  if (!perf || !perf.total_trades) {
+    return (
+      <div className="bg-bg-card border border-border rounded-xl overflow-hidden">
+        <div className="px-4 py-3 border-b border-border">
+          <h3 className="text-xs uppercase tracking-wider font-semibold text-text-secondary">Performance</h3>
+        </div>
+        <div className="p-4 text-center py-8 text-text-muted text-sm">No trades yet</div>
+      </div>
+    );
+  }
 
   const rows = [
     { label: "Total Trades", value: String(perf.total_trades) },

@@ -1,8 +1,9 @@
 "use client";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { api, cn } from "@/lib/api";
+import { useToast } from "@/components/Toast";
 import { MetricsRow } from "@/components/MetricsRow";
 import { HoldingsTable } from "@/components/HoldingsTable";
 import { TradesTable } from "@/components/TradesTable";
@@ -21,9 +22,28 @@ import type {
   WatchlistItem, SessionConfig, AgentStatus,
 } from "@/lib/types";
 
+function PanelSkeleton({ rows = 3 }: { rows?: number }) {
+  return (
+    <div className="bg-bg-card border border-border rounded-xl overflow-hidden">
+      <div className="px-4 py-3 border-b border-border">
+        <div className="skeleton h-3 w-24" />
+      </div>
+      <div className="p-4 space-y-3">
+        {Array.from({ length: rows }).map((_, i) => (
+          <div key={i} className="flex justify-between items-center">
+            <div className="skeleton h-3 w-20" />
+            <div className="skeleton h-3 w-16" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function SessionDashboard() {
   const params = useParams();
   const sessionId = params.id as string;
+  const toast = useToast();
 
   const [config, setConfig] = useState<SessionConfig | null>(null);
   const [portfolio, setPortfolio] = useState<PortfolioSummary | null>(null);
@@ -34,25 +54,54 @@ export default function SessionDashboard() {
   const [logs, setLogs] = useState<string[]>([]);
   const [journal, setJournal] = useState("");
   const [agentStatus, setAgentStatus] = useState<AgentStatus>({ running: false, pid: null });
+  const [initialLoading, setInitialLoading] = useState(true);
+
+  // Track if we've already shown an error toast to avoid spamming on every poll
+  const hasErrored = useRef(false);
 
   const q = `?session=${sessionId}`;
 
-  const loadAll = useCallback(() => {
-    api<SessionConfig>(`/api/config${q}`).then(setConfig).catch(() => {});
-    api<PortfolioSummary>(`/api/portfolio${q}`).then(setPortfolio).catch(() => {});
-    api<ClosedTrade[]>(`/api/trades/closed${q}&limit=30`).then(setTrades).catch(() => {});
-    api<RiskStatus>(`/api/risk${q}`).then(setRisk).catch(() => {});
-    api<Performance>(`/api/performance${q}`).then(setPerf).catch(() => {});
-    api<WatchlistItem[]>(`/api/watchlist${q}`).then((d) => { if (Array.isArray(d)) setWatchlist(d); }).catch(() => {});
-    api<{ lines: string[] }>(`/api/logs${q}&lines=100`).then((d) => setLogs(d.lines || [])).catch(() => {});
-    api<{ content: string }>(`/api/journal${q}`).then((d) => setJournal(d.content || "")).catch(() => {});
-    api<AgentStatus>(`/api/agent/status/${sessionId}`).then(setAgentStatus).catch(() => {});
-  }, [sessionId, q]);
+  const loadAll = useCallback((isInitial = false) => {
+    const calls = [
+      api<SessionConfig>(`/api/config${q}`).then(setConfig),
+      api<PortfolioSummary>(`/api/portfolio${q}`).then(setPortfolio),
+      api<ClosedTrade[]>(`/api/trades/closed${q}&limit=30`).then(setTrades),
+      api<RiskStatus>(`/api/risk${q}`).then(setRisk),
+      api<Performance>(`/api/performance${q}`).then(setPerf),
+      api<WatchlistItem[]>(`/api/watchlist${q}`).then((d) => { if (Array.isArray(d)) setWatchlist(d); }),
+      api<{ lines: string[] }>(`/api/logs${q}&lines=100`).then((d) => setLogs(d.lines || [])),
+      api<{ content: string }>(`/api/journal${q}`).then((d) => setJournal(d.content || "")),
+      api<AgentStatus>(`/api/agent/status/${sessionId}`).then(setAgentStatus),
+    ];
+
+    Promise.allSettled(calls).then((results) => {
+      if (isInitial) setInitialLoading(false);
+
+      const failures = results.filter((r) => r.status === "rejected");
+      if (failures.length > 0 && !hasErrored.current) {
+        hasErrored.current = true;
+        toast.error("Failed to load some dashboard data");
+      }
+      // Reset error flag once all calls succeed, so we can show error again if it recurs
+      if (failures.length === 0) {
+        hasErrored.current = false;
+      }
+    });
+  }, [sessionId, q, toast]);
 
   useEffect(() => {
-    loadAll();
-    const interval = setInterval(loadAll, 30000);
+    loadAll(true);
+    const interval = setInterval(() => loadAll(false), 30000);
     return () => clearInterval(interval);
+  }, [loadAll]);
+
+  // Refetch when user returns to the tab
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") loadAll(false);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
   }, [loadAll]);
 
   const isBacktest = config?.backtest_mode === true;
@@ -60,6 +109,54 @@ export default function SessionDashboard() {
   const marketBadge = config?.market_id === "crypto"
     ? "bg-accent-blue/15 text-accent-blue border-accent-blue/30"
     : "bg-accent-green/15 text-accent-green border-accent-green/30";
+
+  // Show skeleton layout during initial load
+  if (initialLoading) {
+    return (
+      <div className="px-4 md:px-6 py-4 md:py-6 max-w-7xl mx-auto">
+        {/* Header skeleton */}
+        <div className="flex items-center justify-between mb-6">
+          <div className="space-y-2">
+            <div className="skeleton h-6 w-48" />
+            <div className="skeleton h-3 w-32" />
+          </div>
+          <div className="flex gap-3">
+            <div className="skeleton h-11 w-24 rounded-xl" />
+            <div className="skeleton h-11 w-11 rounded-xl" />
+          </div>
+        </div>
+
+        {/* Metrics skeleton */}
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 md:gap-4 mb-6">
+          {[1, 2, 3, 4, 5].map((i) => (
+            <div key={i} className="bg-bg-card border border-border rounded-xl p-4">
+              <div className="skeleton h-3 w-20 mb-3" />
+              <div className="skeleton h-6 w-28 mb-2" />
+              <div className="skeleton h-3 w-24" />
+            </div>
+          ))}
+        </div>
+
+        {/* Holdings + Risk skeleton */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-5 mb-4 md:mb-5">
+          <div className="lg:col-span-2"><PanelSkeleton rows={4} /></div>
+          <div><PanelSkeleton rows={3} /></div>
+        </div>
+
+        {/* Trades + Watchlist skeleton */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-5 mb-4 md:mb-5">
+          <PanelSkeleton rows={5} />
+          <PanelSkeleton rows={5} />
+        </div>
+
+        {/* Performance + Journal skeleton */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-5 mb-4 md:mb-5">
+          <PanelSkeleton rows={6} />
+          <PanelSkeleton rows={4} />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="px-4 md:px-6 py-4 md:py-6 max-w-7xl mx-auto">

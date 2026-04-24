@@ -3,7 +3,16 @@ import { cn } from "@/lib/api";
 import type { RiskStatus } from "@/lib/types";
 
 export function RiskPanel({ risk }: { risk: RiskStatus | null }) {
-  if (!risk) return null;
+  if (!risk) {
+    return (
+      <div className="bg-bg-card border border-border rounded-xl overflow-hidden">
+        <div className="px-4 py-3 border-b border-border">
+          <h3 className="text-xs uppercase tracking-wider font-semibold text-text-secondary">Risk Status</h3>
+        </div>
+        <div className="p-4 text-center py-8 text-text-muted text-sm">No risk data yet</div>
+      </div>
+    );
+  }
 
   const riskColor = (pct: number) => pct > 80 ? "accent-red" : pct > 50 ? "accent-amber" : "accent-green";
   const dailyPct = risk.daily_limit_used_pct;

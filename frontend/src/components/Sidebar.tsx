@@ -14,12 +14,21 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const pathname = usePathname();
   const [sessions, setSessions] = useState<Session[]>([]);
 
+  const fetchSessions = () => api<Session[]>("/api/sessions").then(setSessions).catch(() => {});
+
   useEffect(() => {
-    api<Session[]>("/api/sessions").then(setSessions).catch(() => {});
-    const interval = setInterval(() => {
-      api<Session[]>("/api/sessions").then(setSessions).catch(() => {});
-    }, 15000);
+    fetchSessions();
+    const interval = setInterval(fetchSessions, 15000);
     return () => clearInterval(interval);
+  }, []);
+
+  // Refetch when user returns to the tab
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") fetchSessions();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
   }, []);
 
   const handleNavClick = () => {

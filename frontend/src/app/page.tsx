@@ -43,6 +43,15 @@ export default function HomePage() {
     return () => clearInterval(interval);
   }, []);
 
+  // Refetch when user returns to the tab
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") loadSessions();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
+
   return (
     <div className="p-4 md:p-8 max-w-6xl mx-auto">
       {/* Header */}
