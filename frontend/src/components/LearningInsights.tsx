@@ -55,41 +55,45 @@ export function LearningInsights({ sessionId, currencySymbol }: { sessionId: str
 
   if (!data || data.overall.total_trades === 0) {
     return (
-      <div style={{ background: "#151d2e", border: "1px solid #1e293b", borderRadius: 12, padding: 20 }}>
-        <h3 className="text-sm font-semibold mb-3" style={{ color: "#e2e8f0" }}>Agent Learning</h3>
-        <p style={{ color: "#64748b", fontSize: 13 }}>No closed trades yet — the agent needs to complete trades before insights appear.</p>
+      <div className="bg-bg-card border border-border rounded-xl p-4 md:p-5">
+        <h3 className="text-xs uppercase tracking-wider font-semibold text-text-secondary mb-3">Agent Learning</h3>
+        <p className="text-sm text-text-muted">No closed trades yet — insights appear after the agent completes trades.</p>
       </div>
     );
   }
 
-  const { overall, by_direction, by_type, by_exit, by_conviction, distilled_rules } = data;
+  const { by_direction, by_type, by_exit, by_conviction, distilled_rules } = data;
 
   return (
-    <div style={{ background: "#151d2e", border: "1px solid #1e293b", borderRadius: 12, padding: 20 }}>
-      {/* Header + Tabs */}
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-sm font-semibold" style={{ color: "#e2e8f0" }}>Agent Learning</h3>
-        <div className="flex gap-1" style={{ background: "#0a0e17", borderRadius: 8, padding: 2 }}>
-          {(["rules", "stats"] as const).map((t) => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              style={{
-                padding: "6px 14px",
-                borderRadius: 6,
-                fontSize: 12,
-                fontWeight: 500,
-                background: tab === t ? "#1e293b" : "transparent",
-                color: tab === t ? "#e2e8f0" : "#64748b",
-                border: "none",
-                cursor: "pointer",
-                textTransform: "capitalize",
-              }}
-            >
-              {t === "rules" ? "Distilled Rules" : "Performance Stats"}
-            </button>
-          ))}
-        </div>
+    <div className="bg-bg-card border border-border rounded-xl p-4 md:p-5">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-xs uppercase tracking-wider font-semibold text-text-secondary">Agent Learning</h3>
+      </div>
+
+      {/* Tabs — full width on mobile, right-aligned on desktop */}
+      <div
+        className="flex gap-1 mb-4 p-1 rounded-lg w-full md:w-fit"
+        style={{ background: "#0a0e17" }}
+      >
+        {(["rules", "stats"] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className="flex-1 md:flex-none rounded text-xs font-semibold transition-colors"
+            style={{
+              padding: "8px 14px",
+              minHeight: 36,
+              background: tab === t ? "#1e293b" : "transparent",
+              color: tab === t ? "#e2e8f0" : "#64748b",
+              border: "none",
+              cursor: "pointer",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {t === "rules" ? "Distilled Rules" : "Performance Stats"}
+          </button>
+        ))}
       </div>
 
       {tab === "rules" ? (

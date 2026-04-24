@@ -2,33 +2,59 @@
 import Link from "next/link";
 import { api, fmt, pct, cn } from "@/lib/api";
 import { useToast } from "@/components/Toast";
-import type { Session, PortfolioSummary } from "@/lib/types";
-import { useEffect, useState } from "react";
+import { Sparkline } from "@/components/Sparkline";
+import type { Session, PortfolioSummary, DailyPerformance } from "@/lib/types";
+import { useEffect, useRef, useState } from "react";
 
 /** Pretty-print model name: "anthropic/claude-haiku-4-5" → "Claude Haiku 4.5" */
 function formatModel(model?: string): string {
   if (!model) return "";
-  // Remove provider prefix (anthropic/, google/, openai/, etc.)
   const short = model.includes("/") ? model.split("/").pop()! : model;
   return short
     .replace(/-/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase())
-    .replace(/(\d) (\d)/g, "$1.$2"); // "4 5" → "4.5"
+    .replace(/(\d) (\d)/g, "$1.$2");
 }
 
 export function SessionCard({ session, onDelete }: { session: Session; onDelete?: () => void }) {
   const [portfolio, setPortfolio] = useState<PortfolioSummary | null>(null);
+  const [daily, setDaily] = useState<DailyPerformance[]>([]);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [toggling, setToggling] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
   const toast = useToast();
 
   useEffect(() => {
     api<PortfolioSummary>(`/api/portfolio?session=${session.session_id}`)
       .then(setPortfolio)
       .catch(() => {});
+    api<DailyPerformance[]>(`/api/performance/daily?session=${session.session_id}&limit=14`)
+      .then((d) => { if (Array.isArray(d)) setDaily(d); })
+      .catch(() => {});
   }, [session.session_id]);
 
+  // Close overflow menu on outside click
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onClick = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, [menuOpen]);
+
   const isProfit = (portfolio?.total_return ?? 0) >= 0;
+  const hasPortfolio = portfolio != null;
+  const sparkValues = daily
+    .slice()
+    .reverse()
+    .map((d) => d.total_value)
+    .filter((v): v is number => v != null);
+
   const marketColors: Record<string, string> = {
     nse: "bg-accent-green/15 text-accent-green border-accent-green/30",
     crypto: "bg-accent-blue/15 text-accent-blue border-accent-blue/30",
@@ -37,17 +63,21 @@ export function SessionCard({ session, onDelete }: { session: Session; onDelete?
   const handleToggle = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (toggling) return;
+    setToggling(true);
     try {
       if (session.is_running) {
         await api(`/api/agent/stop/${session.session_id}`, { method: "POST" });
-        toast.success(`Agent "${session.display_name}" stopped`);
+        toast.success(`"${session.display_name}" stopped`);
       } else {
         await api(`/api/agent/start/${session.session_id}`, { method: "POST" });
-        toast.success(`Agent "${session.display_name}" started`);
+        toast.success(`"${session.display_name}" started`);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown error";
-      toast.error(`Failed to ${session.is_running ? "stop" : "start"} agent: ${msg}`);
+      toast.error(`Failed to ${session.is_running ? "stop" : "start"}: ${msg}`);
+    } finally {
+      setToggling(false);
     }
   };
 
@@ -69,6 +99,7 @@ export function SessionCard({ session, onDelete }: { session: Session; onDelete?
     } finally {
       setDeleting(false);
       setConfirmDelete(false);
+      setMenuOpen(false);
     }
   };
 
@@ -78,26 +109,48 @@ export function SessionCard({ session, onDelete }: { session: Session; onDelete?
     setConfirmDelete(false);
   };
 
+  const stopMenuPropagation = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
   const modelName = formatModel(session.llm_model);
 
   return (
-    <Link href={`/sessions/${session.session_id}`}>
-      <div className="bg-bg-card border border-border rounded-xl p-5 hover:border-border-accent hover:bg-bg-card-hover transition-all cursor-pointer group">
+    <Link href={`/sessions/${session.session_id}`} className="block">
+      <div className="relative bg-bg-card border border-border rounded-2xl p-4 md:p-5 hover:border-border-accent transition-all group overflow-hidden">
+        {/* Ambient gradient for profit/loss */}
+        {hasPortfolio && (
+          <div
+            className="absolute inset-x-0 top-0 h-24 pointer-events-none opacity-60"
+            style={{
+              background: isProfit
+                ? "linear-gradient(180deg, rgba(34,197,94,0.08) 0%, transparent 100%)"
+                : "linear-gradient(180deg, rgba(239,68,68,0.08) 0%, transparent 100%)",
+            }}
+          />
+        )}
+
         {/* Confirm delete bar */}
         {confirmDelete && (
-          <div className="flex items-center justify-between gap-2 mb-3 p-2.5 rounded-lg border border-accent-red/30 bg-accent-red/5">
+          <div
+            onClick={stopMenuPropagation}
+            className="relative flex items-center justify-between gap-2 mb-3 p-2.5 rounded-lg border border-accent-red/30 bg-accent-red/10"
+          >
             <span className="text-xs text-accent-red font-medium truncate">Delete this session?</span>
             <div className="flex items-center gap-2 shrink-0">
               <button
                 onClick={handleCancelDelete}
-                className="px-3 py-1.5 rounded-lg text-xs font-medium border border-border text-text-muted hover:bg-bg-secondary transition-all min-h-[36px]"
+                className="px-3 rounded-lg text-xs font-medium border border-border text-text-muted hover:bg-bg-secondary transition-all"
+                style={{ minHeight: 36 }}
               >
                 Cancel
               </button>
               <button
                 onClick={handleDelete}
                 disabled={deleting}
-                className="px-3 py-1.5 rounded-lg text-xs font-medium bg-accent-red text-white hover:bg-accent-red/80 transition-all disabled:opacity-50 min-h-[36px]"
+                className="px-3 rounded-lg text-xs font-medium bg-accent-red text-white hover:bg-accent-red/80 transition-all disabled:opacity-50"
+                style={{ minHeight: 36 }}
               >
                 {deleting ? "..." : "Delete"}
               </button>
@@ -105,82 +158,142 @@ export function SessionCard({ session, onDelete }: { session: Session; onDelete?
           </div>
         )}
 
-        {/* Header */}
-        <div className="flex items-start justify-between mb-3">
-          <div>
-            <h3 className="font-semibold text-text-primary group-hover:text-white transition-colors">
-              {session.display_name}
-            </h3>
-            <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-              <span className={cn("inline-block text-[10px] uppercase tracking-wider font-semibold px-2 py-0.5 rounded border", marketColors[session.market] || "bg-bg-secondary text-text-muted border-border")}>
-                {session.market}
-              </span>
-              {modelName && (
-                <span className="inline-block text-[10px] text-text-muted font-mono truncate max-w-[140px]" title={session.llm_model}>
-                  {modelName}
-                </span>
+        {/* Top row: live status + name + overflow */}
+        <div className="relative flex items-start justify-between mb-3">
+          <div className="flex items-start gap-2.5 min-w-0 flex-1">
+            <span
+              className={cn(
+                "rounded-full shrink-0 mt-1.5",
+                session.is_running && "animate-pulse-dot"
               )}
+              style={{
+                width: 8,
+                height: 8,
+                background: session.is_running ? "#22c55e" : "rgba(100,116,139,0.5)",
+                boxShadow: session.is_running ? "0 0 0 4px rgba(34,197,94,0.15)" : "none",
+              }}
+            />
+            <div className="min-w-0 flex-1">
+              <h3 className="font-semibold text-text-primary text-[15px] leading-tight truncate">
+                {session.display_name}
+              </h3>
+              <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                <span className={cn("inline-block text-[11px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded border", marketColors[session.market] || "bg-bg-secondary text-text-muted border-border")}>
+                  {session.market}
+                </span>
+                {modelName && (
+                  <span className="text-[11px] text-text-muted truncate max-w-[160px]" title={session.llm_model}>
+                    {modelName}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2">
-              <span className={cn("w-2.5 h-2.5 rounded-full", session.is_running ? "bg-accent-green animate-pulse-dot" : "bg-text-muted/40")} />
-              <span className="text-xs text-text-muted">{session.is_running ? "Live" : "Stopped"}</span>
-            </div>
-            {!session.is_running && !confirmDelete && (
-              <button
-                onClick={handleDelete}
-                className="p-1.5 rounded-lg text-text-muted/40 hover:text-accent-red hover:bg-accent-red/10 transition-all min-w-[32px] min-h-[32px] flex items-center justify-center"
-                title="Delete session"
+
+          {/* Overflow menu */}
+          <div className="relative shrink-0" ref={menuRef}>
+            <button
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); setMenuOpen((v) => !v); }}
+              className="flex items-center justify-center rounded-lg text-text-muted/60 hover:text-text-primary hover:bg-bg-secondary transition-all"
+              style={{ width: 36, height: 36 }}
+              aria-label="More options"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                <circle cx="12" cy="5" r="1.5" />
+                <circle cx="12" cy="12" r="1.5" />
+                <circle cx="12" cy="19" r="1.5" />
+              </svg>
+            </button>
+            {menuOpen && (
+              <div
+                onClick={stopMenuPropagation}
+                className="absolute right-0 top-full mt-1 min-w-[140px] rounded-lg border border-border bg-bg-card shadow-lg shadow-black/40 z-20 overflow-hidden"
               >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="3 6 5 6 21 6" />
-                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                </svg>
-              </button>
+                <button
+                  onClick={handleDelete}
+                  className="w-full text-left px-3 py-2.5 text-xs font-medium text-accent-red hover:bg-accent-red/10 transition-colors flex items-center gap-2"
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="3 6 5 6 21 6" />
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                  </svg>
+                  Delete session
+                </button>
+              </div>
             )}
           </div>
         </div>
 
-        {/* Portfolio value */}
-        <div className="mb-3">
-          <div className="text-xs text-text-muted mb-1">Portfolio Value</div>
-          <div className="font-mono text-xl font-semibold tracking-tight">
-            {portfolio ? fmt(portfolio.total_value, session.currency_symbol) : "--"}
+        {/* Hero: P&L + sparkline */}
+        <div className="relative flex items-end justify-between gap-3 mb-3">
+          <div className="min-w-0 flex-1">
+            <div className="text-[10px] uppercase tracking-wider text-text-muted mb-0.5">Total Return</div>
+            <div className={cn(
+              "font-mono font-bold tracking-tight leading-none flex items-baseline gap-1.5",
+              isProfit ? "text-accent-green" : "text-accent-red"
+            )} style={{ fontSize: 26 }}>
+              <span style={{ fontSize: 16, lineHeight: 1 }}>{isProfit ? "▲" : "▼"}</span>
+              {portfolio
+                ? `${isProfit ? "+" : ""}${fmt(portfolio.total_return, session.currency_symbol)}`
+                : "--"}
+            </div>
+            <div className={cn("text-xs font-mono mt-1", isProfit ? "text-accent-green/80" : "text-accent-red/80")}>
+              {portfolio ? pct(portfolio.total_return_pct) : "--"}
+              <span className="text-text-muted"> · {portfolio ? fmt(portfolio.total_value, session.currency_symbol) : "--"}</span>
+            </div>
+          </div>
+          <div className="shrink-0">
+            <Sparkline values={sparkValues} width={90} height={34} positive={isProfit} />
           </div>
         </div>
 
-        {/* Return + Win Rate + Start/Stop */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <span className={cn("font-mono text-sm font-medium", isProfit ? "text-accent-green" : "text-accent-red")}>
-              {portfolio ? fmt(portfolio.total_return, session.currency_symbol) : "--"}
-              {portfolio ? ` (${pct(portfolio.total_return_pct)})` : ""}
+        {/* Meta row */}
+        <div className="relative flex items-center gap-3 text-[11px] text-text-muted mb-3 pt-3 border-t border-border/50">
+          {session.win_rate != null ? (
+            <span className={cn("font-mono font-semibold", session.win_rate >= 50 ? "text-accent-green" : "text-accent-red")}>
+              {session.win_rate}% WR
             </span>
-            {session.win_rate != null && (
-              <span className={cn(
-                "text-xs font-mono font-medium",
-                session.win_rate >= 50 ? "text-accent-green" : "text-accent-red"
-              )}>
-                {session.win_rate}% W
-              </span>
-            )}
-            {session.total_trades != null && session.total_trades > 0 && session.win_rate == null && (
-              <span className="text-xs text-text-muted font-mono">{session.total_trades}t</span>
-            )}
-          </div>
-          <button
-            onClick={handleToggle}
-            className={cn(
-              "px-3 py-1.5 rounded-lg text-xs font-medium transition-all border",
-              session.is_running
-                ? "border-accent-red/30 text-accent-red hover:bg-accent-red/10"
-                : "border-accent-green/30 text-accent-green hover:bg-accent-green/10"
-            )}
-          >
-            {session.is_running ? "Stop" : "Start"}
-          </button>
+          ) : (
+            <span className="font-mono">-- WR</span>
+          )}
+          <span className="opacity-40">·</span>
+          <span className="font-mono">{session.total_trades ?? 0} trades</span>
+          {portfolio && (
+            <>
+              <span className="opacity-40">·</span>
+              <span className="font-mono">{portfolio.open_positions} open</span>
+            </>
+          )}
         </div>
+
+        {/* Primary action: full-width Start/Stop */}
+        <button
+          onClick={handleToggle}
+          disabled={toggling}
+          className={cn(
+            "relative w-full rounded-xl font-semibold text-sm transition-all disabled:opacity-60",
+            session.is_running
+              ? "bg-accent-red/10 hover:bg-accent-red/20 text-accent-red border border-accent-red/30"
+              : "bg-accent-green/15 hover:bg-accent-green/25 text-accent-green border border-accent-green/30"
+          )}
+          style={{ minHeight: 44 }}
+        >
+          <span className="inline-flex items-center justify-center gap-2">
+            {toggling ? (
+              <span className="opacity-70">...</span>
+            ) : session.is_running ? (
+              <>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" /></svg>
+                Stop Agent
+              </>
+            ) : (
+              <>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
+                Start Agent
+              </>
+            )}
+          </span>
+        </button>
       </div>
     </Link>
   );
