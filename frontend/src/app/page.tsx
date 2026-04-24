@@ -92,7 +92,7 @@ export default function HomePage() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
           {sessions.map((s, i) => (
             <div key={s.session_id} className={`animate-fade-in delay-${Math.min(i + 1, 5)}`}>
-              <SessionCard session={s} />
+              <SessionCard session={s} onDelete={loadSessions} />
             </div>
           ))}
         </div>
