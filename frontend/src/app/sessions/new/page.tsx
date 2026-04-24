@@ -1,17 +1,47 @@
 "use client";
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import { api, cn } from "@/lib/api";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
+import { api, cn, fmt } from "@/lib/api";
+import { useToast } from "@/components/Toast";
+import { Collapsible } from "@/components/Collapsible";
 import type { MarketPreset, Session } from "@/lib/types";
 
+type PresetKey = "nse-intraday" | "nse-swing" | "crypto" | "custom";
+
+const PERSONALITY_CHIPS: { label: string; text: string }[] = [
+  { label: "Aggressive", text: "Be aggressive. Target 2% daily returns. Favor momentum plays. Cut losers fast at 1% stop." },
+  { label: "Conservative", text: "Preserve capital. Only take 5/5 conviction trades. Use small position sizes. Prefer waiting over forcing." },
+  { label: "Scalper", text: "Scalp for quick moves. Target 0.3-1% per trade. Tight 0.3% stops. No entries in the last hour." },
+  { label: "Swing", text: "Hold positions for multi-day moves. Ignore intraday noise. Use wider stops (2-3%). Trade only A+ setups." },
+];
+
+/** Slugify display name → valid session_id */
+function slugify(name: string): string {
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 32);
+}
+
 export default function CreateSessionPage() {
+  return (
+    <Suspense fallback={<div className="px-4 py-8 max-w-3xl mx-auto"><div className="skeleton h-8 w-48 mb-6" /><div className="skeleton h-32 w-full rounded-xl" /></div>}>
+      <CreateSessionInner />
+    </Suspense>
+  );
+}
+
+function CreateSessionInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const toast = useToast();
   const [presets, setPresets] = useState<Record<string, MarketPreset>>({});
   const [sessions, setSessions] = useState<Session[]>([]);
-  const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
-
-  const [capitalDisplay, setCapitalDisplay] = useState("10,00,000");
+  const [sessionIdEdited, setSessionIdEdited] = useState(false);
 
   const [form, setForm] = useState({
     session_id: "",
@@ -27,37 +57,75 @@ export default function CreateSessionPage() {
     api_key_env: "OPENROUTER_API_KEY",
     personality: "",
     import_learnings_from: "",
-    // Backtest
     backtest_mode: false,
     backtest_start_date: "",
     backtest_end_date: "",
   });
 
+  const preset = presets[form.market];
+  const currencyLocale = preset?.currency === "INR" ? "en-IN" : "en-US";
+  const currencySymbol = preset?.currency_symbol || "$";
+
+  // Load presets + existing sessions, apply URL preset param
   useEffect(() => {
     api<Record<string, MarketPreset>>("/api/market-presets").then((p) => {
       setPresets(p);
-      if (p.nse) {
-        const cap = p.nse.default_starting_capital;
-        setForm((f) => ({ ...f, starting_capital: cap }));
-        setCapitalDisplay(cap.toLocaleString("en-IN"));
+      const qPreset = searchParams.get("preset") as PresetKey | null;
+
+      let market = "nse";
+      let personality = "";
+      if (qPreset === "crypto") {
+        market = "crypto";
+      } else if (qPreset === "nse-intraday") {
+        market = "nse-intraday" in p ? "nse-intraday" : "nse";
+        personality = PERSONALITY_CHIPS.find((c) => c.label === "Scalper")?.text || "";
+      } else if (qPreset === "nse-swing") {
+        market = "nse";
+        personality = PERSONALITY_CHIPS.find((c) => c.label === "Swing")?.text || "";
       }
+
+      const mPreset = p[market] || p.nse;
+      const cap = mPreset?.default_starting_capital || 1000000;
+      setForm((f) => ({
+        ...f,
+        market,
+        starting_capital: cap,
+        personality: personality || f.personality,
+      }));
     });
     api<Session[]>("/api/sessions").then(setSessions).catch(() => {});
-  }, []);
+  }, [searchParams]);
+
+  // Auto-sync session_id from display_name (until user edits it manually)
+  useEffect(() => {
+    if (!sessionIdEdited && form.display_name) {
+      const slug = slugify(form.display_name);
+      setForm((f) => ({ ...f, session_id: slug }));
+    }
+  }, [form.display_name, sessionIdEdited]);
+
+  const capitalDisplay = useMemo(
+    () => (form.starting_capital ? form.starting_capital.toLocaleString(currencyLocale) : ""),
+    [form.starting_capital, currencyLocale]
+  );
 
   const selectMarket = (m: string) => {
-    const preset = presets[m];
-    const cap = preset?.default_starting_capital || form.starting_capital;
+    const mPreset = presets[m];
+    const cap = mPreset?.default_starting_capital || form.starting_capital;
     setForm((f) => ({ ...f, market: m, starting_capital: cap }));
-    setCapitalDisplay(cap.toLocaleString(preset?.currency === "INR" ? "en-IN" : "en-US"));
   };
 
-  const handleSubmit = async (startAfter: boolean = false) => {
-    setError("");
-    if (!form.session_id.trim()) { setError("Session ID is required"); return; }
-    if (!/^[a-z0-9_-]+$/.test(form.session_id)) { setError("Session ID: lowercase letters, numbers, hyphens, underscores only"); return; }
+  const handleSubmit = async (startAfter: boolean) => {
+    if (!form.session_id.trim()) {
+      toast.error("Enter a display name to generate a session ID");
+      return;
+    }
+    if (!/^[a-z0-9_-]+$/.test(form.session_id)) {
+      toast.error("Session ID: lowercase letters, numbers, hyphens, underscores only");
+      return;
+    }
     if (form.backtest_mode && (!form.backtest_start_date || !form.backtest_end_date)) {
-      setError("Backtest mode requires both start and end dates");
+      toast.error("Backtest mode requires start and end dates");
       return;
     }
 
@@ -68,14 +136,12 @@ export default function CreateSessionPage() {
         body: JSON.stringify({
           ...form,
           display_name: form.display_name || form.session_id,
-          // Don't send empty date strings
           backtest_start_date: form.backtest_start_date || null,
           backtest_end_date: form.backtest_end_date || null,
         }),
       });
 
       if (form.backtest_mode) {
-        // Auto-start the backtest
         await api(`/api/backtest/start/${form.session_id}`, {
           method: "POST",
           body: JSON.stringify({
@@ -88,133 +154,117 @@ export default function CreateSessionPage() {
       }
       router.push(`/sessions/${form.session_id}`);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to create session");
+      toast.error(err instanceof Error ? err.message : "Failed to create session");
       setCreating(false);
     }
   };
 
-  const preset = presets[form.market];
-  let sectionNum = 0;
+  const primaryCta = form.backtest_mode
+    ? (creating ? "Creating & Starting Backtest..." : "Create & Run Backtest")
+    : (creating ? "Creating..." : "Create & Start Agent");
 
   return (
-    <div className="px-4 md:px-8 py-4 md:py-8 max-w-3xl mx-auto">
-      <div className="mb-8 animate-fade-in">
-        <h1 className="text-2xl font-bold tracking-tight">Create Trading Session</h1>
-        <p className="text-text-secondary text-sm mt-1">Configure a new AI trading agent</p>
+    <div className="px-4 md:px-8 py-5 md:py-8 max-w-3xl mx-auto pb-32">
+      {/* Header */}
+      <div className="mb-5 md:mb-7 animate-fade-in">
+        <h1 className="text-xl md:text-2xl font-bold tracking-tight">Create Session</h1>
+        <p className="text-text-muted text-xs md:text-sm mt-1">Configure a new AI trading agent in a few steps</p>
       </div>
 
-      {/* Mode Selection */}
-      <Section title="Mode" number={++sectionNum}>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <button
-            onClick={() => setForm({ ...form, backtest_mode: false })}
-            className={cn(
-              "p-5 rounded-xl border-2 text-left transition-all",
-              !form.backtest_mode
-                ? "border-accent-green bg-accent-green/5 shadow-lg shadow-accent-green/10"
-                : "border-border hover:border-border-accent bg-bg-card"
-            )}
-          >
-            <div className="text-2xl mb-2">{"\u{1F4C8}"}</div>
-            <div className="font-semibold text-text-primary">Live Trading</div>
-            <div className="text-xs text-text-muted mt-1">
-              Paper trade in real-time with live market data
-            </div>
-          </button>
-          <button
-            onClick={() => setForm({ ...form, backtest_mode: true })}
-            className={cn(
-              "p-5 rounded-xl border-2 text-left transition-all",
-              form.backtest_mode
-                ? "border-[#8b5cf6] bg-[#8b5cf6]/5 shadow-lg shadow-[#8b5cf6]/10"
-                : "border-border hover:border-border-accent bg-bg-card"
-            )}
-          >
-            <div className="text-2xl mb-2">{"\u{23F3}"}</div>
-            <div className="font-semibold text-text-primary">Backtest First</div>
-            <div className="text-xs text-text-muted mt-1">
-              Replay historical data to train the agent before going live
-            </div>
-          </button>
+      {/* Mode toggle — compact segmented control */}
+      <div className="mb-5 animate-fade-in delay-1">
+        <div className="flex gap-1 p-1 rounded-xl border border-border bg-bg-card w-full sm:w-fit">
+          <ModePill
+            label="Live Trading"
+            subLabel="Real-time paper trades"
+            active={!form.backtest_mode}
+            onClick={() => setForm((f) => ({ ...f, backtest_mode: false }))}
+            icon="📈"
+          />
+          <ModePill
+            label="Backtest"
+            subLabel="Replay history"
+            active={form.backtest_mode}
+            onClick={() => setForm((f) => ({ ...f, backtest_mode: true }))}
+            icon="⏳"
+            accent="purple"
+          />
         </div>
-      </Section>
+      </div>
 
-      {/* Market Selection */}
-      <Section title="Market" number={++sectionNum}>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          {Object.entries(presets).map(([id, p]) => (
-            <button
-              key={id}
-              onClick={() => selectMarket(id)}
-              className={cn(
-                "p-5 rounded-xl border-2 text-left transition-all",
-                form.market === id
-                  ? "border-accent-blue bg-accent-blue/5 shadow-lg shadow-accent-blue/10"
-                  : "border-border hover:border-border-accent bg-bg-card"
-              )}
-            >
-              <div className="text-2xl mb-2">{id === "crypto" ? "\u20BF" : "\u25B2"}</div>
-              <div className="font-semibold text-text-primary">{p.display_name}</div>
-              <div className="text-xs text-text-muted mt-1">
-                {p.currency_symbol}{p.default_starting_capital.toLocaleString()} default
-                {p.is_24x7 ? " \u00B7 24/7" : ""}
-                {" \u00B7 "}{p.default_watchlist_count} assets
-              </div>
-            </button>
-          ))}
+      {/* Market */}
+      <FormGroup title="Market" delay={2}>
+        <div className="grid grid-cols-2 gap-3">
+          {Object.entries(presets).map(([id, p]) => {
+            const active = form.market === id;
+            return (
+              <button
+                key={id}
+                onClick={() => selectMarket(id)}
+                className={cn(
+                  "p-3 md:p-4 rounded-xl border text-left transition-all",
+                  active
+                    ? "border-accent-blue bg-accent-blue/5 shadow-sm shadow-accent-blue/10"
+                    : "border-border hover:border-border-accent bg-bg-card"
+                )}
+                style={{ minHeight: 80 }}
+              >
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span
+                    className="flex items-center justify-center rounded-lg font-mono font-bold"
+                    style={{
+                      width: 32, height: 32,
+                      background: id === "crypto" ? "rgba(59,130,246,0.15)" : "rgba(34,197,94,0.15)",
+                      color: id === "crypto" ? "#3b82f6" : "#22c55e",
+                      fontSize: 16,
+                    }}
+                  >
+                    {id === "crypto" ? "₿" : "▲"}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-semibold text-text-primary text-sm truncate">{p.display_name}</div>
+                  </div>
+                  {active && <span className="text-accent-blue text-xs">✓</span>}
+                </div>
+                <div className="text-[11px] text-text-muted">
+                  {p.currency_symbol}{p.default_starting_capital.toLocaleString()}
+                  {p.is_24x7 && " · 24/7"}
+                </div>
+              </button>
+            );
+          })}
         </div>
-      </Section>
+      </FormGroup>
 
-      {/* Backtest Date Range (only when backtest mode) */}
+      {/* Backtest date range */}
       {form.backtest_mode && (
-        <Section title="Backtest Period" number={++sectionNum}>
-          <p className="text-text-muted text-sm mb-4">
-            Select the date range to replay. The agent will step through each trading day,
-            making decisions at every 15-minute candle.
-          </p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+        <FormGroup title="Backtest Period" delay={3}>
+          <div className="grid grid-cols-2 gap-3 mb-3">
             <div>
-              <label className="block text-xs text-text-muted mb-1.5">Start Date</label>
+              <label className="block text-[11px] text-text-muted mb-1.5">Start</label>
               <input
                 type="date"
                 value={form.backtest_start_date}
                 onChange={(e) => setForm({ ...form, backtest_start_date: e.target.value })}
-                className="w-full font-mono"
-                style={{
-                  background: "#0f172a",
-                  border: "1px solid #334155",
-                  borderRadius: 8,
-                  padding: "10px 12px",
-                  color: "#e2e8f0",
-                  fontSize: 14,
-                }}
+                className="w-full font-mono text-sm"
               />
             </div>
             <div>
-              <label className="block text-xs text-text-muted mb-1.5">End Date</label>
+              <label className="block text-[11px] text-text-muted mb-1.5">End</label>
               <input
                 type="date"
                 value={form.backtest_end_date}
                 onChange={(e) => setForm({ ...form, backtest_end_date: e.target.value })}
-                className="w-full font-mono"
-                style={{
-                  background: "#0f172a",
-                  border: "1px solid #334155",
-                  borderRadius: 8,
-                  padding: "10px 12px",
-                  color: "#e2e8f0",
-                  fontSize: 14,
-                }}
+                className="w-full font-mono text-sm"
               />
             </div>
           </div>
-          {/* Quick presets */}
           <div className="flex flex-wrap gap-2">
             {[
-              { label: "1 Week", days: 7 },
-              { label: "2 Weeks", days: 14 },
-              { label: "1 Month", days: 30 },
-              { label: "3 Months", days: 90 },
+              { label: "1W", days: 7 },
+              { label: "2W", days: 14 },
+              { label: "1M", days: 30 },
+              { label: "3M", days: 90 },
             ].map(({ label, days }) => (
               <button
                 key={label}
@@ -229,62 +279,70 @@ export default function CreateSessionPage() {
                     backtest_end_date: end.toISOString().split("T")[0],
                   });
                 }}
-                style={{
-                  padding: "6px 14px",
-                  minHeight: 36,
-                  background: "rgba(139,92,246,0.1)",
-                  border: "1px solid rgba(139,92,246,0.25)",
-                  borderRadius: 8,
-                  color: "#a78bfa",
-                  fontSize: 12,
-                  fontWeight: 500,
-                  cursor: "pointer",
-                }}
+                className="px-3 rounded-lg text-xs font-semibold text-[#a78bfa] border transition-all hover:bg-[#8b5cf6]/10"
+                style={{ minHeight: 36, background: "rgba(139,92,246,0.08)", borderColor: "rgba(139,92,246,0.25)" }}
               >
-                {label}
+                Last {label}
               </button>
             ))}
           </div>
           {form.backtest_start_date && form.backtest_end_date && (
-            <div className="mt-3">
-              <span className="text-[10px] text-text-muted">
-                {(() => {
-                  const start = new Date(form.backtest_start_date);
-                  const end = new Date(form.backtest_end_date);
-                  const days = Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
-                  const tradingDays = Math.floor(days * 5 / 7);
-                  return `~${tradingDays} trading days. Each day takes 1-3 minutes to simulate.`;
-                })()}
-              </span>
+            <div className="text-[11px] text-text-muted mt-3">
+              {(() => {
+                const start = new Date(form.backtest_start_date);
+                const end = new Date(form.backtest_end_date);
+                const days = Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
+                const tradingDays = Math.floor(days * 5 / 7);
+                return `~${tradingDays} trading days · each day takes 1-3 min to simulate`;
+              })()}
             </div>
           )}
-        </Section>
+        </FormGroup>
       )}
 
       {/* Basics */}
-      <Section title="Basics" number={++sectionNum}>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <FormGroup title="Basics" delay={3}>
+        <div className="space-y-3">
           <div>
-            <label className="block text-xs text-text-muted mb-1.5">Session ID</label>
-            <input
-              value={form.session_id}
-              onChange={(e) => setForm({ ...form, session_id: e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '') })}
-              placeholder={form.backtest_mode ? "nse_backtest_apr" : "crypto_aggressive"}
-              className="w-full"
-            />
-          </div>
-          <div>
-            <label className="block text-xs text-text-muted mb-1.5">Display Name</label>
+            <label className="block text-[11px] text-text-muted mb-1.5">Display Name</label>
             <input
               value={form.display_name}
               onChange={(e) => setForm({ ...form, display_name: e.target.value })}
-              placeholder={form.session_id || "My Session"}
+              placeholder="My NSE Intraday Agent"
               className="w-full"
             />
           </div>
-          <div className="col-span-1 sm:col-span-2">
-            <label className="block text-xs text-text-muted mb-1.5">
-              Starting Capital ({preset?.currency_symbol || "$"})
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-[11px] text-text-muted">Session ID</label>
+              {!sessionIdEdited && form.session_id && (
+                <button
+                  type="button"
+                  onClick={() => setSessionIdEdited(true)}
+                  className="text-[10px] text-accent-blue hover:underline"
+                >
+                  Edit manually
+                </button>
+              )}
+            </div>
+            <input
+              value={form.session_id}
+              onChange={(e) => {
+                setSessionIdEdited(true);
+                setForm({ ...form, session_id: e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '') });
+              }}
+              placeholder={form.backtest_mode ? "nse_backtest_apr" : "my_session"}
+              className="w-full font-mono text-sm"
+              readOnly={!sessionIdEdited && !!form.display_name}
+              style={!sessionIdEdited && !!form.display_name ? { opacity: 0.7, cursor: "not-allowed" } : undefined}
+            />
+            <span className="text-[10px] text-text-muted block mt-1">
+              {sessionIdEdited ? "lowercase · numbers · _ · -" : "Auto-generated from display name"}
+            </span>
+          </div>
+          <div>
+            <label className="block text-[11px] text-text-muted mb-1.5">
+              Starting Capital ({currencySymbol})
             </label>
             <input
               type="text"
@@ -294,64 +352,53 @@ export default function CreateSessionPage() {
                 const raw = e.target.value.replace(/[^0-9]/g, "");
                 const num = parseInt(raw) || 0;
                 setForm((f) => ({ ...f, starting_capital: num }));
-                setCapitalDisplay(raw ? num.toLocaleString("en-IN") : "");
               }}
-              onBlur={() => setCapitalDisplay(form.starting_capital.toLocaleString("en-IN"))}
-              placeholder="10,00,000"
+              placeholder={fmt(preset?.default_starting_capital || 1000000, currencySymbol, currencyLocale).replace(currencySymbol, "")}
               className="w-full font-mono"
             />
           </div>
         </div>
-      </Section>
+      </FormGroup>
 
-      {/* Risk */}
-      <Section title="Risk Limits" number={++sectionNum}>
-        <div className="space-y-5">
-          <SliderField
-            label="Max Position Size"
-            value={form.max_position_pct}
-            onChange={(v) => setForm({ ...form, max_position_pct: v })}
-            min={0.05} max={0.50} step={0.05}
-            format={(v) => `${(v * 100).toFixed(0)}% of portfolio`}
-          />
-          <SliderField
-            label="Daily Loss Limit"
-            value={form.daily_loss_limit_pct}
-            onChange={(v) => setForm({ ...form, daily_loss_limit_pct: v })}
-            min={0.01} max={0.10} step={0.01}
-            format={(v) => `${(v * 100).toFixed(0)}% of capital`}
-          />
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs text-text-muted mb-1.5">Max Open Positions</label>
-              <input
-                type="number"
-                value={form.max_open_positions}
-                onChange={(e) => setForm({ ...form, max_open_positions: parseInt(e.target.value) || 1 })}
-                min={1} max={20}
-                className="w-full font-mono"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-text-muted mb-1.5">Per-Trade Stop Loss</label>
-              <input
-                type="number"
-                value={(form.per_trade_loss_limit_pct * 100).toFixed(1)}
-                onChange={(e) => setForm({ ...form, per_trade_loss_limit_pct: (parseFloat(e.target.value) || 1) / 100 })}
-                step={0.5} min={0.5} max={10}
-                className="w-full font-mono"
-              />
-              <span className="text-[10px] text-text-muted">%</span>
-            </div>
-          </div>
+      {/* Personality — always visible with chips */}
+      <FormGroup title="Trading Personality" delay={4}>
+        <div className="flex flex-wrap gap-2 mb-3">
+          {PERSONALITY_CHIPS.map((chip) => {
+            const active = form.personality === chip.text;
+            return (
+              <button
+                key={chip.label}
+                onClick={() => setForm({ ...form, personality: active ? "" : chip.text })}
+                className={cn(
+                  "px-3 rounded-full text-xs font-semibold transition-all border",
+                  active
+                    ? "bg-accent-blue/15 text-accent-blue border-accent-blue/40"
+                    : "bg-bg-card text-text-muted border-border hover:text-text-primary hover:border-border-accent"
+                )}
+                style={{ minHeight: 36 }}
+              >
+                {chip.label}
+              </button>
+            );
+          })}
         </div>
-      </Section>
+        <textarea
+          value={form.personality}
+          onChange={(e) => setForm({ ...form, personality: e.target.value })}
+          placeholder="Or describe custom behavior. e.g. Focus on momentum plays, cut losers at 1% stop..."
+          rows={3}
+          className="w-full resize-none text-sm"
+        />
+        <span className="text-[10px] text-text-muted block mt-1.5">
+          Injected into LLM system prompt. Leave empty for default balanced behavior.
+        </span>
+      </FormGroup>
 
-      {/* LLM */}
-      <Section title="LLM Configuration" number={++sectionNum}>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      {/* LLM Model */}
+      <FormGroup title="LLM Model" delay={5}>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label className="block text-xs text-text-muted mb-1.5">Provider</label>
+            <label className="block text-[11px] text-text-muted mb-1.5">Provider</label>
             <select
               value={form.llm_provider}
               onChange={(e) => {
@@ -364,7 +411,7 @@ export default function CreateSessionPage() {
                 const d = defaults[provider] || defaults.openrouter;
                 setForm({ ...form, llm_provider: provider, llm_model: d.model, api_key_env: d.keyEnv });
               }}
-              className="w-full"
+              className="w-full text-sm"
             >
               <option value="openrouter">OpenRouter</option>
               <option value="anthropic">Anthropic</option>
@@ -372,205 +419,249 @@ export default function CreateSessionPage() {
             </select>
           </div>
           <div>
-            <label className="block text-xs text-text-muted mb-1.5">Model</label>
-            {form.llm_provider === "openrouter" ? (
-              <select
-                value={form.llm_model}
-                onChange={(e) => setForm({ ...form, llm_model: e.target.value })}
-                className="w-full text-sm"
-              >
-                <optgroup label="Anthropic">
-                  <option value="anthropic/claude-haiku-4-5">Claude Haiku 4.5 — fast ($0.80/M)</option>
-                </optgroup>
-                <optgroup label="Google">
-                  <option value="google/gemini-2.5-flash">Gemini 2.5 Flash — fast ($0.15/M)</option>
-                </optgroup>
-                <optgroup label="OpenAI">
-                  <option value="openai/gpt-4o-mini">GPT-4o Mini ($0.15/M)</option>
-                </optgroup>
-                <optgroup label="Meta">
-                  <option value="meta-llama/llama-4-maverick">Llama 4 Maverick ($0.20/M)</option>
-                  <option value="meta-llama/llama-4-scout">Llama 4 Scout ($0.10/M)</option>
-                </optgroup>
-                <optgroup label="DeepSeek">
-                  <option value="deepseek/deepseek-chat-v3-0324">DeepSeek V3 ($0.14/M)</option>
-                  <option value="deepseek/deepseek-r1">DeepSeek R1 — reasoning ($0.55/M)</option>
-                </optgroup>
-              </select>
-            ) : form.llm_provider === "anthropic" ? (
-              <select
-                value={form.llm_model}
-                onChange={(e) => setForm({ ...form, llm_model: e.target.value })}
-                className="w-full text-sm"
-              >
-                <option value="claude-haiku-4-5-20250929">Claude Haiku 4.5</option>
-                <option value="claude-sonnet-4-5-20250929">Claude Sonnet 4.5</option>
-                <option value="claude-opus-4-0-20250514">Claude Opus 4</option>
-              </select>
-            ) : (
-              <select
-                value={form.llm_model}
-                onChange={(e) => setForm({ ...form, llm_model: e.target.value })}
-                className="w-full text-sm"
-              >
-                <option value="gpt-4o">GPT-4o</option>
-                <option value="gpt-4o-mini">GPT-4o Mini</option>
-                <option value="o3-mini">o3-mini (reasoning)</option>
-              </select>
+            <label className="block text-[11px] text-text-muted mb-1.5">Model</label>
+            <ModelSelect provider={form.llm_provider} value={form.llm_model} onChange={(v) => setForm({ ...form, llm_model: v })} />
+          </div>
+        </div>
+      </FormGroup>
+
+      {/* Advanced */}
+      <div className="mb-4 animate-fade-in delay-5">
+        <Collapsible title="Advanced" subtitle="Risk limits, API keys, import learnings" icon="⚙">
+          <div className="p-4 space-y-5">
+            {/* Risk */}
+            <div>
+              <div className="text-[11px] uppercase tracking-wider font-semibold text-text-muted mb-3">Risk Limits</div>
+              <div className="space-y-4">
+                <SliderField
+                  label="Max Position Size"
+                  value={form.max_position_pct}
+                  onChange={(v) => setForm({ ...form, max_position_pct: v })}
+                  min={0.05} max={0.50} step={0.05}
+                  format={(v) => `${(v * 100).toFixed(0)}%`}
+                />
+                <SliderField
+                  label="Daily Loss Limit"
+                  value={form.daily_loss_limit_pct}
+                  onChange={(v) => setForm({ ...form, daily_loss_limit_pct: v })}
+                  min={0.01} max={0.10} step={0.01}
+                  format={(v) => `${(v * 100).toFixed(0)}%`}
+                />
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] text-text-muted mb-1.5">Max Open Positions</label>
+                    <input
+                      type="number"
+                      value={form.max_open_positions}
+                      onChange={(e) => setForm({ ...form, max_open_positions: parseInt(e.target.value) || 1 })}
+                      min={1} max={20}
+                      className="w-full font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] text-text-muted mb-1.5">Per-Trade Stop %</label>
+                    <input
+                      type="number"
+                      value={(form.per_trade_loss_limit_pct * 100).toFixed(1)}
+                      onChange={(e) => setForm({ ...form, per_trade_loss_limit_pct: (parseFloat(e.target.value) || 1) / 100 })}
+                      step={0.5} min={0.5} max={10}
+                      className="w-full font-mono"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Import Learnings */}
+            {sessions.length > 0 && (
+              <div className="pt-4 border-t border-border/60">
+                <div className="text-[11px] uppercase tracking-wider font-semibold text-text-muted mb-2">Import Learnings</div>
+                <select
+                  value={form.import_learnings_from}
+                  onChange={(e) => setForm({ ...form, import_learnings_from: e.target.value })}
+                  className="w-full text-sm"
+                >
+                  <option value="">Start fresh (no import)</option>
+                  {sessions.map((s) => (
+                    <option key={s.session_id} value={s.session_id}>
+                      {s.display_name} — {s.total_trades ?? 0} trades
+                      {s.win_rate != null ? ` · ${s.win_rate}% WR` : ""}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-[10px] text-text-muted block mt-1.5">
+                  {form.import_learnings_from
+                    ? (sessions.find((s) => s.session_id === form.import_learnings_from)?.market === form.market
+                      ? "Same market — full journal copied"
+                      : "Different market — only distilled rules imported")
+                    : "Skip the learning curve by importing from an existing session"}
+                </span>
+              </div>
             )}
-          </div>
-          <div className="col-span-1 sm:col-span-2">
-            <label className="block text-xs text-text-muted mb-1.5">API Key (env var name)</label>
-            <input
-              value={form.api_key_env}
-              onChange={(e) => setForm({ ...form, api_key_env: e.target.value })}
-              placeholder={form.llm_provider === "openrouter" ? "OPENROUTER_API_KEY" : form.llm_provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"}
-              className="w-full font-mono text-sm"
-            />
-            <span className="text-[10px] text-text-muted">
-              {form.api_key_env === "OPENROUTER_API_KEY" || form.api_key_env === "ANTHROPIC_API_KEY" || form.api_key_env === "OPENAI_API_KEY"
-                ? `Uses the server's ${form.api_key_env} env variable. Leave as-is to use the default key.`
-                : "Name of the environment variable containing your API key"}
-            </span>
-          </div>
-        </div>
-      </Section>
 
-      {/* Import Learnings */}
-      {sessions.length > 0 && (
-        <Section title="Import Learnings" number={++sectionNum}>
-          <div>
-            <label className="block text-xs text-text-muted mb-1.5">Copy learnings from an existing session</label>
-            <select
-              value={form.import_learnings_from}
-              onChange={(e) => setForm({ ...form, import_learnings_from: e.target.value })}
-              className="w-full"
-            >
-              <option value="">Start fresh (no import)</option>
-              {sessions.map((s) => (
-                <option key={s.session_id} value={s.session_id}>
-                  {s.display_name} ({s.market}) — {s.total_trades ?? 0} trades, {s.win_rate != null ? `${s.win_rate}% WR` : "no data"}
-                </option>
-              ))}
-            </select>
-            <span className="text-[10px] text-text-muted block mt-1.5">
-              {form.import_learnings_from ? (
-                sessions.find((s) => s.session_id === form.import_learnings_from)?.market === form.market
-                  ? "Same market — full journal will be copied (all trade entries + distilled rules)"
-                  : "Different market — only distilled rules will be imported (market-specific entries skipped)"
-              ) : (
-                "New agents start with no learnings. Import from a session with good trade history to skip the learning curve."
-              )}
-            </span>
+            {/* API Key env */}
+            <div className="pt-4 border-t border-border/60">
+              <div className="text-[11px] uppercase tracking-wider font-semibold text-text-muted mb-2">API Key Env</div>
+              <input
+                value={form.api_key_env}
+                onChange={(e) => setForm({ ...form, api_key_env: e.target.value })}
+                placeholder="OPENROUTER_API_KEY"
+                className="w-full font-mono text-sm"
+              />
+              <span className="text-[10px] text-text-muted block mt-1.5">
+                Name of server env var holding the API key. Leave as default unless using a custom key.
+              </span>
+            </div>
           </div>
-        </Section>
-      )}
+        </Collapsible>
+      </div>
 
-      {/* Personality */}
-      <Section title="Trading Personality" number={++sectionNum}>
-        <textarea
-          value={form.personality}
-          onChange={(e) => setForm({ ...form, personality: e.target.value })}
-          placeholder="Be aggressive. Target 2% daily returns. Focus on momentum plays. Cut losers fast at 1% stop."
-          rows={4}
-          className="w-full resize-none"
-        />
-        <span className="text-[10px] text-text-muted">Custom instructions injected into the LLM system prompt. Leave empty for default balanced behavior.</span>
-      </Section>
-
-      {/* Actions */}
-      {error && (
-        <div style={{ marginBottom: 16, padding: 14, background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 10, color: "#ef4444", fontSize: 14 }}>
-          {error}
-        </div>
-      )}
-      <div className="flex flex-col sm:flex-row gap-3 sm:justify-end mt-8 mb-12 animate-fade-in delay-5">
-        {form.backtest_mode ? (
-          /* Backtest mode: single button */
+      {/* Sticky bottom action bar */}
+      <div
+        className="fixed bottom-0 inset-x-0 md:hidden z-30 border-t border-border px-4 py-3 bottom-nav-safe"
+        style={{
+          background: "rgba(10,14,23,0.95)",
+          backdropFilter: "blur(12px)",
+          WebkitBackdropFilter: "blur(12px)",
+          paddingBottom: "calc(12px + env(safe-area-inset-bottom))",
+        }}
+      >
+        <button
+          onClick={() => handleSubmit(true)}
+          disabled={creating || !form.session_id}
+          className={cn(
+            "w-full rounded-xl font-semibold text-sm transition-all disabled:opacity-50",
+            form.backtest_mode
+              ? "bg-[#8b5cf6] hover:bg-[#7c4dec] text-white"
+              : "bg-accent-green hover:bg-accent-green/90 text-white"
+          )}
+          style={{ minHeight: 48 }}
+        >
+          {primaryCta}
+        </button>
+        {!form.backtest_mode && (
           <button
             onClick={() => handleSubmit(false)}
-            disabled={creating}
-            style={{
-              width: "100%",
-              maxWidth: "none",
-              padding: "14px 24px",
-              minHeight: 48,
-              background: creating ? "#334155" : "#8b5cf6",
-              border: "none",
-              borderRadius: 10,
-              color: "#fff",
-              fontSize: 15,
-              fontWeight: 600,
-              opacity: creating ? 0.6 : 1,
-              cursor: creating ? "not-allowed" : "pointer",
-            }}
+            disabled={creating || !form.session_id}
+            className="w-full mt-2 text-xs text-text-muted hover:text-text-primary transition-colors disabled:opacity-50"
+            style={{ minHeight: 32 }}
           >
-            {creating ? "Creating & Starting Backtest..." : "Create & Run Backtest"}
+            or create without starting
           </button>
-        ) : (
-          /* Live mode: two buttons */
-          <>
-            <button
-              onClick={() => handleSubmit(false)}
-              disabled={creating}
-              style={{
-                width: "100%",
-                maxWidth: "none",
-                padding: "14px 24px",
-                minHeight: 48,
-                background: "#151d2e",
-                border: "1px solid #1e293b",
-                borderRadius: 10,
-                color: "#e2e8f0",
-                fontSize: 15,
-                fontWeight: 500,
-                opacity: creating ? 0.5 : 1,
-                cursor: creating ? "not-allowed" : "pointer",
-              }}
-            >
-              {creating ? "Creating..." : "Create Session"}
-            </button>
-            <button
-              onClick={() => handleSubmit(true)}
-              disabled={creating}
-              style={{
-                width: "100%",
-                maxWidth: "none",
-                padding: "14px 24px",
-                minHeight: 48,
-                background: "#22c55e",
-                border: "none",
-                borderRadius: 10,
-                color: "#fff",
-                fontSize: 15,
-                fontWeight: 600,
-                opacity: creating ? 0.5 : 1,
-                cursor: creating ? "not-allowed" : "pointer",
-              }}
-            >
-              {creating ? "Creating..." : "Create & Start Agent"}
-            </button>
-          </>
         )}
+      </div>
+
+      {/* Desktop action row */}
+      <div className="hidden md:flex items-center justify-end gap-3 mt-6 mb-12 animate-fade-in delay-5">
+        {!form.backtest_mode && (
+          <button
+            onClick={() => handleSubmit(false)}
+            disabled={creating || !form.session_id}
+            className="px-5 rounded-xl border border-border hover:border-border-accent text-text-secondary transition-all disabled:opacity-50"
+            style={{ minHeight: 44 }}
+          >
+            Create without starting
+          </button>
+        )}
+        <button
+          onClick={() => handleSubmit(true)}
+          disabled={creating || !form.session_id}
+          className={cn(
+            "px-6 rounded-xl font-semibold transition-all disabled:opacity-50",
+            form.backtest_mode
+              ? "bg-[#8b5cf6] hover:bg-[#7c4dec] text-white shadow-lg shadow-[#8b5cf6]/20"
+              : "bg-accent-green hover:bg-accent-green/90 text-white shadow-lg shadow-accent-green/20"
+          )}
+          style={{ minHeight: 44 }}
+        >
+          {primaryCta}
+        </button>
+      </div>
+
+      {/* Back link (desktop) */}
+      <div className="hidden md:block mb-8">
+        <Link href="/" className="text-xs text-text-muted hover:text-text-primary transition-colors">
+          ← Back to sessions
+        </Link>
       </div>
     </div>
   );
 }
 
-function Section({ title, number, children }: { title: string; number: number; children: React.ReactNode }) {
+function FormGroup({ title, delay, children }: { title: string; delay: number; children: React.ReactNode }) {
   return (
-    <div className={`animate-fade-in delay-${number}`} style={{ marginBottom: 24 }}>
-      <div className="flex items-center gap-3 mb-4">
-        <div
-          className="flex items-center justify-center font-mono font-bold flex-shrink-0"
-          style={{ width: 28, height: 28, borderRadius: "50%", background: "rgba(59,130,246,0.15)", color: "#3b82f6", fontSize: 12 }}
-        >
-          {number}
-        </div>
-        <h2 style={{ fontSize: 13, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "#94a3b8" }}>{title}</h2>
-      </div>
-      <div style={{ background: "#151d2e", border: "1px solid #1e293b", borderRadius: 12, padding: 20 }}>{children}</div>
+    <div className={`mb-4 animate-fade-in delay-${delay}`}>
+      <h2 className="text-[11px] uppercase tracking-wider font-semibold text-text-muted mb-2 px-1">{title}</h2>
+      <div className="bg-bg-card border border-border rounded-xl p-4">{children}</div>
     </div>
+  );
+}
+
+function ModePill({ label, subLabel, active, onClick, icon, accent }: {
+  label: string; subLabel: string; active: boolean; onClick: () => void; icon: string; accent?: "purple";
+}) {
+  const activeStyle = accent === "purple"
+    ? "bg-[#8b5cf6]/15 text-[#a78bfa] shadow-sm"
+    : "bg-accent-green/15 text-accent-green shadow-sm";
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "flex-1 rounded-lg px-3 py-2 text-left transition-all",
+        active ? activeStyle : "text-text-muted hover:text-text-primary"
+      )}
+      style={{ minHeight: 52 }}
+    >
+      <div className="flex items-center gap-2">
+        <span style={{ fontSize: 16 }}>{icon}</span>
+        <div className="min-w-0">
+          <div className="text-xs font-semibold leading-none">{label}</div>
+          <div className="text-[10px] opacity-70 mt-1 leading-none truncate">{subLabel}</div>
+        </div>
+      </div>
+    </button>
+  );
+}
+
+function ModelSelect({ provider, value, onChange }: { provider: string; value: string; onChange: (v: string) => void }) {
+  if (provider === "openrouter") {
+    return (
+      <select value={value} onChange={(e) => onChange(e.target.value)} className="w-full text-sm">
+        <optgroup label="Anthropic">
+          <option value="anthropic/claude-haiku-4-5">Claude Haiku 4.5 — $0.80/M</option>
+        </optgroup>
+        <optgroup label="Google">
+          <option value="google/gemini-2.5-flash">Gemini 2.5 Flash — $0.15/M</option>
+        </optgroup>
+        <optgroup label="OpenAI">
+          <option value="openai/gpt-4o-mini">GPT-4o Mini — $0.15/M</option>
+        </optgroup>
+        <optgroup label="Meta">
+          <option value="meta-llama/llama-4-maverick">Llama 4 Maverick — $0.20/M</option>
+          <option value="meta-llama/llama-4-scout">Llama 4 Scout — $0.10/M</option>
+        </optgroup>
+        <optgroup label="DeepSeek">
+          <option value="deepseek/deepseek-chat-v3-0324">DeepSeek V3 — $0.14/M</option>
+          <option value="deepseek/deepseek-r1">DeepSeek R1 — $0.55/M</option>
+        </optgroup>
+      </select>
+    );
+  }
+  if (provider === "anthropic") {
+    return (
+      <select value={value} onChange={(e) => onChange(e.target.value)} className="w-full text-sm">
+        <option value="claude-haiku-4-5-20250929">Claude Haiku 4.5</option>
+        <option value="claude-sonnet-4-5-20250929">Claude Sonnet 4.5</option>
+        <option value="claude-opus-4-0-20250514">Claude Opus 4</option>
+      </select>
+    );
+  }
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)} className="w-full text-sm">
+      <option value="gpt-4o">GPT-4o</option>
+      <option value="gpt-4o-mini">GPT-4o Mini</option>
+      <option value="o3-mini">o3-mini (reasoning)</option>
+    </select>
   );
 }
 
@@ -582,7 +673,7 @@ function SliderField({ label, value, onChange, min, max, step, format }: {
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
-        <label className="text-xs text-text-muted">{label}</label>
+        <label className="text-[11px] text-text-muted">{label}</label>
         <span className="text-xs font-mono font-semibold text-accent-blue">{format(value)}</span>
       </div>
       <input
