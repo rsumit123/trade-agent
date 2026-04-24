@@ -290,34 +290,85 @@ _start_health_checker()
 
 @app.get("/api/sessions")
 def get_sessions():
-    """List all available sessions with running status and performance stats."""
+    """List all available sessions with running status, portfolio summary, and daily performance."""
     try:
         from agent.session import list_sessions, SESSIONS_DIR
         import sqlite3
         sessions = list_sessions()
         for s in sessions:
-            status = _is_agent_running(s["session_id"])
+            sid = s["session_id"]
+            status = _is_agent_running(sid)
             s["is_running"] = status["running"]
             s["pid"] = status["pid"]
-            # Quick win rate from trades DB
+
+            db_path = SESSIONS_DIR / sid / "trades.db"
+            if not db_path.exists():
+                s["total_trades"] = 0
+                s["win_rate"] = None
+                s["portfolio"] = None
+                s["daily"] = []
+                continue
+
             try:
-                db_path = SESSIONS_DIR / s["session_id"] / "trades.db"
-                if db_path.exists():
-                    conn = sqlite3.connect(str(db_path))
-                    row = conn.execute(
-                        "SELECT COUNT(*) as total, SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins "
-                        "FROM trades WHERE status = 'closed'"
-                    ).fetchone()
-                    conn.close()
-                    total, wins = row[0] or 0, row[1] or 0
-                    s["total_trades"] = total
-                    s["win_rate"] = round((wins / total) * 100, 1) if total > 0 else None
-                else:
-                    s["total_trades"] = 0
-                    s["win_rate"] = None
+                conn = sqlite3.connect(str(db_path))
+                # Win rate
+                row = conn.execute(
+                    "SELECT COUNT(*) as total, SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins "
+                    "FROM trades WHERE status = 'closed'"
+                ).fetchone()
+                total, wins = row[0] or 0, row[1] or 0
+                s["total_trades"] = total
+                s["win_rate"] = round((wins / total) * 100, 1) if total > 0 else None
+
+                # Portfolio summary (from DB, no live prices needed for list view)
+                starting_capital = s["starting_capital"]
+                cash_row = conn.execute(
+                    "SELECT cash FROM account WHERE id = 1"
+                ).fetchone()
+                cash = cash_row[0] if cash_row else starting_capital
+
+                open_positions = conn.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(entry_price * quantity), 0) "
+                    "FROM trades WHERE status = 'open'"
+                ).fetchone()
+                open_count = open_positions[0] or 0
+                invested_value = open_positions[1] or 0
+
+                # Realized P&L from closed trades
+                realized_row = conn.execute(
+                    "SELECT COALESCE(SUM(pnl), 0) FROM trades WHERE status = 'closed'"
+                ).fetchone()
+                realized_pnl = realized_row[0] or 0
+
+                total_value = cash + invested_value
+                total_return = total_value - starting_capital
+                total_return_pct = (total_return / starting_capital * 100) if starting_capital else 0
+
+                s["portfolio"] = {
+                    "cash": round(cash, 2),
+                    "total_value": round(total_value, 2),
+                    "total_return": round(total_return, 2),
+                    "total_return_pct": round(total_return_pct, 2),
+                    "open_positions": open_count,
+                    "realized_pnl": round(realized_pnl, 2),
+                }
+
+                # Daily performance (last 14 days for sparkline)
+                snapshots = conn.execute(
+                    "SELECT date, total_value, daily_pnl FROM daily_snapshots "
+                    "ORDER BY date DESC LIMIT 14"
+                ).fetchall()
+                s["daily"] = [
+                    {"date": r[0], "total_value": r[1], "daily_pnl": r[2]}
+                    for r in snapshots
+                ]
+
+                conn.close()
             except Exception:
                 s["total_trades"] = 0
                 s["win_rate"] = None
+                s["portfolio"] = None
+                s["daily"] = []
         return sessions
     except Exception:
         return []
