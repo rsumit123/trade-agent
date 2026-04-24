@@ -260,6 +260,38 @@ def _auto_restart_agents():
                 start_new_session=True,
             )
             logger.info(f"✅ Restarted agent '{session_id}' with PID {proc.pid}")
+
+        # Also detect stale backtest sessions (status "running" but thread is dead/gone)
+        for session_dir in SESSIONS_DIR.iterdir():
+            if not session_dir.is_dir():
+                continue
+            config_path = session_dir / "config.yaml"
+            if not config_path.exists():
+                continue
+            try:
+                import yaml
+                with open(config_path) as f:
+                    data = yaml.safe_load(f) or {}
+                if data.get("backtest_status") == "running":
+                    sid = session_dir.name
+                    # Thread is dead (server restarted) — mark as failed
+                    if sid not in _backtest_threads or not _backtest_threads[sid].is_alive():
+                        logger.info(f"🔄 Marking stale backtest '{sid}' as failed (server restarted)")
+                        data["backtest_status"] = "failed: interrupted (server restarted)"
+                        with open(config_path, "w") as f:
+                            yaml.dump(data, f)
+                        # Update progress file too
+                        progress_path = session_dir / "backtest_progress.json"
+                        if progress_path.exists():
+                            try:
+                                prog = json.loads(progress_path.read_text())
+                                prog["status"] = "failed"
+                                prog["error"] = "Interrupted by server restart. Click Try Again to resume."
+                                progress_path.write_text(json.dumps(prog, indent=2))
+                            except Exception:
+                                pass
+            except Exception:
+                pass
     except Exception as e:
         logger.error(f"Auto-restart failed: {e}")
 
@@ -592,21 +624,48 @@ def get_agent_limits():
     return {"max_agents": MAX_RUNNING_AGENTS, "running": running, "available": MAX_RUNNING_AGENTS - running}
 
 
+def _start_agent_process(session_id: str) -> int:
+    """Spawn the agent as a background process. Returns PID."""
+    python_exe = str(PROJECT_ROOT / ".venv" / "bin" / "python3")
+    if not Path(python_exe).exists():
+        python_exe = sys.executable
+
+    env = os.environ.copy()
+    env_file = PROJECT_ROOT / ".env"
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, _, val = line.partition("=")
+                env[key.strip()] = val.strip().strip("'\"")
+
+    from agent.session import SESSIONS_DIR
+    stderr_log = SESSIONS_DIR / session_id / "agent_stderr.log"
+    stderr_file = open(stderr_log, "a")
+
+    proc = subprocess.Popen(
+        [python_exe, str(PROJECT_ROOT / "run.py"), "--session", session_id, "--loop"],
+        cwd=str(PROJECT_ROOT),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=stderr_file,
+        start_new_session=True,
+    )
+    return proc.pid
+
+
 @app.post("/api/agent/start/{session_id}")
 def start_agent(session_id: str):
     """Start the agent loop for a session."""
     from agent.session import SESSIONS_DIR
 
-    # Verify session exists
     if not (SESSIONS_DIR / session_id / "config.yaml").exists():
         raise HTTPException(404, f"Session '{session_id}' not found")
 
-    # Check if already running
     status = _is_agent_running(session_id)
     if status["running"]:
         return {"status": "already_running", "pid": status["pid"]}
 
-    # Check session limit
     from agent.session import list_sessions
     all_sessions = list_sessions()
     running_count = sum(1 for s in all_sessions if _is_agent_running(s["session_id"])["running"])
@@ -617,39 +676,8 @@ def start_agent(session_id: str):
             f"Stop another agent before starting a new one."
         )
 
-    # Find the right Python executable (prefer venv)
-    python_exe = str(PROJECT_ROOT / ".venv" / "bin" / "python3")
-    if not Path(python_exe).exists():
-        python_exe = sys.executable
-
-    run_script = str(PROJECT_ROOT / "run.py")
-
-    # Load .env if it exists, merge with current env
-    env = os.environ.copy()
-    env_file = PROJECT_ROOT / ".env"
-    if env_file.exists():
-        for line in env_file.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, _, val = line.partition("=")
-                env[key.strip()] = val.strip().strip("'\"")
-
-    # Spawn the agent as a background process
-    # stderr goes to session log so crashes are visible
-    from agent.session import SESSIONS_DIR
-    stderr_log = SESSIONS_DIR / session_id / "agent_stderr.log"
-    stderr_file = open(stderr_log, "a")
-
-    proc = subprocess.Popen(
-        [python_exe, run_script, "--session", session_id, "--loop"],
-        cwd=str(PROJECT_ROOT),
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=stderr_file,
-        start_new_session=True,  # Detach from parent
-    )
-
-    return {"status": "started", "pid": proc.pid, "session_id": session_id}
+    pid = _start_agent_process(session_id)
+    return {"status": "started", "pid": pid, "session_id": session_id}
 
 
 @app.post("/api/agent/stop/{session_id}")
@@ -687,9 +715,26 @@ def start_backtest(session_id: str, req: BacktestRequest):
     except FileNotFoundError:
         raise HTTPException(404, f"Session '{session_id}' not found")
 
-    # Check not already running
+    # Check not already running (thread alive = actually running)
     if session_id in _backtest_threads and _backtest_threads[session_id].is_alive():
         return {"status": "already_running", "session_id": session_id}
+
+    # Detect stale "running" status (thread dead but status not updated, e.g. VM restart)
+    if getattr(sc, "backtest_status", "") == "running":
+        # Thread is dead or doesn't exist — mark as failed so user can retry
+        sc.backtest_status = "failed: interrupted (server restarted)"
+        save_session(sc)
+        # Clear stale progress
+        progress_path = SESSIONS_DIR / session_id / "backtest_progress.json"
+        if progress_path.exists():
+            try:
+                import json as _json
+                prog = _json.loads(progress_path.read_text())
+                prog["status"] = "failed"
+                prog["error"] = "Interrupted by server restart. Click Try Again to resume."
+                progress_path.write_text(_json.dumps(prog, indent=2))
+            except Exception:
+                pass
 
     # Update session config
     sc.backtest_mode = True
@@ -758,6 +803,49 @@ def get_backtest_results(session_id: str):
         return data
     except Exception as e:
         raise HTTPException(500, f"Failed to read results: {e}")
+
+
+@app.post("/api/backtest/go-live/{session_id}")
+def backtest_go_live(session_id: str):
+    """Convert a completed backtest session to live trading mode and start the agent."""
+    from agent.session import load_session, save_session
+
+    sc = load_session(session_id)
+    if not getattr(sc, "backtest_mode", False):
+        raise HTTPException(400, "Session is not in backtest mode")
+
+    status = getattr(sc, "backtest_status", "")
+    if not status.startswith("completed"):
+        raise HTTPException(400, f"Backtest not completed (status: {status})")
+
+    # Switch to live mode (keep learned rules, journal, trade history)
+    sc.backtest_mode = False
+    sc.backtest_status = ""
+    save_session(sc)
+
+    # Start the live agent
+    try:
+        _start_agent_process(session_id)
+        return {"status": "live", "session_id": session_id}
+    except Exception as e:
+        return {"status": "live_not_started", "session_id": session_id, "error": str(e)}
+
+
+@app.post("/api/backtest/reset/{session_id}")
+def backtest_reset(session_id: str):
+    """Reset a failed/stale backtest so it can be restarted."""
+    from agent.session import load_session, save_session, SESSIONS_DIR
+
+    sc = load_session(session_id)
+    sc.backtest_status = ""
+    save_session(sc)
+
+    # Clear stale progress file
+    progress_path = SESSIONS_DIR / session_id / "backtest_progress.json"
+    if progress_path.exists():
+        progress_path.unlink()
+
+    return {"status": "reset", "session_id": session_id}
 
 
 # ── Market Presets Endpoint ────────────────────────────────────

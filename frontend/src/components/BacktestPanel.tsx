@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
 import { api, fmt, pct } from "@/lib/api";
+import { useToast } from "@/components/Toast";
 import type { BacktestProgress, SessionConfig } from "@/lib/types";
 
 interface Props {
@@ -12,9 +13,12 @@ interface Props {
 export function BacktestPanel({ sessionId, config, onComplete }: Props) {
   const [progress, setProgress] = useState<BacktestProgress | null>(null);
   const [starting, setStarting] = useState(false);
+  const [goingLive, setGoingLive] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const sym = config?.currency_symbol || "$";
+  const toast = useToast();
 
   const fetchProgress = useCallback(() => {
     api<BacktestProgress>(`/api/backtest/status/${sessionId}`)
@@ -420,23 +424,35 @@ export function BacktestPanel({ sessionId, config, onComplete }: Props) {
 
         {/* Go Live button */}
         <button
-          onClick={() => {
-            window.location.href = `/sessions/${sessionId}`;
+          onClick={async () => {
+            setGoingLive(true);
+            try {
+              await api(`/api/backtest/go-live/${sessionId}`, { method: "POST" });
+              toast.success("Switched to live trading!");
+              window.location.href = `/sessions/${sessionId}`;
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : "Failed to go live";
+              toast.error(msg);
+            } finally {
+              setGoingLive(false);
+            }
           }}
+          disabled={goingLive}
           style={{
             width: "100%",
             padding: "12px 20px",
             minHeight: 44,
-            background: "#22c55e",
+            background: goingLive ? "#334155" : "#22c55e",
             border: "none",
             borderRadius: 10,
             color: "#fff",
             fontSize: 14,
             fontWeight: 600,
-            cursor: "pointer",
+            cursor: goingLive ? "not-allowed" : "pointer",
+            opacity: goingLive ? 0.6 : 1,
           }}
         >
-          Start Live Trading with Learned Rules
+          {goingLive ? "Starting live agent..." : "Start Live Trading with Learned Rules"}
         </button>
       </div>
     );
@@ -470,11 +486,22 @@ export function BacktestPanel({ sessionId, config, onComplete }: Props) {
         {progress.error || "An unknown error occurred. Check the agent logs for details."}
       </p>
       <button
-        onClick={() => {
-          setProgress(null);
-          setStartDate("");
-          setEndDate("");
+        onClick={async () => {
+          setResetting(true);
+          try {
+            await api(`/api/backtest/reset/${sessionId}`, { method: "POST" });
+            setProgress(null);
+            setStartDate("");
+            setEndDate("");
+            toast.success("Backtest reset. Configure new dates and try again.");
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : "Reset failed";
+            toast.error(msg);
+          } finally {
+            setResetting(false);
+          }
         }}
+        disabled={resetting}
         style={{
           padding: "10px 20px",
           minHeight: 44,
@@ -484,10 +511,11 @@ export function BacktestPanel({ sessionId, config, onComplete }: Props) {
           color: "#ef4444",
           fontSize: 14,
           fontWeight: 500,
-          cursor: "pointer",
+          cursor: resetting ? "not-allowed" : "pointer",
+          opacity: resetting ? 0.6 : 1,
         }}
       >
-        Try Again
+        {resetting ? "Resetting..." : "Try Again"}
       </button>
     </div>
   );
