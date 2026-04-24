@@ -16,8 +16,10 @@ function formatModel(model?: string): string {
     .replace(/(\d) (\d)/g, "$1.$2"); // "4 5" → "4.5"
 }
 
-export function SessionCard({ session }: { session: Session }) {
+export function SessionCard({ session, onDelete }: { session: Session; onDelete?: () => void }) {
   const [portfolio, setPortfolio] = useState<PortfolioSummary | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const toast = useToast();
 
   useEffect(() => {
@@ -49,11 +51,60 @@ export function SessionCard({ session }: { session: Session }) {
     }
   };
 
+  const handleDelete = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!confirmDelete) {
+      setConfirmDelete(true);
+      return;
+    }
+    setDeleting(true);
+    try {
+      await api(`/api/sessions/${session.session_id}`, { method: "DELETE" });
+      toast.success(`"${session.display_name}" deleted`);
+      onDelete?.();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      toast.error(`Delete failed: ${msg}`);
+    } finally {
+      setDeleting(false);
+      setConfirmDelete(false);
+    }
+  };
+
+  const handleCancelDelete = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setConfirmDelete(false);
+  };
+
   const modelName = formatModel(session.llm_model);
 
   return (
     <Link href={`/sessions/${session.session_id}`}>
       <div className="bg-bg-card border border-border rounded-xl p-5 hover:border-border-accent hover:bg-bg-card-hover transition-all cursor-pointer group">
+        {/* Confirm delete bar */}
+        {confirmDelete && (
+          <div className="flex items-center justify-between gap-2 mb-3 p-2.5 rounded-lg border border-accent-red/30 bg-accent-red/5">
+            <span className="text-xs text-accent-red font-medium truncate">Delete this session?</span>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={handleCancelDelete}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium border border-border text-text-muted hover:bg-bg-secondary transition-all min-h-[36px]"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDelete}
+                disabled={deleting}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium bg-accent-red text-white hover:bg-accent-red/80 transition-all disabled:opacity-50 min-h-[36px]"
+              >
+                {deleting ? "..." : "Delete"}
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Header */}
         <div className="flex items-start justify-between mb-3">
           <div>
@@ -71,9 +122,23 @@ export function SessionCard({ session }: { session: Session }) {
               )}
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <span className={cn("w-2.5 h-2.5 rounded-full", session.is_running ? "bg-accent-green animate-pulse-dot" : "bg-text-muted/40")} />
-            <span className="text-xs text-text-muted">{session.is_running ? "Live" : "Stopped"}</span>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <span className={cn("w-2.5 h-2.5 rounded-full", session.is_running ? "bg-accent-green animate-pulse-dot" : "bg-text-muted/40")} />
+              <span className="text-xs text-text-muted">{session.is_running ? "Live" : "Stopped"}</span>
+            </div>
+            {!session.is_running && !confirmDelete && (
+              <button
+                onClick={handleDelete}
+                className="p-1.5 rounded-lg text-text-muted/40 hover:text-accent-red hover:bg-accent-red/10 transition-all min-w-[32px] min-h-[32px] flex items-center justify-center"
+                title="Delete session"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="3 6 5 6 21 6" />
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                </svg>
+              </button>
+            )}
           </div>
         </div>
 
