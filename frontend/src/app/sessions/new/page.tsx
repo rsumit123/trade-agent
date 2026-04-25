@@ -164,7 +164,14 @@ function CreateSessionInner() {
     : (creating ? "Creating..." : "Create & Start Agent");
 
   return (
-    <div className="px-4 md:px-8 py-5 md:py-8 max-w-3xl mx-auto pb-32">
+    <div
+      className="px-4 md:px-8 py-5 md:py-8 max-w-3xl mx-auto"
+      style={{
+        // Reserve space for BOTH the sticky action bar (~80px) AND the
+        // BottomNav (56px + safe-area). Desktop falls back to default.
+        paddingBottom: "calc(80px + 56px + env(safe-area-inset-bottom) + 16px)",
+      }}
+    >
       {/* Header */}
       <div className="mb-5 md:mb-7 animate-fade-in">
         <h1 className="text-xl md:text-2xl font-bold tracking-tight">Create Session</h1>
@@ -516,14 +523,16 @@ function CreateSessionInner() {
         </Collapsible>
       </div>
 
-      {/* Sticky bottom action bar */}
+      {/* Sticky bottom action bar — sits ABOVE the global BottomNav (56px) */}
       <div
-        className="fixed bottom-0 inset-x-0 md:hidden z-30 border-t border-border px-4 py-3 bottom-nav-safe"
+        className="fixed inset-x-0 md:hidden border-t border-border px-4 py-3"
         style={{
+          // BottomNav is 56px + safe-area-inset-bottom; place this directly above it
+          bottom: "calc(56px + env(safe-area-inset-bottom))",
+          zIndex: 9991, // 1 above BottomNav (9990)
           background: "rgba(10,14,23,0.95)",
           backdropFilter: "blur(12px)",
           WebkitBackdropFilter: "blur(12px)",
-          paddingBottom: "calc(12px + env(safe-area-inset-bottom))",
         }}
       >
         <button

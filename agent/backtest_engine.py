@@ -285,6 +285,11 @@ class BacktestEngine:
         _save()
 
         for day_idx, trade_date in enumerate(trading_days):
+            # Snapshot total_value at start of day for accurate daily P&L
+            try:
+                day_start_value = agent.portfolio.get_portfolio_summary({}).get("total_value", 0)
+            except Exception:
+                day_start_value = 0
             # Reset day-scoped fields
             results["current_day"] = day_idx + 1
             results["current_date"] = trade_date.isoformat()
@@ -437,10 +442,13 @@ class BacktestEngine:
                     # Run one agent cycle
                     try:
                         result = agent.run_once(force_intraday=True, is_backtest=True)
-                        actions = len(result.get("actions", []))
-                        day_trades += actions
-                        if actions > 0:
-                            logger.info(f"    {ts.strftime('%H:%M')} — {actions} trade(s)")
+                        # Count ENTRIES only (BUY + SHORT), not exits — a round-trip
+                        # is one trade, not two
+                        cycle_actions = result.get("actions", []) or []
+                        entries = sum(1 for a in cycle_actions if (a.get("action") in ("BUY", "SHORT")))
+                        day_trades += entries
+                        if cycle_actions:
+                            logger.info(f"    {ts.strftime('%H:%M')} — {len(cycle_actions)} action(s), {entries} new entr{'y' if entries == 1 else 'ies'}")
                     except Exception as e:
                         logger.warning(f"    {ts.strftime('%H:%M')} — cycle error: {e}")
 
@@ -448,10 +456,10 @@ class BacktestEngine:
                     results["day_trades_count"] = day_trades
                     # Refresh recent trades feed every bar (cheap query)
                     results["recent_trades"] = _snapshot_recent_trades()
-                    # Day P&L from current portfolio
+                    # Day P&L: end-of-bar total_value minus start-of-day total_value
                     try:
                         portfolio_now = agent.portfolio.get_portfolio_summary(backtest_data.get_current_prices())
-                        results["day_pnl"] = round(portfolio_now.get("today_pnl", 0), 2)
+                        results["day_pnl"] = round(portfolio_now.get("total_value", 0) - day_start_value, 2)
                     except Exception:
                         pass
                     _save()
@@ -497,11 +505,16 @@ class BacktestEngine:
                 stats = agent.learner.get_performance_stats()
                 day_duration = _time.time() - day_start
 
+                day_total_value = portfolio.get("total_value", 0)
+                # Robust daily P&L = end-of-day total_value - start-of-day total_value
+                # (works even if entry_time filter has edge cases)
+                day_pnl_computed = round(day_total_value - day_start_value, 2)
+
                 day_result = {
                     "date": trade_date.isoformat(),
                     "trades": day_trades,
-                    "total_value": round(portfolio.get("total_value", 0), 2),
-                    "daily_pnl": round(portfolio.get("today_pnl", 0), 2),
+                    "total_value": round(day_total_value, 2),
+                    "daily_pnl": day_pnl_computed,
                     "total_return_pct": round(portfolio.get("total_return_pct", 0), 2),
                     "win_rate": stats.get("win_rate", 0),
                     "total_trades": stats.get("total_trades", 0),
@@ -509,8 +522,8 @@ class BacktestEngine:
                 }
                 results["daily_results"].append(day_result)
 
-                logger.info(f"  ✅ Day {day_idx + 1} complete: {day_trades} trades, "
-                           f"P&L: {portfolio.get('today_pnl', 0):+.2f}, "
+                logger.info(f"  ✅ Day {day_idx + 1} complete: {day_trades} entries, "
+                           f"P&L: {day_pnl_computed:+.2f}, "
                            f"Total: {portfolio.get('total_return_pct', 0):+.2f}% "
                            f"({day_duration:.1f}s)")
 
@@ -519,7 +532,7 @@ class BacktestEngine:
                 results["current_day"] = day_idx + 1
                 results["current_date"] = trade_date.isoformat()
                 results["day_trades_count"] = day_trades
-                results["day_pnl"] = round(portfolio.get("today_pnl", 0), 2)
+                results["day_pnl"] = day_pnl_computed
                 results["recent_trades"] = _snapshot_recent_trades()
                 _save()
 

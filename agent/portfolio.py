@@ -303,7 +303,14 @@ class Portfolio:
         return [self._row_to_trade(r) for r in rows]
 
     def get_today_trades(self) -> List[Trade]:
-        today = date.today().isoformat()
+        # Use clock override if set (backtest uses simulated date)
+        if self._clock is not None:
+            try:
+                today = self._clock().date().isoformat()
+            except Exception:
+                today = date.today().isoformat()
+        else:
+            today = date.today().isoformat()
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
                 "SELECT * FROM trades WHERE entry_time LIKE ?", (f"{today}%",)
@@ -311,8 +318,23 @@ class Portfolio:
         return [self._row_to_trade(r) for r in rows]
 
     def get_today_pnl(self) -> float:
-        trades = self.get_today_trades()
-        return sum(t.pnl or 0.0 for t in trades if t.status != "open")
+        # Use simulated date during backtest. Counts P&L from any trade
+        # CLOSED on this date — not just entered today (intraday trades
+        # entered yesterday don't exist by design, but exit_time is the
+        # accurate way to attribute realized P&L to a day).
+        if self._clock is not None:
+            try:
+                today = self._clock().date().isoformat()
+            except Exception:
+                today = date.today().isoformat()
+        else:
+            today = date.today().isoformat()
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT pnl FROM trades WHERE status != 'open' AND exit_time LIKE ?",
+                (f"{today}%",)
+            ).fetchall()
+        return sum((r[0] or 0.0) for r in rows)
 
     def get_portfolio_summary(self, current_prices: Dict[str, float] = None) -> Dict[str, Any]:
         """Full portfolio snapshot for LLM context."""
