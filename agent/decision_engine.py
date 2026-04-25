@@ -126,7 +126,7 @@ def _build_trading_rules(preset) -> str:
         )
 
 
-def _format_system_prompt(config, learnings, is_market_open, force_intraday=False):
+def _format_system_prompt(config, learnings, is_market_open, force_intraday=False, is_backtest=False, backtest_date=None, backtest_time=None):
     """Format the system prompt with dynamic values."""
     preset = config._market_preset
     market_name = preset.display_name if preset else "Indian Stock Markets (NSE)"
@@ -140,13 +140,16 @@ def _format_system_prompt(config, learnings, is_market_open, force_intraday=Fals
     if sc and sc.personality:
         personality_section = f"## Trading Personality\n{sc.personality}"
 
-    # Current time in the market's timezone
-    try:
-        from zoneinfo import ZoneInfo
-        now = datetime.now(ZoneInfo(tz))
-        time_str = now.strftime(f"%Y-%m-%d %H:%M ({tz})")
-    except Exception:
-        time_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    # Current time — use simulated time during backtest, real time otherwise
+    if is_backtest and backtest_date:
+        time_str = f"{backtest_date} {backtest_time or ''} (SIMULATED, {tz})".strip()
+    else:
+        try:
+            from zoneinfo import ZoneInfo
+            now = datetime.now(ZoneInfo(tz))
+            time_str = now.strftime(f"%Y-%m-%d %H:%M ({tz})")
+        except Exception:
+            time_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     system = TRADING_SYSTEM_PROMPT.format(
         market_name=market_name,
@@ -156,6 +159,21 @@ def _format_system_prompt(config, learnings, is_market_open, force_intraday=Fals
         current_time=time_str,
         market_status="OPEN" if is_market_open else "CLOSED",
     )
+
+    # Backtest mode addendum: tell the LLM to skip news + rely on price action
+    if is_backtest:
+        system += (
+            "\n\n## BACKTEST MODE ACTIVE\n"
+            "You are replaying a historical trading day. Live news searches are DISABLED — "
+            "the `search_market_news` tool will return empty results.\n"
+            "**Trade purely on price action and quantitative signals:**\n"
+            "- Technical indicators: RSI, ATR, EMA20/50, MACD, VWAP, volume ratio\n"
+            "- Support/resistance levels (from 5-day high/low)\n"
+            "- Pre-market scanner thesis (which stocks were picked and why)\n"
+            "- Your distilled rules from past backtest days\n"
+            "**Do NOT call `search_market_news`** — it returns nothing in backtest mode and wastes a tool round-trip.\n"
+            "Simulated date/time is shown in Current Context — treat it as 'now'."
+        )
 
     # Intraday hint (only for scheduled markets)
     if force_intraday and preset and not preset.is_24x7:
@@ -176,7 +194,8 @@ def _format_system_prompt(config, learnings, is_market_open, force_intraday=Fals
 
 
 def _build_context(portfolio: Dict, watchlist: List[Dict], news: str,
-                   risk: Dict, config: AgentConfig = None) -> str:
+                   risk: Dict, config: AgentConfig = None,
+                   day_goal_context: str = None) -> str:
     """Build the initial context message for the LLM."""
     sym = config.currency_symbol if config else "₹"
 
@@ -201,6 +220,7 @@ def _build_context(portfolio: Dict, watchlist: List[Dict], news: str,
     watchlist_text = "\n".join(watchlist_lines) if watchlist_lines else "(no data)"
 
     asset_label = "assets" if (config and config._market_preset and config._market_preset.market_id == "crypto") else "stocks"
+    goal_section = f"\n{day_goal_context}\n" if day_goal_context else ""
 
     return f"""## Current Portfolio
 ```json
@@ -211,7 +231,7 @@ def _build_context(portfolio: Dict, watchlist: List[Dict], news: str,
 ```json
 {json.dumps(risk, indent=2)}
 ```
-
+{goal_section}
 ## Full Watchlist — {len(watchlist)} {asset_label} sorted by absolute % move (biggest movers first)
 RSI: <30=oversold, >70=overbought | vol: today/20d avg volume ratio (>1.5 = above-avg volume) | res/sup: % distance to 5d resistance/support
 ```
@@ -228,24 +248,32 @@ RSI: <30=oversold, >70=overbought | vol: today/20d avg volume ratio (>1.5 = abov
 Analyze the market conditions and your portfolio. Use your tools to research
 specific {asset_label} if needed, then decide whether to make any trades.
 
-LONG signals: RSI <35 (oversold bounce), vol_ratio >1.5 (breakout volume), price near support (sup <1%).
-SHORT signals: RSI >70 (overbought), price near resistance (res <0.5%), negative news catalyst, vol_ratio >1.5 (distribution).
+LONG signals: RSI <35 (oversold bounce), vol_ratio >1.5 (breakout volume), price near support (sup <1%),
+  EMA trend bullish (ema_20 > ema_50), MACD bullish_cross.
+SHORT signals: RSI >70 (overbought), price near resistance (res <0.5%), vol_ratio >1.5 (distribution),
+  EMA trend bearish (ema_20 < ema_50), MACD bearish_cross.
+Use `get_stock_details` to fetch full indicators (RSI, ATR, EMA20/50, MACD, VWAP) before any trade.
 Caution: avoid entering longs when RSI >75 or near resistance; avoid shorts when RSI <30.
+Confluence wins: a setup with 2+ aligned signals (e.g. RSI<30 + bullish EMA + MACD turning) is far stronger.
 If no good opportunities exist, it's perfectly fine to hold and wait.
 
 What trades, if any, should we make right now?"""
 
 
-def _get_tool_defs(config):
-    """Build tool definitions with market-aware descriptions."""
+def _get_tool_defs(config, is_backtest: bool = False):
+    """Build tool definitions with market-aware descriptions.
+    During backtest, the news search tool is omitted entirely so the LLM
+    can't waste round-trips calling it (it would return empty anyway)."""
     from .web_research import LLMWebSearchTool
     preset = config._market_preset
-    return [
-        LLMWebSearchTool.tool_definition(market_preset=preset),
+    tools = [
         LLMWebSearchTool.get_portfolio_tool(),
         LLMWebSearchTool.get_stock_detail_tool(market_preset=preset),
         LLMWebSearchTool.get_trade_tool(market_preset=preset),
     ]
+    if not is_backtest:
+        tools.insert(0, LLMWebSearchTool.tool_definition(market_preset=preset))
+    return tools
 
 
 # ── Anthropic Implementation ────────────────────────────────
@@ -272,6 +300,10 @@ class AnthropicDecisionEngine:
         tool_handler: callable,
         is_market_open: bool = True,
         force_intraday: bool = False,
+        is_backtest: bool = False,
+        backtest_date: str = None,
+        backtest_time: str = None,
+        day_goal_context: str = None,
     ) -> List[Dict]:
         """
         Run the full decision loop with tool use.
@@ -279,11 +311,13 @@ class AnthropicDecisionEngine:
         Returns list of trade actions taken.
         """
         context = _build_context(portfolio_summary, watchlist_data,
-                                 news_context, risk_status, self.config)
+                                 news_context, risk_status, self.config,
+                                 day_goal_context=day_goal_context)
 
-        system = _format_system_prompt(self.config, learnings, is_market_open, force_intraday)
+        system = _format_system_prompt(self.config, learnings, is_market_open, force_intraday,
+                                       is_backtest=is_backtest, backtest_date=backtest_date, backtest_time=backtest_time)
 
-        tool_defs = _get_tool_defs(self.config)
+        tool_defs = _get_tool_defs(self.config, is_backtest=is_backtest)
 
         messages = [{"role": "user", "content": context}]
         actions_taken = []
@@ -371,14 +405,20 @@ class OpenRouterDecisionEngine:
         tool_handler: callable,
         is_market_open: bool = True,
         force_intraday: bool = False,
+        is_backtest: bool = False,
+        backtest_date: str = None,
+        backtest_time: str = None,
+        day_goal_context: str = None,
     ) -> List[Dict]:
         context = _build_context(portfolio_summary, watchlist_data,
-                                 news_context, risk_status, self.config)
+                                 news_context, risk_status, self.config,
+                                 day_goal_context=day_goal_context)
 
-        system = _format_system_prompt(self.config, learnings, is_market_open, force_intraday)
+        system = _format_system_prompt(self.config, learnings, is_market_open, force_intraday,
+                                       is_backtest=is_backtest, backtest_date=backtest_date, backtest_time=backtest_time)
 
         # Convert Anthropic-style tool schemas to OpenAI function format
-        tool_defs = [self._to_openai_tool(t) for t in _get_tool_defs(self.config)]
+        tool_defs = [self._to_openai_tool(t) for t in _get_tool_defs(self.config, is_backtest=is_backtest)]
 
         messages = [
             {"role": "system", "content": system},

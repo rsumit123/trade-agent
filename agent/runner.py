@@ -344,6 +344,96 @@ class TradingAgent:
 
         return {"success": False, "error": f"Unknown action: {action}"}
 
+    # ── Day Goal Context (for prompt) ────────────────────────
+
+    def _build_day_goal_context(self) -> str:
+        """Build a 'Today's Performance' section so LLM has urgency framing.
+        Computes elapsed/remaining time in the trading session, today's P&L,
+        progress toward a daily target, and status (BEHIND / ON PACE / AHEAD / TARGET HIT).
+        """
+        try:
+            preset = self.preset
+            sym = self.config.currency_symbol if self.config else "₹"
+            starting_capital = self.config.starting_capital
+
+            # Daily target — default 0.8% for intraday markets, 0.3% for swing/24x7
+            is_intraday_market = preset and preset.market_id == "nse-intraday"
+            target_pct = 0.008 if is_intraday_market else 0.003
+            target_pnl = starting_capital * target_pct
+
+            # Today's P&L from portfolio
+            try:
+                prices = self.market_data.get_current_prices()
+            except Exception:
+                prices = {}
+            portfolio = self.portfolio.get_portfolio_summary(prices)
+            today_pnl = portfolio.get("today_pnl", 0)
+            today_pnl_pct = (today_pnl / starting_capital * 100) if starting_capital else 0
+
+            # Trade count today
+            try:
+                today_trades = len(self.portfolio.get_today_trades())
+            except Exception:
+                today_trades = 0
+
+            # Time within session
+            try:
+                # Use simulated time during backtest
+                if getattr(self, "_is_backtest", False) and getattr(self.market_data, "current_time", None):
+                    now = self.market_data.current_time
+                else:
+                    from zoneinfo import ZoneInfo
+                    tz = preset.timezone if preset else "Asia/Kolkata"
+                    now = datetime.now(ZoneInfo(tz)).replace(tzinfo=None)
+                cur_min = now.hour * 60 + now.minute
+            except Exception:
+                cur_min = None
+
+            session_str = ""
+            pct_through = None
+            if cur_min is not None and preset and preset.market_open and preset.market_close:
+                try:
+                    o_h, o_m = map(int, preset.market_open.split(":"))
+                    c_h, c_m = map(int, preset.market_close.split(":"))
+                    open_min = o_h * 60 + o_m
+                    close_min = c_h * 60 + c_m
+                    total = max(1, close_min - open_min)
+                    elapsed = max(0, min(total, cur_min - open_min))
+                    remaining = max(0, close_min - cur_min)
+                    pct_through = round(elapsed / total * 100)
+                    session_str = (
+                        f"- Time: {now.strftime('%H:%M')} · {elapsed} min into session · "
+                        f"{remaining} min remaining ({pct_through}% through day)"
+                    )
+                except Exception:
+                    pass
+
+            # Status label
+            target_progress_pct = (today_pnl / target_pnl * 100) if target_pnl else 0
+            if today_pnl >= target_pnl:
+                status = "🎯 TARGET HIT — consider locking in gains; raise stops to break-even"
+            elif pct_through is not None and target_progress_pct < pct_through - 20:
+                status = "⚠️ BEHIND PACE — need higher-conviction setups; don't over-trade to catch up"
+            elif pct_through is not None and target_progress_pct > pct_through + 20:
+                status = "✅ AHEAD OF PACE — protect profits; tighten stops on winners"
+            else:
+                status = "📊 ON PACE"
+
+            target_str = f"{sym}{target_pnl:,.0f} ({target_pct*100:.1f}%)"
+            pnl_str = f"{sym}{today_pnl:+,.0f} ({today_pnl_pct:+.2f}%)"
+
+            return (
+                f"## Today's Performance & Goals\n"
+                f"{session_str}\n"
+                f"- Daily P&L: **{pnl_str}**\n"
+                f"- Daily target: {target_str} · {target_progress_pct:.0f}% complete\n"
+                f"- Trades today: {today_trades}\n"
+                f"- Status: {status}"
+            )
+        except Exception as e:
+            logger.debug(f"Day goal context build failed: {e}")
+            return ""
+
     # ── Main Loop ────────────────────────────────────────────
 
     def run_once(self, force_intraday: bool = False, is_backtest: bool = False) -> Dict:
@@ -419,6 +509,17 @@ class TradingAgent:
         if premarket_summary:
             news = premarket_summary + "\n\n" + news
 
+        # If we're in backtest mode, expose simulated time to the prompt
+        bt_date, bt_time = None, None
+        if getattr(self, "_is_backtest", False):
+            bt_now = getattr(self.market_data, "current_time", None)
+            if bt_now is not None:
+                try:
+                    bt_date = bt_now.strftime("%Y-%m-%d")
+                    bt_time = bt_now.strftime("%H:%M")
+                except Exception:
+                    pass
+
         actions = self.engine.run_decision_loop(
             portfolio_summary=portfolio_summary,
             watchlist_data=watchlist_data,
@@ -429,6 +530,10 @@ class TradingAgent:
             tool_handler=self.handle_tool_call,
             is_market_open=self.market_data.is_market_open(),
             force_intraday=force_intraday,
+            is_backtest=getattr(self, "_is_backtest", False),
+            backtest_date=bt_date,
+            backtest_time=bt_time,
+            day_goal_context=self._build_day_goal_context() if getattr(self, "_is_backtest", False) or force_intraday else None,
         )
 
         logger.info(f"✅ Cycle complete — {len(actions)} actions taken")
