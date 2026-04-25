@@ -132,6 +132,25 @@ class MarketData:
                 rsi_series = 100 - (100 / (1 + rs))
                 rsi_14 = round(float(rsi_series.iloc[-1]), 1)
 
+            # ── EMA(20), EMA(50) — trend filters ───────────────────────
+            ema_20 = None
+            ema_50 = None
+            if len(hist) >= 20:
+                ema_20 = round(float(closes.ewm(span=20, adjust=False).mean().iloc[-1]), 2)
+            if len(hist) >= 50:
+                ema_50 = round(float(closes.ewm(span=50, adjust=False).mean().iloc[-1]), 2)
+
+            # ── MACD(12, 26, 9) ────────────────────────────────────────
+            macd_line = macd_signal = macd_hist = None
+            if len(hist) >= 26:
+                ema_12 = closes.ewm(span=12, adjust=False).mean()
+                ema_26 = closes.ewm(span=26, adjust=False).mean()
+                macd = ema_12 - ema_26
+                signal = macd.ewm(span=9, adjust=False).mean()
+                macd_line = round(float(macd.iloc[-1]), 2)
+                macd_signal = round(float(signal.iloc[-1]), 2)
+                macd_hist = round(macd_line - macd_signal, 2)
+
             # ── Volume ratio (today vs 20-day avg) ─────────────────────
             vol_ratio = None
             avg_volume = int(hist["Volume"].mean())
@@ -166,6 +185,18 @@ class MarketData:
                 except Exception as e:
                     logger.debug(f"VWAP calc failed for {ticker}: {e}")
 
+            ema_trend = None
+            if ema_20 and ema_50:
+                ema_trend = "bullish" if ema_20 > ema_50 else "bearish"
+            macd_state = None
+            if macd_line is not None and macd_signal is not None:
+                if macd_line > macd_signal and macd_hist > 0:
+                    macd_state = "bullish_cross"
+                elif macd_line < macd_signal and macd_hist < 0:
+                    macd_state = "bearish_cross"
+                else:
+                    macd_state = "neutral"
+
             return {
                 "ticker":                  ticker,
                 "current_price":           round(current, 2),
@@ -177,6 +208,14 @@ class MarketData:
                 "dist_to_support_pct":     dist_to_support_pct,
                 "sma_5":                   round(sma_5, 2) if sma_5 else None,
                 "price_vs_sma":            "above" if sma_5 and current > sma_5 else "below",
+                "ema_20":                  ema_20,
+                "ema_50":                  ema_50,
+                "ema_trend":               ema_trend,
+                "price_vs_ema20":          ("above" if (ema_20 and current > ema_20) else "below" if ema_20 else None),
+                "macd":                    macd_line,
+                "macd_signal":             macd_signal,
+                "macd_hist":               macd_hist,
+                "macd_state":              macd_state,
                 "avg_volume":              avg_volume,
                 "volatility_pct":          volatility,
                 "rsi_14":                  rsi_14,
