@@ -2,7 +2,24 @@
 import { useEffect, useState, useCallback } from "react";
 import { api, fmt, pct } from "@/lib/api";
 import { useToast } from "@/components/Toast";
-import type { BacktestProgress, SessionConfig } from "@/lib/types";
+import type { BacktestProgress, BacktestPhase, SessionConfig } from "@/lib/types";
+
+// ── Phase metadata: icon, color, label, description ──────────
+const PHASE_META: Record<BacktestPhase, { icon: string; color: string; label: string; hint: string }> = {
+  init:      { icon: "\u{1F680}", color: "#94a3b8", label: "Setting up",       hint: "Initializing agent and market data..." },
+  scanning:  { icon: "\u{1F50D}", color: "#60a5fa", label: "Scanning market",  hint: "Filtering ~3,000 NSE stocks for movers" },
+  selecting: { icon: "\u{1F3AF}", color: "#818cf8", label: "Picking stocks",   hint: "LLM selecting top 25 with thesis" },
+  trading:   { icon: "\u{1F4B9}", color: "#a78bfa", label: "Trading",          hint: "Stepping through 15-min bars" },
+  closing:   { icon: "\u{1F514}", color: "#fbbf24", label: "Closing day",      hint: "Force-closing intraday positions" },
+  reviewing: { icon: "\u{1F9E0}", color: "#22d3ee", label: "Learning",         hint: "Reviewing day & updating distilled rules" },
+  day_done:  { icon: "\u{2705}", color: "#22c55e", label: "Day complete",     hint: "Moving to next trading day..." },
+};
+
+function formatRelative(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  return `${Math.floor(seconds / 3600)}h ${Math.round((seconds % 3600) / 60)}m`;
+}
 
 interface Props {
   sessionId: string;
@@ -189,132 +206,9 @@ export function BacktestPanel({ sessionId, config, onComplete }: Props) {
     );
   }
 
-  // --- Running: show progress ---
+  // --- Running: show live progress ---
   if (progress.status === "running") {
-    const pctDone = progress.trading_days && progress.current_day
-      ? Math.round((progress.current_day / progress.trading_days) * 100)
-      : 0;
-    const latestDay = progress.daily_results?.length
-      ? progress.daily_results[progress.daily_results.length - 1]
-      : null;
-    const totalTrades = progress.daily_results?.reduce((s, d) => s + (d.trades || 0), 0) || 0;
-
-    return (
-      <div
-        style={{
-          background: "#151d2e",
-          border: "1px solid rgba(139,92,246,0.3)",
-          borderRadius: 12,
-          padding: 16,
-        }}
-      >
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <span
-              style={{
-                display: "inline-block",
-                width: 8,
-                height: 8,
-                borderRadius: "50%",
-                background: "#8b5cf6",
-                animation: "pulse 1.5s ease-in-out infinite",
-              }}
-            />
-            <h3
-              style={{
-                fontSize: 13,
-                fontWeight: 600,
-                textTransform: "uppercase",
-                letterSpacing: "0.05em",
-                color: "#a78bfa",
-              }}
-            >
-              Backtest Running
-            </h3>
-          </div>
-          <span className="text-xs font-mono text-text-muted">
-            Day {progress.current_day || 0}/{progress.trading_days || 0}
-          </span>
-        </div>
-
-        {/* Progress bar */}
-        <div
-          style={{
-            height: 6,
-            background: "#1e293b",
-            borderRadius: 3,
-            overflow: "hidden",
-            marginBottom: 16,
-          }}
-        >
-          <div
-            style={{
-              height: "100%",
-              width: `${pctDone}%`,
-              background: "linear-gradient(90deg, #8b5cf6, #a78bfa)",
-              borderRadius: 3,
-              transition: "width 0.5s ease",
-            }}
-          />
-        </div>
-
-        {/* Stats row */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-          <MiniStat label="Progress" value={`${pctDone}%`} />
-          <MiniStat label="Current Date" value={progress.current_date || "--"} />
-          <MiniStat label="Trades" value={String(totalTrades)} />
-          <MiniStat
-            label="Latest P&L"
-            value={latestDay ? fmt(latestDay.daily_pnl, sym) : "--"}
-            color={latestDay && latestDay.daily_pnl >= 0 ? "#22c55e" : "#ef4444"}
-          />
-        </div>
-
-        {/* Daily results table */}
-        {progress.daily_results && progress.daily_results.length > 0 && (
-          <div style={{ maxHeight: 200, overflowY: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-              <thead>
-                <tr style={{ borderBottom: "1px solid #1e293b" }}>
-                  <th style={{ textAlign: "left", padding: "6px 8px", color: "#64748b", fontWeight: 500 }}>Date</th>
-                  <th style={{ textAlign: "right", padding: "6px 8px", color: "#64748b", fontWeight: 500 }}>Trades</th>
-                  <th style={{ textAlign: "right", padding: "6px 8px", color: "#64748b", fontWeight: 500 }}>P&L</th>
-                  <th style={{ textAlign: "right", padding: "6px 8px", color: "#64748b", fontWeight: 500 }}>Return</th>
-                </tr>
-              </thead>
-              <tbody>
-                {progress.daily_results.map((d) => (
-                  <tr key={d.date} style={{ borderBottom: "1px solid #0f172a" }}>
-                    <td style={{ padding: "6px 8px", color: "#cbd5e1", fontFamily: "monospace" }}>{d.date}</td>
-                    <td style={{ padding: "6px 8px", textAlign: "right", color: "#94a3b8" }}>{d.trades}</td>
-                    <td
-                      style={{
-                        padding: "6px 8px",
-                        textAlign: "right",
-                        fontFamily: "monospace",
-                        color: d.daily_pnl >= 0 ? "#22c55e" : "#ef4444",
-                      }}
-                    >
-                      {fmt(d.daily_pnl, sym)}
-                    </td>
-                    <td
-                      style={{
-                        padding: "6px 8px",
-                        textAlign: "right",
-                        fontFamily: "monospace",
-                        color: d.total_return_pct >= 0 ? "#22c55e" : "#ef4444",
-                      }}
-                    >
-                      {pct(d.total_return_pct)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-    );
+    return <RunningView progress={progress} sym={sym} />;
   }
 
   // --- Completed: show results ---
@@ -566,6 +460,290 @@ function MiniStat({
       >
         {value}
       </div>
+    </div>
+  );
+}
+
+// ── Running view: live transparency UI ────────────────────────
+function RunningView({ progress, sym }: { progress: BacktestProgress; sym: string }) {
+  const [picksOpen, setPicksOpen] = useState(false);
+  const [pastDaysOpen, setPastDaysOpen] = useState(false);
+  // Force re-render every 5s so "elapsed" timer ticks
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const i = setInterval(() => setTick((t) => t + 1), 5000);
+    return () => clearInterval(i);
+  }, []);
+
+  const phase = (progress.current_phase || "init") as BacktestPhase;
+  const meta = PHASE_META[phase] || PHASE_META.init;
+  const totalDays = progress.trading_days || 0;
+  const currentDay = progress.current_day || 0;
+  const pctDone = totalDays ? Math.round((currentDay / totalDays) * 100) : 0;
+
+  // ETA calculation: avg time per completed day × remaining days
+  const completedDays = progress.daily_results?.length || 0;
+  const elapsed = progress.started_at ? Date.now() / 1000 - progress.started_at : 0;
+  const eta = completedDays > 0 && totalDays > completedDays
+    ? Math.max(0, (elapsed / completedDays) * (totalDays - completedDays))
+    : null;
+
+  const dayElapsed = progress.day_started_at ? Date.now() / 1000 - progress.day_started_at : 0;
+  const dayPnl = progress.day_pnl || 0;
+  const dayTrades = progress.day_trades_count || 0;
+  const picks = progress.current_picks || [];
+  const recent = progress.recent_trades || [];
+
+  return (
+    <div style={{ background: "#151d2e", border: "1px solid rgba(139,92,246,0.3)", borderRadius: 12, padding: 14 }}>
+      {/* HEADER: status pill + day counter */}
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <span style={{
+            display: "inline-block", width: 8, height: 8, borderRadius: "50%",
+            background: meta.color, boxShadow: `0 0 0 4px ${meta.color}25`,
+            animation: "pulse 1.5s ease-in-out infinite",
+          }} />
+          <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "#a78bfa" }}>
+            Backtest Running
+          </span>
+        </div>
+        <span style={{ fontSize: 12, fontFamily: "monospace", color: "#94a3b8" }}>
+          Day {currentDay} of {totalDays}
+        </span>
+      </div>
+
+      {/* Progress bar with ETA */}
+      <div style={{ height: 4, background: "#1e293b", borderRadius: 2, overflow: "hidden", marginBottom: 6 }}>
+        <div style={{
+          height: "100%", width: `${pctDone}%`,
+          background: "linear-gradient(90deg, #8b5cf6, #a78bfa)",
+          transition: "width 0.6s ease",
+        }} />
+      </div>
+      <div className="flex items-center justify-between" style={{ fontSize: 11, color: "#64748b", marginBottom: 14 }}>
+        <span>{pctDone}% complete</span>
+        {eta != null && <span>~{formatRelative(eta)} remaining</span>}
+      </div>
+
+      {/* BIG PHASE CARD — the centerpiece */}
+      <div style={{
+        background: `linear-gradient(135deg, ${meta.color}15 0%, ${meta.color}05 100%)`,
+        border: `1px solid ${meta.color}33`,
+        borderRadius: 12,
+        padding: 14,
+        marginBottom: 12,
+      }}>
+        <div className="flex items-start gap-3">
+          <span style={{
+            fontSize: 28, lineHeight: 1, flexShrink: 0,
+            animation: phase === "trading" || phase === "scanning" ? "pulse 2s ease-in-out infinite" : undefined,
+          }}>
+            {meta.icon}
+          </span>
+          <div className="min-w-0 flex-1">
+            <div style={{ fontSize: 16, fontWeight: 700, color: meta.color, lineHeight: 1.2, marginBottom: 2 }}>
+              {meta.label}
+              {phase === "trading" && progress.current_bar_time && (
+                <span style={{ fontFamily: "monospace", marginLeft: 8, fontWeight: 600, color: "#e2e8f0" }}>
+                  {progress.current_bar_time}
+                </span>
+              )}
+            </div>
+            <div style={{ fontSize: 12, color: "#94a3b8", lineHeight: 1.4 }}>
+              {meta.hint}
+            </div>
+            {/* Day-level stats inline */}
+            {(phase === "trading" || phase === "closing" || phase === "reviewing" || phase === "day_done") && (
+              <div className="flex items-center flex-wrap gap-x-3 gap-y-1 mt-2" style={{ fontSize: 11, fontFamily: "monospace" }}>
+                <span style={{ color: "#cbd5e1" }}>{progress.current_date}</span>
+                <span style={{ color: "#475569" }}>·</span>
+                <span style={{ color: "#cbd5e1" }}>{dayTrades} trade{dayTrades !== 1 ? "s" : ""}</span>
+                {dayPnl !== 0 && (
+                  <>
+                    <span style={{ color: "#475569" }}>·</span>
+                    <span style={{ color: dayPnl >= 0 ? "#22c55e" : "#ef4444", fontWeight: 600 }}>
+                      {dayPnl >= 0 ? "+" : ""}{fmt(dayPnl, sym)}
+                    </span>
+                  </>
+                )}
+                {dayElapsed > 0 && (
+                  <>
+                    <span style={{ color: "#475569" }}>·</span>
+                    <span style={{ color: "#64748b" }}>{formatRelative(dayElapsed)}</span>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* TODAY'S PICKS — collapsible */}
+      {picks.length > 0 && (
+        <div style={{ background: "#0f172a", borderRadius: 10, marginBottom: 12, overflow: "hidden" }}>
+          <button
+            onClick={() => setPicksOpen((v) => !v)}
+            className="w-full flex items-center justify-between"
+            style={{
+              padding: "10px 12px", minHeight: 44,
+              background: "transparent", border: "none", cursor: "pointer",
+              color: "#cbd5e1", fontSize: 13, fontWeight: 600,
+            }}
+          >
+            <span className="flex items-center gap-2">
+              <span>🎯</span>
+              <span>Today&apos;s picks</span>
+              <span style={{ color: "#64748b", fontWeight: 400, fontSize: 12 }}>({picks.length})</span>
+            </span>
+            <span style={{ color: "#64748b", fontSize: 12, transform: picksOpen ? "rotate(180deg)" : "none", transition: "transform 0.2s" }}>▾</span>
+          </button>
+          {!picksOpen && (
+            <div style={{ padding: "0 12px 10px", display: "flex", gap: 6, overflowX: "auto", whiteSpace: "nowrap" }}>
+              {picks.slice(0, 12).map((p) => (
+                <PickChip key={p.ticker} pick={p} compact />
+              ))}
+              {picks.length > 12 && (
+                <span style={{ fontSize: 11, color: "#64748b", alignSelf: "center", paddingLeft: 4 }}>+{picks.length - 12}</span>
+              )}
+            </div>
+          )}
+          {picksOpen && (
+            <div style={{ padding: "0 12px 12px", display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {picks.map((p) => <PickChip key={p.ticker} pick={p} />)}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* RECENT TRADES — live feed */}
+      {recent.length > 0 && (
+        <div style={{ background: "#0f172a", borderRadius: 10, padding: "10px 12px", marginBottom: 12 }}>
+          <div className="flex items-center gap-2 mb-2" style={{ fontSize: 11, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+            <span>Recent trades</span>
+            <span style={{ color: "#475569" }}>·</span>
+            <span style={{ color: "#94a3b8", textTransform: "none", letterSpacing: 0, fontWeight: 500 }}>last {recent.length}</span>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {recent.slice(0, 6).map((t, i) => <TradeRow key={`${t.ticker}-${t.exit_time || i}`} trade={t} sym={sym} />)}
+          </div>
+        </div>
+      )}
+
+      {/* PAST DAYS — collapsed by default */}
+      {progress.daily_results && progress.daily_results.length > 0 && (
+        <div style={{ background: "#0f172a", borderRadius: 10, overflow: "hidden" }}>
+          <button
+            onClick={() => setPastDaysOpen((v) => !v)}
+            className="w-full flex items-center justify-between"
+            style={{
+              padding: "10px 12px", minHeight: 44,
+              background: "transparent", border: "none", cursor: "pointer",
+              color: "#cbd5e1", fontSize: 13, fontWeight: 600,
+            }}
+          >
+            <span className="flex items-center gap-2">
+              <span>📊</span>
+              <span>Past days</span>
+              <span style={{ color: "#64748b", fontWeight: 400, fontSize: 12 }}>({progress.daily_results.length})</span>
+            </span>
+            <span style={{ color: "#64748b", fontSize: 12, transform: pastDaysOpen ? "rotate(180deg)" : "none", transition: "transform 0.2s" }}>▾</span>
+          </button>
+          {pastDaysOpen && (
+            <div style={{ maxHeight: 240, overflowY: "auto", padding: "0 4px 8px" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr style={{ borderBottom: "1px solid #1e293b" }}>
+                    <th style={{ textAlign: "left", padding: "6px 8px", color: "#64748b", fontWeight: 500 }}>Date</th>
+                    <th style={{ textAlign: "right", padding: "6px 8px", color: "#64748b", fontWeight: 500 }}>Trades</th>
+                    <th style={{ textAlign: "right", padding: "6px 8px", color: "#64748b", fontWeight: 500 }}>P&L</th>
+                    <th style={{ textAlign: "right", padding: "6px 8px", color: "#64748b", fontWeight: 500 }}>Return</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {progress.daily_results.map((d) => (
+                    <tr key={d.date} style={{ borderBottom: "1px solid #0a0f1c" }}>
+                      <td style={{ padding: "6px 8px", color: "#cbd5e1", fontFamily: "monospace" }}>{d.date}</td>
+                      <td style={{ padding: "6px 8px", textAlign: "right", color: "#94a3b8" }}>{d.trades}</td>
+                      <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "monospace", color: d.daily_pnl >= 0 ? "#22c55e" : "#ef4444" }}>
+                        {fmt(d.daily_pnl, sym)}
+                      </td>
+                      <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "monospace", color: d.total_return_pct >= 0 ? "#22c55e" : "#ef4444" }}>
+                        {pct(d.total_return_pct)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PickChip({ pick, compact = false }: { pick: { ticker: string; direction: string; reason: string }; compact?: boolean }) {
+  const isLong = pick.direction === "long";
+  const cleanTicker = pick.ticker.replace(/\.NS$/, "");
+  return (
+    <span
+      title={pick.reason}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 3,
+        padding: compact ? "4px 8px" : "5px 10px",
+        background: isLong ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)",
+        border: `1px solid ${isLong ? "rgba(34,197,94,0.25)" : "rgba(239,68,68,0.25)"}`,
+        color: isLong ? "#22c55e" : "#ef4444",
+        borderRadius: 6,
+        fontSize: 11,
+        fontFamily: "monospace",
+        fontWeight: 600,
+        flexShrink: 0,
+      }}
+    >
+      <span>{cleanTicker}</span>
+      <span style={{ fontSize: 9 }}>{isLong ? "▲" : "▼"}</span>
+    </span>
+  );
+}
+
+function TradeRow({ trade, sym }: { trade: { ticker: string; action: string; direction: string; quantity: number; entry_price: number; exit_price: number | null; pnl: number | null; exit_time: string | null }; sym: string }) {
+  const cleanTicker = trade.ticker.replace(/\.NS$/, "");
+  const pnl = trade.pnl;
+  const isProfit = pnl != null && pnl >= 0;
+  const isShort = trade.direction === "short";
+  const time = trade.exit_time ? new Date(trade.exit_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+
+  return (
+    <div className="flex items-center gap-2" style={{ fontSize: 12 }}>
+      <span style={{
+        fontSize: 10, fontWeight: 700,
+        color: isShort ? "#ef4444" : "#22c55e",
+        flexShrink: 0,
+      }}>
+        {isShort ? "▼" : "▲"}
+      </span>
+      <span style={{ fontFamily: "monospace", color: "#cbd5e1", fontWeight: 600, minWidth: 70 }}>
+        {cleanTicker}
+      </span>
+      <span style={{ color: "#64748b", fontFamily: "monospace", flex: 1 }}>
+        {trade.quantity} @ {fmt(trade.entry_price, sym)}
+      </span>
+      {pnl != null && (
+        <span style={{
+          fontFamily: "monospace", fontWeight: 600,
+          color: isProfit ? "#22c55e" : "#ef4444",
+          flexShrink: 0,
+        }}>
+          {isProfit ? "+" : ""}{fmt(pnl, sym)}
+        </span>
+      )}
+      {time && (
+        <span style={{ fontSize: 10, color: "#475569", fontFamily: "monospace", flexShrink: 0 }}>
+          {time}
+        </span>
+      )}
     </div>
   );
 }
