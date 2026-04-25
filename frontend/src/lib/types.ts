@@ -13,6 +13,15 @@ export interface SessionDaily {
   daily_pnl: number | null;
 }
 
+export interface SessionBacktestProgress {
+  status: string;
+  current_day?: number | null;
+  trading_days?: number | null;
+  current_date?: string | null;
+  start_date?: string | null;
+  end_date?: string | null;
+}
+
 export interface Session {
   session_id: string;
   display_name: string;
@@ -29,6 +38,7 @@ export interface Session {
   backtest_status?: string;
   portfolio?: SessionPortfolio | null;
   daily?: SessionDaily[];
+  backtest_progress?: SessionBacktestProgress | null;
 }
 
 export interface MarketPreset {
