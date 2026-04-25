@@ -3,7 +3,7 @@ import Link from "next/link";
 import { api, fmt, pct, cn } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { Sparkline } from "@/components/Sparkline";
-import type { Session, PortfolioSummary, DailyPerformance } from "@/lib/types";
+import type { Session } from "@/lib/types";
 import { useEffect, useRef, useState } from "react";
 
 /** Pretty-print model name: "anthropic/claude-haiku-4-5" → "Claude Haiku 4.5" */
@@ -269,23 +269,7 @@ export function SessionCard({ session, onDelete }: { session: Session; onDelete?
 
         {/* Primary action */}
         {session.backtest_mode ? (
-          <div
-            className="relative w-full rounded-xl text-sm text-center font-medium border"
-            style={{
-              minHeight: 44,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              background: "rgba(139,92,246,0.08)",
-              borderColor: "rgba(139,92,246,0.25)",
-              color: "#a78bfa",
-            }}
-          >
-            {session.backtest_status?.startsWith("running") ? "Backtest in progress..." :
-             session.backtest_status?.startsWith("completed") ? "View Results" :
-             session.backtest_status?.startsWith("failed") ? "Backtest failed — retry" :
-             "Configure Backtest"}
-          </div>
+          <BacktestCardStatus session={session} />
         ) : (
           <button
             onClick={handleToggle}
@@ -317,5 +301,60 @@ export function SessionCard({ session, onDelete }: { session: Session; onDelete?
         )}
       </div>
     </Link>
+  );
+}
+
+function BacktestCardStatus({ session }: { session: Session }) {
+  const prog = session.backtest_progress;
+  const status = session.backtest_status || "";
+  const isRunning = status.startsWith("running");
+  const isCompleted = status.startsWith("completed");
+  const isFailed = status.startsWith("failed");
+
+  if (isRunning && prog) {
+    const pctDone = prog.trading_days && prog.current_day
+      ? Math.round((prog.current_day / prog.trading_days) * 100)
+      : 0;
+    return (
+      <div className="relative w-full rounded-xl overflow-hidden border"
+        style={{ borderColor: "rgba(139,92,246,0.25)", background: "rgba(139,92,246,0.06)" }}>
+        {/* Progress bar */}
+        <div style={{ height: 3, background: "rgba(139,92,246,0.15)" }}>
+          <div style={{
+            height: "100%",
+            width: `${pctDone}%`,
+            background: "linear-gradient(90deg, #8b5cf6, #a78bfa)",
+            transition: "width 0.5s ease",
+          }} />
+        </div>
+        <div className="px-3 py-2.5 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <span style={{
+              width: 6, height: 6, borderRadius: "50%", background: "#8b5cf6",
+              animation: "pulse 1.5s ease-in-out infinite", flexShrink: 0,
+            }} />
+            <span className="text-xs font-medium truncate" style={{ color: "#a78bfa" }}>
+              Day {prog.current_day}/{prog.trading_days}
+              {prog.current_date && <span className="text-text-muted ml-1">({prog.current_date})</span>}
+            </span>
+          </div>
+          <span className="text-[11px] font-mono shrink-0" style={{ color: "#a78bfa" }}>{pctDone}%</span>
+        </div>
+      </div>
+    );
+  }
+
+  // Completed / Failed / Not started
+  const bgColor = isCompleted ? "rgba(34,197,94,0.08)" : isFailed ? "rgba(239,68,68,0.08)" : "rgba(139,92,246,0.08)";
+  const borderColor = isCompleted ? "rgba(34,197,94,0.25)" : isFailed ? "rgba(239,68,68,0.25)" : "rgba(139,92,246,0.25)";
+  const textColor = isCompleted ? "#22c55e" : isFailed ? "#ef4444" : "#a78bfa";
+  const label = isCompleted ? "View Results" : isFailed ? "Failed — tap to retry" : "Configure Backtest";
+
+  return (
+    <div className="relative w-full rounded-xl text-sm text-center font-medium border"
+      style={{ minHeight: 44, display: "flex", alignItems: "center", justifyContent: "center",
+        background: bgColor, borderColor, color: textColor }}>
+      {label}
+    </div>
   );
 }

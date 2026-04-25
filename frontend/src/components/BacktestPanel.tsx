@@ -55,36 +55,74 @@ export function BacktestPanel({ sessionId, config, onComplete }: Props) {
 
   // --- Not started: show start form ---
   if (!progress || progress.status === "not_started") {
+    // Estimate trading days between selected dates
+    const tradingDayEstimate = (() => {
+      if (!startDate || !endDate) return null;
+      const s = new Date(startDate), e = new Date(endDate);
+      let days = 0;
+      for (let d = new Date(s); d <= e; d.setDate(d.getDate() + 1)) {
+        const dow = d.getDay();
+        if (dow !== 0 && dow !== 6) days++;
+      }
+      return days;
+    })();
+
     return (
       <div
         style={{
           background: "#151d2e",
           border: "1px solid #1e293b",
           borderRadius: 12,
-          padding: 24,
+          padding: "16px",
         }}
       >
-        <div className="flex items-center gap-2 mb-4">
-          <span style={{ fontSize: 18 }}>&#x23F3;</span>
-          <h3
-            style={{
-              fontSize: 13,
-              fontWeight: 600,
-              textTransform: "uppercase",
-              letterSpacing: "0.05em",
-              color: "#94a3b8",
-            }}
-          >
+        <div className="flex items-center gap-2 mb-3">
+          <span style={{ fontSize: 16 }}>&#x23F3;</span>
+          <h3 style={{ fontSize: 13, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "#94a3b8" }}>
             Backtest
           </h3>
         </div>
-        <p className="text-text-muted text-sm mb-5">
-          Run a historical simulation to test your agent before going live.
-          The agent will replay market data day-by-day, making trades and building its learning journal.
+        <p className="text-text-muted text-xs mb-4">
+          Replay historical market data. The agent picks stocks each morning, trades through the day, and learns from results.
         </p>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-5">
+
+        {/* Quick presets — full width on mobile */}
+        <div className="grid grid-cols-4 gap-2 mb-4">
+          {[
+            { label: "1W", days: 7 },
+            { label: "2W", days: 14 },
+            { label: "1M", days: 30 },
+            { label: "3M", days: 90 },
+          ].map(({ label, days }) => (
+            <button
+              key={label}
+              onClick={() => {
+                const end = new Date();
+                end.setDate(end.getDate() - 1);
+                const start = new Date(end);
+                start.setDate(start.getDate() - days);
+                setStartDate(start.toISOString().split("T")[0]);
+                setEndDate(end.toISOString().split("T")[0]);
+              }}
+              style={{
+                minHeight: 44,
+                background: "rgba(59,130,246,0.1)",
+                border: "1px solid rgba(59,130,246,0.25)",
+                borderRadius: 10,
+                color: "#60a5fa",
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 mb-4">
           <div>
-            <label className="block text-xs text-text-muted mb-1.5">Start Date</label>
+            <label className="block text-[11px] text-text-muted mb-1">From</label>
             <input
               type="date"
               value={startDate}
@@ -95,13 +133,14 @@ export function BacktestPanel({ sessionId, config, onComplete }: Props) {
                 border: "1px solid #334155",
                 borderRadius: 8,
                 padding: "10px 12px",
+                minHeight: 44,
                 color: "#e2e8f0",
-                fontSize: 14,
+                fontSize: 16,
               }}
             />
           </div>
           <div>
-            <label className="block text-xs text-text-muted mb-1.5">End Date</label>
+            <label className="block text-[11px] text-text-muted mb-1">To</label>
             <input
               type="date"
               value={endDate}
@@ -112,63 +151,39 @@ export function BacktestPanel({ sessionId, config, onComplete }: Props) {
                 border: "1px solid #334155",
                 borderRadius: 8,
                 padding: "10px 12px",
+                minHeight: 44,
                 color: "#e2e8f0",
-                fontSize: 14,
+                fontSize: 16,
               }}
             />
           </div>
         </div>
-        {/* Quick presets */}
-        <div className="flex flex-wrap gap-2 mb-5">
-          {[
-            { label: "1 Week", days: 7 },
-            { label: "2 Weeks", days: 14 },
-            { label: "1 Month", days: 30 },
-            { label: "3 Months", days: 90 },
-          ].map(({ label, days }) => (
-            <button
-              key={label}
-              onClick={() => {
-                const end = new Date();
-                end.setDate(end.getDate() - 1); // Yesterday
-                const start = new Date(end);
-                start.setDate(start.getDate() - days);
-                setStartDate(start.toISOString().split("T")[0]);
-                setEndDate(end.toISOString().split("T")[0]);
-              }}
-              style={{
-                padding: "6px 14px",
-                background: "rgba(59,130,246,0.1)",
-                border: "1px solid rgba(59,130,246,0.25)",
-                borderRadius: 8,
-                color: "#60a5fa",
-                fontSize: 12,
-                fontWeight: 500,
-                cursor: "pointer",
-              }}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+
+        {/* Estimate */}
+        {tradingDayEstimate != null && tradingDayEstimate > 0 && (
+          <p className="text-xs text-text-muted mb-4 text-center">
+            ~{tradingDayEstimate} trading days · est. {Math.ceil(tradingDayEstimate * 0.75)} min
+          </p>
+        )}
+
         <button
           onClick={handleStart}
           disabled={!startDate || !endDate || starting}
           style={{
             width: "100%",
             padding: "12px 20px",
-            minHeight: 44,
+            minHeight: 48,
             background: !startDate || !endDate || starting ? "#334155" : "#8b5cf6",
             border: "none",
-            borderRadius: 10,
+            borderRadius: 12,
             color: "#fff",
-            fontSize: 14,
+            fontSize: 15,
             fontWeight: 600,
             cursor: !startDate || !endDate || starting ? "not-allowed" : "pointer",
             opacity: starting ? 0.6 : 1,
           }}
         >
-          {starting ? "Starting..." : "Run Backtest"}
+          {starting ? "Starting backtest..." : "Run Backtest"}
         </button>
       </div>
     );
@@ -190,7 +205,7 @@ export function BacktestPanel({ sessionId, config, onComplete }: Props) {
           background: "#151d2e",
           border: "1px solid rgba(139,92,246,0.3)",
           borderRadius: 12,
-          padding: 24,
+          padding: 16,
         }}
       >
         <div className="flex items-center justify-between mb-4">

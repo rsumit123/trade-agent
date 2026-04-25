@@ -401,6 +401,26 @@ def get_sessions():
                 s["win_rate"] = None
                 s["portfolio"] = None
                 s["daily"] = []
+
+            # Include backtest progress for backtest sessions
+            if s.get("backtest_mode"):
+                progress_path = SESSIONS_DIR / sid / "backtest_progress.json"
+                if progress_path.exists():
+                    try:
+                        prog = json.loads(progress_path.read_text())
+                        s["backtest_progress"] = {
+                            "status": prog.get("status", "unknown"),
+                            "current_day": prog.get("current_day"),
+                            "trading_days": prog.get("trading_days"),
+                            "current_date": prog.get("current_date"),
+                            "start_date": prog.get("start_date"),
+                            "end_date": prog.get("end_date"),
+                        }
+                    except Exception:
+                        s["backtest_progress"] = None
+                else:
+                    s["backtest_progress"] = None
+
         return sessions
     except Exception:
         return []
