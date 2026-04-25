@@ -162,6 +162,12 @@ input[type="range"]::-moz-range-thumb {
   border-radius: 8px;
 }
 
+/* Indeterminate progress slide (used by backtest phase card) */
+@keyframes shimmerSlide {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
 /* Toast animations */
 @keyframes toast-in {
   from { opacity: 0; transform: translateY(16px) scale(0.95); }

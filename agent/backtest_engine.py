@@ -108,10 +108,12 @@ class BacktestEngine:
 
         return result
 
-    def _fetch_daily_candles_fast(self, tickers: List[str], end_date: date, lookback_days: int = 5) -> Dict[str, pd.DataFrame]:
+    def _fetch_daily_candles_fast(self, tickers: List[str], end_date: date, lookback_days: int = 5, on_progress=None) -> Dict[str, pd.DataFrame]:
         """Fast bulk fetch of short-lookback daily candles for scanner.
         Uses minimal sleep (0.05s) and skips failures silently.
-        Good for scanning 2000+ stocks where we just need recent OHLC."""
+        Good for scanning 2000+ stocks where we just need recent OHLC.
+        on_progress: optional callback(scanned, total) called every ~50 tickers
+        for live UI updates."""
         start = (end_date - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
         end = end_date.strftime("%Y-%m-%d")
         result = {}
@@ -132,6 +134,12 @@ class BacktestEngine:
                     result[ticker] = pd.DataFrame(candles)
             except Exception:
                 failed += 1
+            # Live progress callback every 50 tickers
+            if on_progress and (idx + 1) % 50 == 0:
+                try:
+                    on_progress(idx + 1, len(tickers))
+                except Exception:
+                    pass
             # Light rate limiting — 0.05s per ticker
             if (idx + 1) % 100 == 0:
                 logger.info(f"    Scanner fetch: {idx + 1}/{len(tickers)} done ({len(result)} ok, {failed} failed)")
@@ -228,6 +236,10 @@ class BacktestEngine:
             "day_pnl": 0.0,
             "day_started_at": None,
             "started_at": _time.time(),
+            # Sub-progress within a phase (e.g. scanning 2200/2847)
+            "phase_progress": None,
+            "phase_total": None,
+            "phase_detail": None,
         }
 
         # Save progress file
@@ -270,8 +282,17 @@ class BacktestEngine:
             results["day_trades_count"] = 0
             results["day_pnl"] = 0.0
             results["day_started_at"] = _time.time()
+            results["phase_progress"] = 0
+            results["phase_total"] = len(scan_pool)
+            results["phase_detail"] = None
             _save()
             day_start = _time.time()
+
+            # Scanner progress callback — updates UI every 50 stocks
+            def _on_scan_progress(scanned, total):
+                results["phase_progress"] = scanned
+                results["phase_total"] = total
+                _save()
             logger.info(f"\n{'='*60}")
             logger.info(f"📅 Backtest Day {day_idx + 1}/{len(trading_days)}: {trade_date}")
             logger.info(f"{'='*60}")
@@ -280,11 +301,14 @@ class BacktestEngine:
                 # 0. Run historical pre-market scanner to pick today's stocks
                 #    Scans all ~3000 NSE equities — fast fetch with 2-day lookback
                 logger.info(f"  🔍 Running pre-market scanner ({len(scan_pool)} stocks) for {trade_date}...")
-                broad_daily = self._fetch_daily_candles_fast(scan_pool, trade_date, lookback_days=5)
+                broad_daily = self._fetch_daily_candles_fast(scan_pool, trade_date, lookback_days=5, on_progress=_on_scan_progress)
 
                 if broad_daily:
                     # Phase: LLM picking top 25 stocks
                     results["current_phase"] = "selecting"
+                    results["phase_progress"] = None
+                    results["phase_total"] = None
+                    results["phase_detail"] = f"{len(broad_daily)} candidates passed Phase 1"
                     _save()
 
                     # Get agent's learnings for LLM Phase 2
@@ -380,6 +404,9 @@ class BacktestEngine:
 
                 # Phase: actively trading
                 results["current_phase"] = "trading"
+                results["phase_progress"] = 0
+                results["phase_total"] = len(timestamps)
+                results["phase_detail"] = None
                 _save()
 
                 # 5. Step through each candle
@@ -393,6 +420,7 @@ class BacktestEngine:
 
                     # Update bar time so UI shows current trading bar
                     results["current_bar_time"] = ts.strftime("%H:%M")
+                    results["phase_progress"] = ts_idx + 1
 
                     # Run one agent cycle
                     try:
@@ -417,8 +445,12 @@ class BacktestEngine:
                     _save()
 
                 # Phase: closing intraday positions
+                open_positions_count = len(agent.portfolio.get_open_positions())
                 results["current_phase"] = "closing"
                 results["current_bar_time"] = None
+                results["phase_progress"] = None
+                results["phase_total"] = None
+                results["phase_detail"] = f"{open_positions_count} position(s) to close" if open_positions_count else None
                 _save()
 
                 # 6. Force-close all positions at end of day
@@ -436,6 +468,9 @@ class BacktestEngine:
 
                 # Phase: reviewing & learning
                 results["current_phase"] = "reviewing"
+                results["phase_progress"] = None
+                results["phase_total"] = None
+                results["phase_detail"] = "Updating distilled rules from today's trades"
                 results["recent_trades"] = _snapshot_recent_trades()
                 _save()
 

@@ -102,6 +102,10 @@ class TradingAgent:
 
         if tool_name == "search_market_news":
             query = tool_input.get("query", "")
+            # During backtest, NEVER fetch live news — it would leak future
+            # information into past decisions, and yfinance spam pollutes logs
+            if getattr(self, "_is_backtest", False):
+                return {"results": [], "note": "News disabled in backtest mode (would leak future info)"}
             # Execute the LLM's actual query via DuckDuckGo
             results = self.researcher.search(query, max_results=6)
             # If DDG returned nothing, fall back to yfinance news for any
