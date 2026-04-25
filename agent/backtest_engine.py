@@ -218,13 +218,21 @@ class BacktestEngine:
             "trading_days": len(trading_days),
             "daily_results": [],
             "status": "running",
+            "current_day": 0,
+            "current_date": trading_days[0].isoformat() if trading_days else None,
         }
 
         # Save progress file
         progress_path = Path(f"sessions/{self.session_config.session_id}/backtest_progress.json")
         progress_path.parent.mkdir(parents=True, exist_ok=True)
+        # Write initial progress immediately so UI can show "running" from start
+        progress_path.write_text(json.dumps(results, indent=2))
 
         for day_idx, trade_date in enumerate(trading_days):
+            # Update at start of each day so UI shows current day mid-execution
+            results["current_day"] = day_idx + 1
+            results["current_date"] = trade_date.isoformat()
+            progress_path.write_text(json.dumps(results, indent=2))
             day_start = _time.time()
             logger.info(f"\n{'='*60}")
             logger.info(f"📅 Backtest Day {day_idx + 1}/{len(trading_days)}: {trade_date}")
