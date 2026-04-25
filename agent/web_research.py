@@ -32,6 +32,9 @@ class WebResearcher:
             market_preset.news_sources if market_preset else
             ["moneycontrol", "economictimes", "livemint"]
         )
+        # Set True during backtest to disable all live web searches
+        # (would leak future info into past decisions and pollute logs)
+        self.backtest_mode = False
 
     # Homepages/aggregators that return boilerplate instead of real articles
     _JUNK_DOMAINS = {
@@ -48,6 +51,12 @@ class WebResearcher:
         Results are cached for 90 minutes so repeated identical queries don't
         hit the network every 15-minute cycle.
         """
+        # In backtest mode: NEVER hit the live web — would leak future
+        # news (today's articles) into past decisions
+        if self.backtest_mode:
+            logger.debug(f"🔒 search '{query[:50]}' skipped (backtest mode)")
+            return []
+
         # ── Cache check ──────────────────────────────────────────────
         now = datetime.now()
         if query in self._news_cache:
@@ -102,6 +111,8 @@ class WebResearcher:
         Get recent news for a stock.
         First tries DuckDuckGo for fresh results, falls back to yfinance.
         """
+        if self.backtest_mode:
+            return []
         clean = ticker.replace(".NS", "").replace(".BO", "").replace("-USD", "")
         if self.market_preset and self.market_preset.market_id == "crypto":
             query = f"{clean} cryptocurrency news today"

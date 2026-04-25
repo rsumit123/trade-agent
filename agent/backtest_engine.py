@@ -206,6 +206,10 @@ class BacktestEngine:
         # Initialize the agent with the session config
         session = load_session(self.session_config.session_id)
         agent = TradingAgent(session=session)
+        # Disable all live web searches during backtest (would leak future news)
+        agent._is_backtest = True
+        if hasattr(agent, "researcher"):
+            agent.researcher.backtest_mode = True
         preset = agent.preset
         base_tickers = watchlist or agent.config.watchlist
 

@@ -259,7 +259,12 @@ export function BacktestPanel({ sessionId, config, onComplete }: Props) {
             value={stats ? `${stats.win_rate}%` : "--"}
             color={stats && stats.win_rate >= 50 ? "#22c55e" : "#ef4444"}
           />
-          <MiniStat label="Total Trades" value={String(stats?.total_trades || 0)} />
+          <MiniStat
+            label="W / L / BE"
+            value={stats
+              ? `${stats.wins}/${stats.losses}${stats.breakevens ? `/${stats.breakevens}` : ""}`
+              : "--"}
+          />
           <MiniStat
             label="Profitable Days"
             value={`${profitDays}/${totalDays}`}

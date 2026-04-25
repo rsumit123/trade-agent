@@ -475,13 +475,17 @@ Keep it under 120 words. Be honest and specific. No fluff."""
 
         wins = [t for t in closed if (t.pnl or 0) > 0]
         losses = [t for t in closed if (t.pnl or 0) < 0]
+        breakevens = [t for t in closed if (t.pnl or 0) == 0]
         total_pnl = sum(t.pnl or 0 for t in closed)
+        # Win rate excludes breakevens from denominator (industry standard)
+        decisive = len(wins) + len(losses)
 
         return {
             "total_trades": len(closed),
             "wins": len(wins),
             "losses": len(losses),
-            "win_rate": round(len(wins) / len(closed) * 100, 1) if closed else 0,
+            "breakevens": len(breakevens),
+            "win_rate": round(len(wins) / decisive * 100, 1) if decisive else 0,
             "total_pnl": round(total_pnl, 2),
             "avg_win": round(sum(t.pnl for t in wins) / len(wins), 2) if wins else 0,
             "avg_loss": round(sum(t.pnl for t in losses) / len(losses), 2) if losses else 0,

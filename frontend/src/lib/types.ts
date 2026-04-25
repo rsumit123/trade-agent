@@ -116,6 +116,7 @@ export interface Performance {
   total_trades: number;
   wins: number;
   losses: number;
+  breakevens?: number;
   win_rate: number;
   total_pnl: number;
   avg_win: number;
