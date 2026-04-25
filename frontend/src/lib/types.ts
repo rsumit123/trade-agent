@@ -206,6 +206,32 @@ export interface BacktestDayResult {
   error?: string;
 }
 
+export type BacktestPhase =
+  | "init"
+  | "scanning"
+  | "selecting"
+  | "trading"
+  | "closing"
+  | "reviewing"
+  | "day_done";
+
+export interface BacktestPick {
+  ticker: string;
+  direction: string;
+  reason: string;
+}
+
+export interface BacktestRecentTrade {
+  ticker: string;
+  action: string;
+  direction: string;
+  quantity: number;
+  entry_price: number;
+  exit_price: number | null;
+  pnl: number | null;
+  exit_time: string | null;
+}
+
 export interface BacktestProgress {
   status: "not_started" | "running" | "completed" | "failed";
   start_date?: string;
@@ -216,4 +242,13 @@ export interface BacktestProgress {
   daily_results?: BacktestDayResult[];
   final_stats?: Performance;
   error?: string;
+  // Live transparency fields
+  current_phase?: BacktestPhase;
+  current_bar_time?: string | null;
+  current_picks?: BacktestPick[];
+  recent_trades?: BacktestRecentTrade[];
+  day_trades_count?: number;
+  day_pnl?: number;
+  day_started_at?: number;
+  started_at?: number;
 }
