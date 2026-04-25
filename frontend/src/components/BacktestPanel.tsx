@@ -533,11 +533,13 @@ function RunningView({ progress, sym }: { progress: BacktestProgress; sym: strin
         borderRadius: 12,
         padding: 14,
         marginBottom: 12,
+        overflow: "hidden",
+        position: "relative",
       }}>
         <div className="flex items-start gap-3">
           <span style={{
             fontSize: 28, lineHeight: 1, flexShrink: 0,
-            animation: phase === "trading" || phase === "scanning" ? "pulse 2s ease-in-out infinite" : undefined,
+            animation: phase === "trading" || phase === "scanning" || phase === "selecting" ? "pulse 2s ease-in-out infinite" : undefined,
           }}>
             {meta.icon}
           </span>
@@ -553,7 +555,22 @@ function RunningView({ progress, sym }: { progress: BacktestProgress; sym: strin
             <div style={{ fontSize: 12, color: "#94a3b8", lineHeight: 1.4 }}>
               {meta.hint}
             </div>
-            {/* Day-level stats inline */}
+            {/* Sub-progress: e.g. "2,200 / 2,847 stocks scanned" with mini progress bar */}
+            {progress.phase_progress != null && progress.phase_total != null && progress.phase_total > 0 && (
+              <SubProgress
+                current={progress.phase_progress}
+                total={progress.phase_total}
+                label={phase === "scanning" ? "stocks scanned" : phase === "trading" ? "bars processed" : "items"}
+                color={meta.color}
+              />
+            )}
+            {/* Phase detail text (e.g. "60 candidates passed Phase 1") */}
+            {progress.phase_detail && (
+              <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 6, fontStyle: "italic" }}>
+                {progress.phase_detail}
+              </div>
+            )}
+            {/* Day-level stats inline (only after scanning is done) */}
             {(phase === "trading" || phase === "closing" || phase === "reviewing" || phase === "day_done") && (
               <div className="flex items-center flex-wrap gap-x-3 gap-y-1 mt-2" style={{ fontSize: 11, fontFamily: "monospace" }}>
                 <span style={{ color: "#cbd5e1" }}>{progress.current_date}</span>
@@ -575,8 +592,24 @@ function RunningView({ progress, sym }: { progress: BacktestProgress; sym: strin
                 )}
               </div>
             )}
+            {/* Show date for scanning/selecting too */}
+            {(phase === "scanning" || phase === "selecting") && progress.current_date && (
+              <div style={{ fontSize: 11, color: "#cbd5e1", fontFamily: "monospace", marginTop: 6 }}>
+                {progress.current_date}
+              </div>
+            )}
           </div>
         </div>
+
+        {/* Indeterminate shimmer for phases without sub-progress */}
+        {(phase === "scanning" || phase === "selecting" || phase === "reviewing" || phase === "closing") && progress.phase_progress == null && (
+          <div style={{
+            position: "absolute", left: 0, right: 0, bottom: 0, height: 2,
+            background: `linear-gradient(90deg, transparent 0%, ${meta.color} 50%, transparent 100%)`,
+            backgroundSize: "200% 100%",
+            animation: "shimmerSlide 1.8s linear infinite",
+          }} />
+        )}
       </div>
 
       {/* TODAY'S PICKS — collapsible */}
@@ -679,6 +712,32 @@ function RunningView({ progress, sym }: { progress: BacktestProgress; sym: strin
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function SubProgress({ current, total, label, color }: { current: number; total: number; label: string; color: string }) {
+  const pct = total > 0 ? Math.min(100, (current / total) * 100) : 0;
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div className="flex items-baseline justify-between" style={{ fontSize: 11, fontFamily: "monospace", marginBottom: 4 }}>
+        <span style={{ color: "#cbd5e1", fontWeight: 600 }}>
+          <span style={{ color, fontWeight: 700 }}>{current.toLocaleString()}</span>
+          <span style={{ color: "#475569" }}> / </span>
+          <span style={{ color: "#94a3b8" }}>{total.toLocaleString()}</span>
+          <span style={{ color: "#64748b", marginLeft: 6, fontWeight: 400 }}>{label}</span>
+        </span>
+        <span style={{ color, fontWeight: 600 }}>{Math.round(pct)}%</span>
+      </div>
+      <div style={{ height: 3, background: "#0f172a", borderRadius: 2, overflow: "hidden" }}>
+        <div style={{
+          height: "100%",
+          width: `${pct}%`,
+          background: color,
+          transition: "width 0.4s ease",
+          borderRadius: 2,
+        }} />
+      </div>
     </div>
   );
 }

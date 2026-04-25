@@ -251,4 +251,8 @@ export interface BacktestProgress {
   day_pnl?: number;
   day_started_at?: number;
   started_at?: number;
+  // Sub-progress within a phase (e.g. scanning 2200/2847)
+  phase_progress?: number | null;
+  phase_total?: number | null;
+  phase_detail?: string | null;
 }
