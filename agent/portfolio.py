@@ -56,7 +56,19 @@ class Portfolio:
     def __init__(self, db_path: str, starting_capital: float):
         self.db_path = db_path
         self.starting_capital = starting_capital
+        # Optional clock override — set by backtest engine to use simulated
+        # time for entry_time/exit_time so hold durations are meaningful
+        self._clock = None  # callable returning datetime, or None for real time
         self._init_db()
+
+    def _now_iso(self) -> str:
+        """Return current timestamp as ISO string, respecting _clock override."""
+        if self._clock is not None:
+            try:
+                return self._clock().isoformat()
+            except Exception:
+                pass
+        return datetime.now().isoformat()
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
@@ -157,7 +169,7 @@ class Portfolio:
         if cost > cash:
             raise ValueError(f"Insufficient funds: need ₹{cost:.2f}, have ₹{cash:.2f}")
 
-        entry_time = datetime.now().isoformat()
+        entry_time = self._now_iso()
         with sqlite3.connect(self.db_path) as conn:
             self._update_cash(conn, -cost)
             cursor = conn.execute(
@@ -190,15 +202,16 @@ class Portfolio:
             pnl = round((price - trade.entry_price) * trade.quantity, 2)
             proceeds = trade.quantity * price
 
+            now = self._now_iso()
             self._update_cash(conn, proceeds)
             conn.execute(
                 """UPDATE trades SET exit_price = ?, exit_time = ?,
                    status = 'closed', pnl = ?, exit_reason = ?, exit_type = ? WHERE id = ?""",
-                (price, datetime.now().isoformat(), pnl, reason, exit_type or "manual", trade_id)
+                (price, now, pnl, reason, exit_type or "manual", trade_id)
             )
 
         trade.exit_price = price
-        trade.exit_time = datetime.now().isoformat()
+        trade.exit_time = now
         trade.status = "closed"
         trade.pnl = pnl
         trade.exit_reason = reason
@@ -218,7 +231,7 @@ class Portfolio:
         proceeds so the portfolio value stays consistent.
         """
         proceeds = quantity * price
-        entry_time = datetime.now().isoformat()
+        entry_time = self._now_iso()
         with sqlite3.connect(self.db_path) as conn:
             # Credit proceeds from the short sale
             self._update_cash(conn, proceeds)
@@ -256,15 +269,16 @@ class Portfolio:
             pnl = round((trade.entry_price - price) * trade.quantity, 2)
             # Debit the cost to buy back shares
             cost = trade.quantity * price
+            now = self._now_iso()
             self._update_cash(conn, -cost)
             conn.execute(
                 """UPDATE trades SET exit_price = ?, exit_time = ?,
                    status = 'closed', pnl = ?, exit_reason = ?, exit_type = ? WHERE id = ?""",
-                (price, datetime.now().isoformat(), pnl, reason, exit_type or "manual", trade_id)
+                (price, now, pnl, reason, exit_type or "manual", trade_id)
             )
 
         trade.exit_price = price
-        trade.exit_time = datetime.now().isoformat()
+        trade.exit_time = now
         trade.status = "closed"
         trade.pnl = pnl
         trade.exit_reason = reason

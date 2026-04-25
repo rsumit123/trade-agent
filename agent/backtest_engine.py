@@ -213,6 +213,14 @@ class BacktestEngine:
         preset = agent.preset
         base_tickers = watchlist or agent.config.watchlist
 
+        # Make portfolio use simulated time for entry_time/exit_time so
+        # hold durations are meaningful (real wall clock is meaningless
+        # since the engine processes a full trading day in seconds)
+        def _sim_clock():
+            t = getattr(agent.market_data, "current_time", None)
+            return t if t is not None else datetime.now()
+        agent.portfolio._clock = _sim_clock
+
         # Pre-market scanner for dynamic stock selection each day
         from .premarket_scanner import PreMarketScanner
         scanner = PreMarketScanner(self.kite)
