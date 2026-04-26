@@ -442,10 +442,13 @@ class BacktestEngine:
                     # Run one agent cycle
                     try:
                         result = agent.run_once(force_intraday=True, is_backtest=True)
-                        # Count ENTRIES only (BUY + SHORT), not exits — a round-trip
-                        # is one trade, not two
+                        # Count successful ENTRIES only (BUY + SHORT). Each action is
+                        # {"tool": "place_trade", "input": {...}, "result": {action, success, ...}}
                         cycle_actions = result.get("actions", []) or []
-                        entries = sum(1 for a in cycle_actions if (a.get("action") in ("BUY", "SHORT")))
+                        def _is_entry(a):
+                            r = a.get("result") or {}
+                            return r.get("success") and r.get("action") in ("BUY", "SHORT")
+                        entries = sum(1 for a in cycle_actions if _is_entry(a))
                         day_trades += entries
                         if cycle_actions:
                             logger.info(f"    {ts.strftime('%H:%M')} — {len(cycle_actions)} action(s), {entries} new entr{'y' if entries == 1 else 'ies'}")
