@@ -455,26 +455,18 @@ function CreateSessionInner() {
                   format={(v) => `${(v * 100).toFixed(0)}%`}
                 />
                 <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] text-text-muted mb-1.5">Max Open Positions</label>
-                    <input
-                      type="number"
-                      value={form.max_open_positions}
-                      onChange={(e) => setForm({ ...form, max_open_positions: parseInt(e.target.value) || 1 })}
-                      min={1} max={20}
-                      className="w-full font-mono"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-text-muted mb-1.5">Per-Trade Stop %</label>
-                    <input
-                      type="number"
-                      value={(form.per_trade_loss_limit_pct * 100).toFixed(1)}
-                      onChange={(e) => setForm({ ...form, per_trade_loss_limit_pct: (parseFloat(e.target.value) || 1) / 100 })}
-                      step={0.5} min={0.5} max={10}
-                      className="w-full font-mono"
-                    />
-                  </div>
+                  <NumberField
+                    label="Max Open Positions"
+                    value={form.max_open_positions}
+                    onChange={(v) => setForm({ ...form, max_open_positions: v })}
+                    min={1} max={20} step={1} integer
+                  />
+                  <NumberField
+                    label="Per-Trade Stop %"
+                    value={form.per_trade_loss_limit_pct * 100}
+                    onChange={(v) => setForm({ ...form, per_trade_loss_limit_pct: v / 100 })}
+                    min={0.1} max={10} step={0.1}
+                  />
                 </div>
               </div>
             </div>
@@ -671,6 +663,67 @@ function ModelSelect({ provider, value, onChange }: { provider: string; value: s
       <option value="gpt-4o-mini">GPT-4o Mini</option>
       <option value="o3-mini">o3-mini (reasoning)</option>
     </select>
+  );
+}
+
+function NumberField({ label, value, onChange, min, max, step, integer = false }: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+  min: number; max: number; step: number;
+  integer?: boolean;
+}) {
+  // Local string buffer so user can clear / mid-edit without snapping back.
+  // Sync external value → buffer when value changes from outside.
+  const [buf, setBuf] = useState<string>(String(value));
+  const [focused, setFocused] = useState(false);
+
+  useEffect(() => {
+    if (!focused) setBuf(String(value));
+  }, [value, focused]);
+
+  const commit = (raw: string) => {
+    const n = integer ? parseInt(raw, 10) : parseFloat(raw);
+    if (Number.isNaN(n)) return; // ignore invalid; keep buffer for user
+    const clamped = Math.max(min, Math.min(max, n));
+    onChange(clamped);
+  };
+
+  return (
+    <div>
+      <label className="block text-[11px] text-text-muted mb-1.5">{label}</label>
+      <input
+        type="text"
+        inputMode={integer ? "numeric" : "decimal"}
+        value={buf}
+        onChange={(e) => {
+          const v = e.target.value;
+          setBuf(v);
+          // Optimistically commit valid intermediate values, but DON'T snap on empty
+          if (v === "" || v === "-" || v === ".") return;
+          const n = integer ? parseInt(v, 10) : parseFloat(v);
+          if (!Number.isNaN(n) && n >= min && n <= max) onChange(n);
+        }}
+        onFocus={() => setFocused(true)}
+        onBlur={() => {
+          setFocused(false);
+          // On blur: clamp + reformat to canonical display
+          const n = integer ? parseInt(buf, 10) : parseFloat(buf);
+          if (Number.isNaN(n)) {
+            setBuf(String(value));
+            return;
+          }
+          const clamped = Math.max(min, Math.min(max, n));
+          onChange(clamped);
+          setBuf(String(clamped));
+        }}
+        className="w-full font-mono"
+        style={{ minHeight: 44, fontSize: 16, padding: "10px 12px" }}
+      />
+      <div className="text-[10px] text-text-muted mt-1 font-mono">
+        range: {min}–{max}{!integer && ` · step ${step}`}
+      </div>
+    </div>
   );
 }
 
