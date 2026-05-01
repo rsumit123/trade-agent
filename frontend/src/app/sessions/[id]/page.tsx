@@ -16,6 +16,7 @@ import { JournalPanel } from "@/components/JournalPanel";
 import { LearningInsights } from "@/components/LearningInsights";
 import { DirectivePanel } from "@/components/DirectivePanel";
 import { DailyTracker } from "@/components/DailyTracker";
+import { EquityCharts } from "@/components/EquityCharts";
 import { BacktestPanel } from "@/components/BacktestPanel";
 import type {
   PortfolioSummary, ClosedTrade, RiskStatus, Performance,
@@ -201,6 +202,9 @@ export default function SessionDashboard() {
       {/* Tab content */}
       {tab === "overview" && (
         <div className="space-y-4 md:space-y-5 animate-fade-in">
+          {/* Performance charts */}
+          <EquityCharts sessionId={sessionId} config={config} />
+
           {/* Holdings + Risk */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-5">
             <div className="lg:col-span-2">
