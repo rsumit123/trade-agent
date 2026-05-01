@@ -283,6 +283,7 @@ class AnthropicDecisionEngine:
 
     def __init__(self, config: AgentConfig):
         self.config = config
+        self.last_reasoning: List[Dict] = []
         try:
             import anthropic
             self.client = anthropic.Anthropic(api_key=config.api_key)
@@ -321,6 +322,7 @@ class AnthropicDecisionEngine:
 
         messages = [{"role": "user", "content": context}]
         actions_taken = []
+        reasoning_trail: List[Dict] = []
         max_iterations = 10
 
         for i in range(max_iterations):
@@ -340,11 +342,19 @@ class AnthropicDecisionEngine:
             messages.append({"role": "assistant", "content": assistant_content})
 
             tool_uses = [b for b in assistant_content if b.type == "tool_use"]
+            text_blocks = [b.text for b in assistant_content if b.type == "text"]
+            iter_text = " ".join(text_blocks).strip()
+            iter_tools = [{"name": t.name, "input": t.input} for t in tool_uses]
+            if iter_text or iter_tools:
+                reasoning_trail.append({
+                    "iter": i,
+                    "text": iter_text[:2000],
+                    "tool_calls": iter_tools,
+                })
 
             if not tool_uses:
-                text_blocks = [b.text for b in assistant_content if b.type == "text"]
-                if text_blocks:
-                    logger.info(f"Agent reasoning: {' '.join(text_blocks)[:500]}")
+                if iter_text:
+                    logger.info(f"Agent reasoning: {iter_text[:500]}")
                 break
 
             tool_results = []
@@ -366,6 +376,7 @@ class AnthropicDecisionEngine:
 
             messages.append({"role": "user", "content": tool_results})
 
+        self.last_reasoning = reasoning_trail
         return actions_taken
 
 
@@ -379,6 +390,7 @@ class OpenRouterDecisionEngine:
 
     def __init__(self, config: AgentConfig):
         self.config = config
+        self.last_reasoning: List[Dict] = []
         try:
             import openai
         except ImportError:
@@ -425,9 +437,10 @@ class OpenRouterDecisionEngine:
             {"role": "user", "content": context},
         ]
         actions_taken = []
+        reasoning_trail: List[Dict] = []
         max_iterations = 10
 
-        for _ in range(max_iterations):
+        for i in range(max_iterations):
             try:
                 response = self.client.chat.completions.create(
                     model=self.model,
@@ -443,9 +456,25 @@ class OpenRouterDecisionEngine:
             msg = response.choices[0].message
             messages.append(msg)
 
+            iter_text = (msg.content or "").strip()
+            iter_tools = []
+            if msg.tool_calls:
+                for tc in msg.tool_calls:
+                    try:
+                        ti = json.loads(tc.function.arguments)
+                    except json.JSONDecodeError:
+                        ti = {}
+                    iter_tools.append({"name": tc.function.name, "input": ti})
+            if iter_text or iter_tools:
+                reasoning_trail.append({
+                    "iter": i,
+                    "text": iter_text[:2000],
+                    "tool_calls": iter_tools,
+                })
+
             if not msg.tool_calls:
-                if msg.content:
-                    logger.info(f"Agent reasoning: {msg.content[:500]}")
+                if iter_text:
+                    logger.info(f"Agent reasoning: {iter_text[:500]}")
                 break
 
             for tc in msg.tool_calls:
@@ -469,6 +498,7 @@ class OpenRouterDecisionEngine:
                     "content": json.dumps(result) if isinstance(result, dict) else str(result),
                 })
 
+        self.last_reasoning = reasoning_trail
         return actions_taken
 
     @staticmethod

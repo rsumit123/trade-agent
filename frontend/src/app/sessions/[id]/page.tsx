@@ -17,6 +17,7 @@ import { LearningInsights } from "@/components/LearningInsights";
 import { DirectivePanel } from "@/components/DirectivePanel";
 import { DailyTracker } from "@/components/DailyTracker";
 import { EquityCharts } from "@/components/EquityCharts";
+import { ThinkingLog } from "@/components/ThinkingLog";
 import { BacktestPanel } from "@/components/BacktestPanel";
 import type {
   PortfolioSummary, ClosedTrade, RiskStatus, Performance,
@@ -233,6 +234,7 @@ export default function SessionDashboard() {
 
       {tab === "activity" && (
         <div className="space-y-4 md:space-y-5 animate-fade-in">
+          <ThinkingLog sessionId={sessionId} config={config} />
           <TradesTable trades={trades} config={config} />
           <DailyTracker sessionId={sessionId} config={config} />
         </div>

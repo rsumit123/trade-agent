@@ -538,11 +538,58 @@ class TradingAgent:
 
         logger.info(f"✅ Cycle complete — {len(actions)} actions taken")
         self._cleanup_cycle_directives()
+        self._write_thinking_log(actions, bt_date, bt_time)
         return {
             "status": "ok",
             "actions": actions,
             "portfolio": self.portfolio.get_portfolio_summary(prices),
         }
+
+    def _write_thinking_log(self, actions, bt_date=None, bt_time=None):
+        """Persist the cycle's reasoning trail for transparency UI."""
+        if not self.session:
+            return
+        trail = getattr(self.engine, "last_reasoning", None) or []
+        # Build placed trades summary
+        placed = []
+        for a in actions:
+            r = a.get("result") or {}
+            if r.get("success") and r.get("action") in ("BUY", "SHORT", "SELL", "COVER"):
+                placed.append({
+                    "action": r.get("action"),
+                    "ticker": r.get("ticker") or (a.get("input") or {}).get("ticker"),
+                    "qty": r.get("quantity") or r.get("shares"),
+                    "price": r.get("price"),
+                })
+
+        # Heuristic phase tag
+        if placed:
+            phase = "executed"
+        elif any(c.get("name") == "place_trade" for it in trail for c in (it.get("tool_calls") or [])):
+            phase = "rejected"  # tried but failed
+        else:
+            phase = "observed"
+
+        from datetime import datetime as _dt
+        if bt_date and bt_time:
+            ts = f"{bt_date}T{bt_time}:00"
+        else:
+            ts = _dt.now().isoformat(timespec="seconds")
+
+        record = {
+            "ts": ts,
+            "phase": phase,
+            "iterations": len(trail),
+            "trail": trail,
+            "placed": placed,
+        }
+        try:
+            log_path = self.session.session_dir / "thinking.jsonl"
+            with open(log_path, "a", encoding="utf-8") as f:
+                import json as _json
+                f.write(_json.dumps(record, default=str) + "\n")
+        except Exception as e:
+            logger.warning(f"Could not write thinking log: {e}")
 
     def run_daily_review(self):
         """Run end-of-day review and update learning journal."""

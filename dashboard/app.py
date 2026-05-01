@@ -1392,6 +1392,32 @@ def get_journal(session: str = None):
     return {"content": journal_path.read_text()}
 
 
+@app.get("/api/thinking/{session_id}")
+def get_thinking(session_id: str, limit: int = 50):
+    """Return reverse-chronological agent reasoning trail."""
+    from agent.session import SESSIONS_DIR
+    log_path = SESSIONS_DIR / session_id / "thinking.jsonl"
+    if not log_path.exists():
+        return {"entries": []}
+    try:
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return {"entries": []}
+    # Parse newest-first, cap at limit
+    entries = []
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entries.append(json.loads(line))
+        except Exception:
+            continue
+        if len(entries) >= limit:
+            break
+    return {"entries": entries}
+
+
 @app.get("/api/config")
 def get_config(session: str = None):
     """Get agent configuration (non-sensitive) + market info for frontend."""
