@@ -1,3 +1,26 @@
+export interface ThinkingToolCall {
+  name: string;
+  input: Record<string, unknown>;
+}
+export interface ThinkingIteration {
+  iter: number;
+  text: string;
+  tool_calls: ThinkingToolCall[];
+}
+export interface ThinkingPlaced {
+  action: string;
+  ticker?: string;
+  qty?: number;
+  price?: number;
+}
+export interface ThinkingEntry {
+  ts: string;
+  phase: "executed" | "rejected" | "observed" | string;
+  iterations: number;
+  trail: ThinkingIteration[];
+  placed: ThinkingPlaced[];
+}
+
 export interface SessionPortfolio {
   cash: number;
   total_value: number;
