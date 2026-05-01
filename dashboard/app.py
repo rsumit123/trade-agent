@@ -717,6 +717,83 @@ def stop_agent(session_id: str):
         raise HTTPException(403, f"Cannot stop process {pid} — permission denied")
 
 
+@app.post("/api/sessions/{session_id}/liquidate")
+def liquidate_session(session_id: str):
+    """Kill switch — stop the agent and force-close all open positions at market.
+
+    Useful when the user wants out NOW. Sends SIGTERM to the agent, waits briefly
+    for it to exit, then closes every open position via execute_sell / execute_cover
+    at the current market price.
+    """
+    import time as _time
+
+    # 1. Stop the agent first so it can't race new entries
+    status = _is_agent_running(session_id)
+    was_running = status["running"]
+    if was_running:
+        try:
+            os.kill(status["pid"], signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+        # Brief wait for graceful shutdown — best-effort
+        for _ in range(20):
+            if not _is_agent_running(session_id)["running"]:
+                break
+            _time.sleep(0.25)
+
+    # 2. Load components and fetch live prices
+    c = _get_components(session_id)
+    portfolio = c["portfolio"]
+    market_data = c["market_data"]
+
+    open_positions = portfolio.get_open_positions()
+    if not open_positions:
+        return {"status": "ok", "agent_stopped": was_running, "closed": 0, "trades": []}
+
+    tickers = list({t.ticker for t in open_positions})
+    try:
+        prices = market_data.get_current_prices(tickers)
+    except Exception as e:
+        logger.warning(f"liquidate: price fetch failed, using last known: {e}")
+        prices = {}
+
+    closed = []
+    errors = []
+    for trade in open_positions:
+        price = prices.get(trade.ticker) or trade.entry_price
+        try:
+            if trade.action == "BUY" or trade.direction == "long":
+                result = portfolio.execute_sell(
+                    trade.id, float(price),
+                    reason="manual liquidation (kill switch)",
+                    exit_type="manual",
+                )
+            else:
+                result = portfolio.execute_cover(
+                    trade.id, float(price),
+                    reason="manual liquidation (kill switch)",
+                    exit_type="manual",
+                )
+            closed.append({
+                "ticker": trade.ticker,
+                "direction": trade.direction,
+                "qty": trade.quantity,
+                "exit_price": float(price),
+                "pnl": result.pnl,
+            })
+        except Exception as e:
+            logger.error(f"liquidate: failed to close {trade.ticker}#{trade.id}: {e}")
+            errors.append({"ticker": trade.ticker, "error": str(e)})
+
+    return {
+        "status": "ok",
+        "agent_stopped": was_running,
+        "closed": len(closed),
+        "trades": closed,
+        "errors": errors,
+    }
+
+
 # ── Backtest Endpoints ────────────────────────────────────────
 
 _backtest_threads: Dict[str, Any] = {}  # session_id → thread
