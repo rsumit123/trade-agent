@@ -428,6 +428,7 @@ function CreateSessionInner() {
           <div>
             <label className="block text-[11px] text-text-muted mb-1.5">Model</label>
             <ModelSelect provider={form.llm_provider} value={form.llm_model} onChange={(v) => setForm({ ...form, llm_model: v })} />
+            <ModelInfo provider={form.llm_provider} model={form.llm_model} market={form.market} />
           </div>
         </div>
       </FormGroup>
@@ -663,6 +664,101 @@ function ModelSelect({ provider, value, onChange }: { provider: string; value: s
       <option value="gpt-4o-mini">GPT-4o Mini</option>
       <option value="o3-mini">o3-mini (reasoning)</option>
     </select>
+  );
+}
+
+// ── Model metadata + recommendation panel ──────────────────────────
+type ModelMeta = {
+  inPrice: number;   // $ per 1M input tokens
+  outPrice: number;  // $ per 1M output tokens
+  tags: ("cheapest" | "balanced" | "best-reasoning" | "fastest")[];
+};
+
+const MODEL_META: Record<string, ModelMeta> = {
+  // OpenRouter
+  "anthropic/claude-haiku-4-5":          { inPrice: 0.80, outPrice: 4.0,  tags: ["fastest", "balanced"] },
+  "google/gemini-2.5-flash":             { inPrice: 0.15, outPrice: 0.60, tags: ["cheapest", "fastest"] },
+  "openai/gpt-4o-mini":                  { inPrice: 0.15, outPrice: 0.60, tags: ["cheapest"] },
+  "meta-llama/llama-4-maverick":         { inPrice: 0.20, outPrice: 0.80, tags: ["balanced"] },
+  "meta-llama/llama-4-scout":            { inPrice: 0.10, outPrice: 0.40, tags: ["cheapest"] },
+  "deepseek/deepseek-chat-v3-0324":      { inPrice: 0.14, outPrice: 0.56, tags: ["cheapest"] },
+  "deepseek/deepseek-r1":                { inPrice: 0.55, outPrice: 2.20, tags: ["best-reasoning"] },
+  // Anthropic direct
+  "claude-haiku-4-5-20250929":           { inPrice: 1.00, outPrice: 5.0,  tags: ["fastest", "balanced"] },
+  "claude-sonnet-4-5-20250929":          { inPrice: 3.00, outPrice: 15.0, tags: ["best-reasoning"] },
+  "claude-opus-4-0-20250514":            { inPrice: 15.0, outPrice: 75.0, tags: ["best-reasoning"] },
+  // OpenAI direct
+  "gpt-4o":                              { inPrice: 2.50, outPrice: 10.0, tags: ["best-reasoning"] },
+  "gpt-4o-mini":                         { inPrice: 0.15, outPrice: 0.60, tags: ["cheapest"] },
+  "o3-mini":                             { inPrice: 1.10, outPrice: 4.40, tags: ["best-reasoning"] },
+};
+
+const TAG_LABEL: Record<string, { label: string; color: string }> = {
+  "cheapest":       { label: "Cheapest",       color: "#22c55e" },
+  "balanced":       { label: "Balanced",       color: "#60a5fa" },
+  "best-reasoning": { label: "Best reasoning", color: "#a78bfa" },
+  "fastest":        { label: "Fastest",        color: "#fbbf24" },
+};
+
+function ModelInfo({ provider: _provider, model, market }: { provider: string; model: string; market: string }) {
+  const meta = MODEL_META[model];
+  if (!meta) return null;
+
+  // Cycles/day estimate by market
+  const cyclesPerDay =
+    market === "crypto" ? 144 :       // 24h × 6/h
+    market === "nse-intraday" ? 39 :  // 6.5h × 6/h
+    market === "nse" ? 26 :           // 6.5h × 4/h
+    40;
+  // Approx tokens per cycle (system + context + reasoning)
+  const inTokensPerCycle = 7000;
+  const outTokensPerCycle = 1200;
+  const usdPerDay =
+    (cyclesPerDay * inTokensPerCycle * meta.inPrice +
+      cyclesPerDay * outTokensPerCycle * meta.outPrice) / 1_000_000;
+  const inrPerDay = usdPerDay * 84; // rough USD→INR
+
+  return (
+    <div
+      className="mt-2 px-3 py-2.5 rounded-lg text-xs"
+      style={{ background: "#0a0e17", border: "1px solid #1e293b" }}
+    >
+      <div className="flex flex-wrap items-center gap-1.5 mb-2">
+        {meta.tags.map((t) => (
+          <span
+            key={t}
+            className="text-[10px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded"
+            style={{
+              background: `${TAG_LABEL[t].color}22`,
+              color: TAG_LABEL[t].color,
+              border: `1px solid ${TAG_LABEL[t].color}44`,
+            }}
+          >
+            {TAG_LABEL[t].label}
+          </span>
+        ))}
+      </div>
+      <div className="grid grid-cols-3 gap-2 text-[11px]">
+        <div>
+          <div className="text-text-muted text-[9px] uppercase tracking-wider">In</div>
+          <div className="font-mono text-text-secondary">${meta.inPrice}/M</div>
+        </div>
+        <div>
+          <div className="text-text-muted text-[9px] uppercase tracking-wider">Out</div>
+          <div className="font-mono text-text-secondary">${meta.outPrice}/M</div>
+        </div>
+        <div>
+          <div className="text-text-muted text-[9px] uppercase tracking-wider">~Daily cost</div>
+          <div className="font-mono text-text-primary">
+            ₹{inrPerDay.toFixed(0)}
+            <span className="text-text-muted text-[9px] ml-1">${usdPerDay.toFixed(2)}</span>
+          </div>
+        </div>
+      </div>
+      <div className="text-[10px] text-text-muted mt-1.5">
+        Est. {cyclesPerDay} cycles/day × ~{inTokensPerCycle / 1000}k in / ~{outTokensPerCycle / 1000}k out
+      </div>
+    </div>
   );
 }
 
