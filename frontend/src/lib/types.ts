@@ -1,3 +1,44 @@
+export interface ComparisonChildSummary {
+  total_return_pct: number | null;
+  total_value_end: number | null;
+  total_pnl: number;
+  total_trades: number;
+  win_rate: number | null;
+  days: {
+    date: string;
+    daily_pnl: number;
+    total_value: number;
+    total_return_pct: number;
+    trades: number;
+  }[];
+}
+export interface ComparisonChildProgress {
+  current_day?: number | null;
+  total_days?: number | null;
+  current_phase?: string | null;
+  phase_progress?: number | null;
+  phase_total?: number | null;
+  phase_detail?: string | null;
+  current_date?: string | null;
+}
+export interface ComparisonChild {
+  model: string;
+  session_id: string;
+  status: string; // queued | running | completed | failed: ...
+  progress?: ComparisonChildProgress;
+  summary?: ComparisonChildSummary;
+}
+export interface ComparisonStatus {
+  status: string; // not_started | running | completed | failed: ...
+  base_session_id?: string;
+  start_date?: string;
+  end_date?: string;
+  current_idx?: number;
+  children?: ComparisonChild[];
+  started_at?: string;
+  finished_at?: string;
+}
+
 export interface ThinkingToolCall {
   name: string;
   input: Record<string, unknown>;
@@ -187,6 +228,8 @@ export interface SessionConfig {
   session_name?: string;
   backtest_mode?: boolean;
   backtest_status?: string;
+  backtest_start_date?: string;
+  backtest_end_date?: string;
 }
 
 export interface AgentStatus {

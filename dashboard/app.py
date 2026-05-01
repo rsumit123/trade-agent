@@ -158,6 +158,14 @@ class BacktestRequest(BaseModel):
     interval: str = "15minute"
 
 
+class BacktestCompareRequest(BaseModel):
+    models: List[str]        # llm_model identifiers to compare (sequential)
+    start_date: str
+    end_date: str
+    interval: str = "15minute"
+    llm_provider: Optional[str] = None  # if None, inherit base. e.g. "openrouter"
+
+
 class UpdateSessionRequest(BaseModel):
     display_name: Optional[str] = None
     starting_capital: Optional[float] = None
@@ -327,6 +335,8 @@ def get_sessions():
         from agent.session import list_sessions, SESSIONS_DIR
         import sqlite3
         sessions = list_sessions()
+        # Hide child sessions from comparison runs unless explicitly requested
+        sessions = [s for s in sessions if not s.get("parent_session")]
         for s in sessions:
             sid = s["session_id"]
             status = _is_agent_running(sid)
@@ -902,6 +912,238 @@ def get_backtest_results(session_id: str):
         raise HTTPException(500, f"Failed to read results: {e}")
 
 
+# ── Backtest comparison ──────────────────────────────────────
+
+_compare_threads: Dict[str, Any] = {}  # base_session_id → orchestrator thread
+
+
+def _model_slug(model: str) -> str:
+    """Turn an LLM model id into a filesystem-safe slug."""
+    s = model.lower()
+    for ch in ["/", ":", " ", "."]:
+        s = s.replace(ch, "_")
+    s = "".join(c for c in s if c.isalnum() or c in ("_", "-"))
+    return s.strip("_")[:40] or "model"
+
+
+@app.post("/api/backtest/compare/start/{base_session_id}")
+def start_compare_backtest(base_session_id: str, req: BacktestCompareRequest):
+    """Run the same backtest with multiple models, sequentially.
+
+    Each model gets a child session cloned from the base. Children are tagged
+    with parent_session = base. Status & results aggregated under
+    sessions/<base>/comparison.json.
+    """
+    from agent.session import load_session, save_session, SessionConfig, SESSIONS_DIR
+    from datetime import datetime as _dt
+    import threading
+    from datetime import date as _date
+    from copy import deepcopy
+
+    if base_session_id in _compare_threads and _compare_threads[base_session_id].is_alive():
+        return {"status": "already_running", "base_session_id": base_session_id}
+
+    if not req.models or len(req.models) < 2:
+        raise HTTPException(400, "Need at least 2 models to compare")
+    if len(req.models) > 5:
+        raise HTTPException(400, "Cap is 5 models per comparison")
+
+    try:
+        base_sc = load_session(base_session_id)
+    except FileNotFoundError:
+        raise HTTPException(404, f"Base session '{base_session_id}' not found")
+
+    base_sc.resolve_defaults()
+
+    # Create / reuse child sessions
+    children: List[Dict] = []
+    for model in req.models:
+        slug = _model_slug(model)
+        child_id = f"{base_session_id}_cmp_{slug}"
+        child_dir = SESSIONS_DIR / child_id
+
+        child_sc = deepcopy(base_sc)
+        child_sc.session_id = child_id
+        child_sc.display_name = f"{base_sc.display_name or base_sc.session_id} · {model}"
+        child_sc.llm_model = model
+        if req.llm_provider:
+            child_sc.llm_provider = req.llm_provider
+        child_sc.parent_session = base_session_id
+        child_sc.backtest_mode = True
+        child_sc.backtest_start_date = req.start_date
+        child_sc.backtest_end_date = req.end_date
+        child_sc.backtest_status = "queued"
+        child_sc.created_at = _dt.now().isoformat()
+        child_dir.mkdir(parents=True, exist_ok=True)
+        save_session(child_sc)
+
+        children.append({
+            "model": model,
+            "session_id": child_id,
+            "status": "queued",
+        })
+
+    # Persist comparison metadata
+    meta_path = base_sc.session_dir / "comparison.json"
+    meta = {
+        "base_session_id": base_session_id,
+        "start_date": req.start_date,
+        "end_date": req.end_date,
+        "interval": req.interval,
+        "started_at": _dt.now().isoformat(),
+        "current_idx": 0,
+        "status": "running",
+        "children": children,
+    }
+    meta_path.write_text(json.dumps(meta, indent=2))
+
+    def _orchestrate():
+        from agent.kite_auth import KiteAuth
+        from agent.backtest_engine import BacktestEngine
+        try:
+            auth = KiteAuth()
+            kite = auth.get_authenticated_client()
+        except Exception as e:
+            logger.error(f"compare orchestrator: kite auth failed: {e}")
+            meta["status"] = f"failed: kite auth: {e}"
+            meta_path.write_text(json.dumps(meta, indent=2))
+            return
+
+        for idx, child_meta in enumerate(meta["children"]):
+            meta["current_idx"] = idx
+            child_meta["status"] = "running"
+            meta_path.write_text(json.dumps(meta, indent=2))
+
+            try:
+                child_sc = load_session(child_meta["session_id"])
+                child_sc.backtest_status = "running"
+                save_session(child_sc)
+
+                engine = BacktestEngine(child_sc, kite)
+                engine.run(
+                    start_date=_date.fromisoformat(req.start_date),
+                    end_date=_date.fromisoformat(req.end_date),
+                    interval=req.interval,
+                )
+                child_sc.backtest_status = "completed"
+                save_session(child_sc)
+                child_meta["status"] = "completed"
+            except Exception as e:
+                logger.error(f"compare child {child_meta['session_id']} failed: {e}")
+                child_meta["status"] = f"failed: {str(e)[:100]}"
+                try:
+                    child_sc = load_session(child_meta["session_id"])
+                    child_sc.backtest_status = child_meta["status"]
+                    save_session(child_sc)
+                except Exception:
+                    pass
+
+            meta_path.write_text(json.dumps(meta, indent=2))
+
+        # All done
+        any_completed = any(c["status"] == "completed" for c in meta["children"])
+        meta["status"] = "completed" if any_completed else "failed"
+        meta["finished_at"] = _dt.now().isoformat()
+        meta_path.write_text(json.dumps(meta, indent=2))
+
+    thread = threading.Thread(target=_orchestrate, daemon=True)
+    thread.start()
+    _compare_threads[base_session_id] = thread
+
+    return {"status": "started", "base_session_id": base_session_id, "children": [c["session_id"] for c in children]}
+
+
+@app.get("/api/backtest/compare/status/{base_session_id}")
+def get_compare_status(base_session_id: str):
+    """Return aggregated comparison status: per-child progress + final summary."""
+    from agent.session import SESSIONS_DIR
+
+    meta_path = SESSIONS_DIR / base_session_id / "comparison.json"
+    if not meta_path.exists():
+        return {"status": "not_started"}
+
+    try:
+        meta = json.loads(meta_path.read_text())
+    except Exception:
+        return {"status": "unknown"}
+
+    # Enrich each child with its current backtest_progress.json + summary
+    for child in meta.get("children", []):
+        progress_path = SESSIONS_DIR / child["session_id"] / "backtest_progress.json"
+        if progress_path.exists():
+            try:
+                p = json.loads(progress_path.read_text())
+                child["progress"] = {
+                    "current_day": p.get("current_day"),
+                    "total_days": p.get("total_days"),
+                    "current_phase": p.get("current_phase"),
+                    "phase_progress": p.get("phase_progress"),
+                    "phase_total": p.get("phase_total"),
+                    "phase_detail": p.get("phase_detail"),
+                    "current_date": p.get("current_date"),
+                }
+                # Final summary if completed
+                if p.get("status") == "completed":
+                    days = p.get("days", []) or []
+                    total_pnl = sum((d.get("daily_pnl") or 0) for d in days)
+                    total_trades = sum((d.get("trades") or 0) for d in days)
+                    last = days[-1] if days else {}
+                    child["summary"] = {
+                        "total_return_pct": last.get("total_return_pct"),
+                        "total_value_end": last.get("total_value"),
+                        "total_pnl": round(total_pnl, 2),
+                        "total_trades": total_trades,
+                        "win_rate": last.get("win_rate"),
+                        "days": [
+                            {
+                                "date": d.get("date"),
+                                "daily_pnl": d.get("daily_pnl"),
+                                "total_value": d.get("total_value"),
+                                "total_return_pct": d.get("total_return_pct"),
+                                "trades": d.get("trades"),
+                            }
+                            for d in days
+                        ],
+                    }
+            except Exception:
+                pass
+
+    return meta
+
+
+@app.post("/api/backtest/compare/cleanup/{base_session_id}")
+def cleanup_comparison(base_session_id: str):
+    """Delete child sessions and the comparison metadata file."""
+    import shutil
+    from agent.session import SESSIONS_DIR
+
+    meta_path = SESSIONS_DIR / base_session_id / "comparison.json"
+    if not meta_path.exists():
+        return {"status": "not_found"}
+
+    try:
+        meta = json.loads(meta_path.read_text())
+    except Exception:
+        meta = {"children": []}
+
+    deleted = []
+    for child in meta.get("children", []):
+        cdir = SESSIONS_DIR / child["session_id"]
+        if cdir.exists():
+            try:
+                shutil.rmtree(cdir)
+                deleted.append(child["session_id"])
+            except Exception as e:
+                logger.warning(f"cleanup: failed {child['session_id']}: {e}")
+
+    try:
+        meta_path.unlink()
+    except Exception:
+        pass
+
+    return {"status": "ok", "deleted": deleted}
+
+
 @app.post("/api/backtest/go-live/{session_id}")
 def backtest_go_live(session_id: str):
     """Convert a completed backtest session to live trading mode and start the agent."""
@@ -1093,6 +1335,8 @@ def get_dashboard(session_id: str):
         "personality": getattr(sc, "personality", ""),
         "backtest_mode": getattr(sc, "backtest_mode", False),
         "backtest_status": getattr(sc, "backtest_status", ""),
+        "backtest_start_date": getattr(sc, "backtest_start_date", "") or "",
+        "backtest_end_date": getattr(sc, "backtest_end_date", "") or "",
     }
 
     return {
