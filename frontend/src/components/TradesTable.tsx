@@ -1,10 +1,13 @@
 "use client";
+import { useState } from "react";
 import { fmt, cn } from "@/lib/api";
 import type { ClosedTrade, SessionConfig } from "@/lib/types";
+import { TradeDetailModal } from "./TradeDetailModal";
 
 export function TradesTable({ trades, config }: { trades: ClosedTrade[]; config: SessionConfig | null }) {
   const sym = config?.currency_symbol || "$";
   const suffix = config?.ticker_suffix || ".NS";
+  const [selected, setSelected] = useState<ClosedTrade | null>(null);
 
   return (
     <div className="bg-bg-card border border-border rounded-xl overflow-hidden">
@@ -22,7 +25,12 @@ export function TradesTable({ trades, config }: { trades: ClosedTrade[]; config:
               const pnl = t.pnl || 0;
               const ticker = t.ticker.replace(suffix, "");
               return (
-                <div key={t.id} className="px-4 py-3 hover:bg-bg-card-hover transition-colors">
+                <button
+                  key={t.id}
+                  onClick={() => setSelected(t)}
+                  className="w-full text-left px-4 py-3 hover:bg-bg-card-hover active:bg-bg-card-hover transition-colors"
+                  style={{ minHeight: 64 }}
+                >
                   <div className="flex items-center gap-2 mb-1.5">
                     <span className="font-mono font-semibold text-text-primary text-sm">{ticker}</span>
                     <span className={cn(
@@ -34,6 +42,7 @@ export function TradesTable({ trades, config }: { trades: ClosedTrade[]; config:
                     <span className="text-[10px] uppercase font-medium px-1.5 py-0.5 rounded bg-bg-secondary text-text-muted">
                       {t.trade_type}
                     </span>
+                    <span className="ml-auto text-text-muted text-xs">›</span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-mono text-text-muted">
@@ -45,7 +54,7 @@ export function TradesTable({ trades, config }: { trades: ClosedTrade[]; config:
                       {fmt(pnl, sym, undefined, 0)}
                     </span>
                   </div>
-                </div>
+                </button>
               );
             })}
           </div>
@@ -65,7 +74,11 @@ export function TradesTable({ trades, config }: { trades: ClosedTrade[]; config:
               </thead>
               <tbody>
                 {trades.map((t) => (
-                  <tr key={t.id} className="border-b border-border/50 hover:bg-bg-card-hover transition-colors">
+                  <tr
+                    key={t.id}
+                    onClick={() => setSelected(t)}
+                    className="border-b border-border/50 hover:bg-bg-card-hover transition-colors cursor-pointer"
+                  >
                     <td className="px-4 py-2 font-semibold font-mono text-text-primary">{t.ticker.replace(suffix, "")}</td>
                     <td className="px-2 py-2">
                       <span className={cn(
@@ -92,6 +105,8 @@ export function TradesTable({ trades, config }: { trades: ClosedTrade[]; config:
           </div>
         </>
       )}
+
+      <TradeDetailModal trade={selected} config={config} onClose={() => setSelected(null)} />
     </div>
   );
 }
