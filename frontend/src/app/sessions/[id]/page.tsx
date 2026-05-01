@@ -209,7 +209,12 @@ export default function SessionDashboard() {
           {/* Holdings + Risk */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-5">
             <div className="lg:col-span-2">
-              <HoldingsTable holdings={portfolio?.holdings || []} config={config} />
+              <HoldingsTable
+                holdings={portfolio?.holdings || []}
+                config={config}
+                sessionId={sessionId}
+                onLiquidated={() => loadAll(false)}
+              />
             </div>
             <div>
               <RiskPanel risk={risk} />
