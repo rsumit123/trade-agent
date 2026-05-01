@@ -67,6 +67,9 @@ class SessionConfig:
     backtest_end_date: Optional[str] = None      # "YYYY-MM-DD"
     backtest_status: str = ""                    # "running", "completed", "failed", ""
 
+    # ── Comparison ────────────────────────────────────────
+    parent_session: str = ""                     # if non-empty, this is a child of parent_session
+
     # ── Metadata ────────────────────────────────────────────
     created_at: str = ""
 
@@ -136,6 +139,7 @@ _YAML_FIELDS = {
     "intraday_interval_min", "personality", "created_at",
     "data_source",
     "backtest_mode", "backtest_start_date", "backtest_end_date", "backtest_status",
+    "parent_session",
 }
 
 
@@ -184,6 +188,7 @@ def list_sessions() -> List[Dict]:
                 "llm_model": data.get("llm_model", ""),
                 "backtest_mode": data.get("backtest_mode", False),
                 "backtest_status": data.get("backtest_status", ""),
+                "parent_session": data.get("parent_session", ""),
             })
         except Exception:
             # Skip broken sessions
