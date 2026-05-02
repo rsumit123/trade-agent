@@ -1,11 +1,13 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { api, cn } from "@/lib/api";
+import { api, cn, fmt } from "@/lib/api";
 import { SessionCard } from "@/components/SessionCard";
+import { Sparkline } from "@/components/Sparkline";
 import type { Session } from "@/lib/types";
 
 type Filter = "all" | "live" | "stopped";
+type SortBy = "recent" | "return" | "today" | "winrate" | "trades";
 
 function SkeletonCard() {
   return (
@@ -114,6 +116,7 @@ export default function HomePage() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<Filter>("all");
+  const [sortBy, setSortBy] = useState<SortBy>("recent");
 
   const loadSessions = () => {
     api<Session[]>("/api/sessions")
@@ -136,10 +139,53 @@ export default function HomePage() {
   }, []);
 
   const filtered = useMemo(() => {
-    if (filter === "live") return sessions.filter((s) => s.is_running);
-    if (filter === "stopped") return sessions.filter((s) => !s.is_running);
-    return sessions;
-  }, [sessions, filter]);
+    let arr = sessions;
+    if (filter === "live") arr = arr.filter((s) => s.is_running);
+    else if (filter === "stopped") arr = arr.filter((s) => !s.is_running);
+
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const todayPnl = (s: Session) => {
+      const last = (s.daily ?? [])[0];
+      return last?.date === todayIso ? (last.daily_pnl ?? 0) : 0;
+    };
+
+    const sorted = [...arr];
+    if (sortBy === "return") {
+      sorted.sort((a, b) => (b.portfolio?.total_return_pct ?? -Infinity) - (a.portfolio?.total_return_pct ?? -Infinity));
+    } else if (sortBy === "today") {
+      sorted.sort((a, b) => todayPnl(b) - todayPnl(a));
+    } else if (sortBy === "winrate") {
+      sorted.sort((a, b) => (b.win_rate ?? -1) - (a.win_rate ?? -1));
+    } else if (sortBy === "trades") {
+      sorted.sort((a, b) => (b.total_trades ?? 0) - (a.total_trades ?? 0));
+    }
+    return sorted;
+  }, [sessions, filter, sortBy]);
+
+  const rollup = useMemo(() => {
+    const todayIso = new Date().toISOString().slice(0, 10);
+    let totalReturn = 0;
+    let totalValue = 0;
+    let totalCapital = 0;
+    let openPositions = 0;
+    let trades = 0;
+    let todayPnl = 0;
+    let havePortfolio = 0;
+    for (const s of sessions) {
+      if (s.portfolio) {
+        totalReturn += s.portfolio.total_return || 0;
+        totalValue += s.portfolio.total_value || 0;
+        totalCapital += s.starting_capital || 0;
+        openPositions += s.portfolio.open_positions || 0;
+        havePortfolio++;
+      }
+      trades += s.total_trades ?? 0;
+      const last = (s.daily ?? [])[0];
+      if (last?.date === todayIso) todayPnl += last.daily_pnl ?? 0;
+    }
+    const returnPct = totalCapital > 0 ? (totalReturn / totalCapital) * 100 : 0;
+    return { totalReturn, totalValue, totalCapital, returnPct, openPositions, trades, todayPnl, havePortfolio };
+  }, [sessions]);
 
   const liveCount = sessions.filter((s) => s.is_running).length;
   const stoppedCount = sessions.length - liveCount;
@@ -165,14 +211,42 @@ export default function HomePage() {
         </Link>
       </div>
 
-      {/* Filter pills */}
+      {/* Aggregate rollup */}
+      {!loading && sessions.length > 0 && rollup.havePortfolio > 0 && (
+        <PortfolioRollup
+          totalReturn={rollup.totalReturn}
+          totalValue={rollup.totalValue}
+          returnPct={rollup.returnPct}
+          openPositions={rollup.openPositions}
+          trades={rollup.trades}
+          todayPnl={rollup.todayPnl}
+          sessions={sessions}
+        />
+      )}
+
+      {/* Filter pills + sort */}
       {!loading && sessions.length > 0 && (
-        <div
-          className="flex items-center gap-1 mb-5 p-1 rounded-xl border border-border bg-bg-card w-fit animate-fade-in delay-1"
-        >
-          <FilterPill label="All" count={sessions.length} active={filter === "all"} onClick={() => setFilter("all")} />
-          <FilterPill label="Live" count={liveCount} active={filter === "live"} onClick={() => setFilter("live")} accent="green" />
-          <FilterPill label="Stopped" count={stoppedCount} active={filter === "stopped"} onClick={() => setFilter("stopped")} />
+        <div className="flex items-center gap-2 mb-5 flex-wrap animate-fade-in delay-1">
+          <div className="flex items-center gap-1 p-1 rounded-xl border border-border bg-bg-card w-fit">
+            <FilterPill label="All" count={sessions.length} active={filter === "all"} onClick={() => setFilter("all")} />
+            <FilterPill label="Live" count={liveCount} active={filter === "live"} onClick={() => setFilter("live")} accent="green" />
+            <FilterPill label="Stopped" count={stoppedCount} active={filter === "stopped"} onClick={() => setFilter("stopped")} />
+          </div>
+          <div className="flex items-center gap-2 ml-auto">
+            <label className="text-[10px] uppercase tracking-wider font-semibold text-text-muted">Sort</label>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as SortBy)}
+              className="text-xs rounded-lg px-2.5 py-1 font-medium"
+              style={{ background: "#0a0e17", border: "1px solid #1e293b", color: "#cbd5e1", minHeight: 32 }}
+            >
+              <option value="recent">Recent</option>
+              <option value="return">Top Return %</option>
+              <option value="today">Today&apos;s P&L</option>
+              <option value="winrate">Win Rate</option>
+              <option value="trades">Most Trades</option>
+            </select>
+          </div>
         </div>
       )}
 
@@ -199,6 +273,121 @@ export default function HomePage() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function PortfolioRollup({
+  totalReturn,
+  totalValue,
+  returnPct,
+  openPositions,
+  trades,
+  todayPnl,
+  sessions,
+}: {
+  totalReturn: number;
+  totalValue: number;
+  returnPct: number;
+  openPositions: number;
+  trades: number;
+  todayPnl: number;
+  sessions: Session[];
+}) {
+  const isProfit = totalReturn >= 0;
+  // Pick a single currency symbol — use the most common across sessions (NSE-heavy users see ₹)
+  const symCounts: Record<string, number> = {};
+  sessions.forEach((s) => {
+    const sym = s.currency_symbol || "$";
+    symCounts[sym] = (symCounts[sym] || 0) + 1;
+  });
+  const sym = Object.entries(symCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || "$";
+
+  // Build a combined daily series (sum of total_value across sessions, by date)
+  const byDate: Record<string, number> = {};
+  sessions.forEach((s) => {
+    (s.daily ?? []).forEach((d) => {
+      if (d.total_value != null) {
+        byDate[d.date] = (byDate[d.date] || 0) + d.total_value;
+      }
+    });
+  });
+  const series = Object.keys(byDate)
+    .sort()
+    .map((d) => byDate[d]);
+
+  return (
+    <div
+      className="relative rounded-2xl p-4 md:p-5 mb-5 overflow-hidden animate-fade-in"
+      style={{
+        background: "#151d2e",
+        border: `1px solid ${isProfit ? "rgba(34,197,94,0.25)" : "rgba(239,68,68,0.25)"}`,
+      }}
+    >
+      <div
+        className="absolute inset-x-0 top-0 h-24 pointer-events-none opacity-60"
+        style={{
+          background: isProfit
+            ? "linear-gradient(180deg, rgba(34,197,94,0.08) 0%, transparent 100%)"
+            : "linear-gradient(180deg, rgba(239,68,68,0.08) 0%, transparent 100%)",
+        }}
+      />
+      <div className="relative">
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-[10px] uppercase tracking-wider font-semibold text-text-muted">
+            All Sessions Combined
+          </div>
+          {todayPnl !== 0 && (
+            <span
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-mono font-semibold"
+              style={{
+                background: todayPnl >= 0 ? "rgba(34,197,94,0.12)" : "rgba(239,68,68,0.12)",
+                color: todayPnl >= 0 ? "#22c55e" : "#ef4444",
+                border: `1px solid ${todayPnl >= 0 ? "rgba(34,197,94,0.25)" : "rgba(239,68,68,0.25)"}`,
+              }}
+            >
+              <span className="opacity-70">TODAY</span>
+              {todayPnl >= 0 ? "+" : ""}{fmt(todayPnl, sym, undefined, 0)}
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-end justify-between gap-3 mb-3">
+          <div className="min-w-0 flex-1">
+            <div
+              className={cn(
+                "font-mono font-bold tracking-tight leading-none flex items-baseline gap-1.5",
+                isProfit ? "text-accent-green" : "text-accent-red"
+              )}
+              style={{ fontSize: 32 }}
+            >
+              <span style={{ fontSize: 18, lineHeight: 1 }}>{isProfit ? "▲" : "▼"}</span>
+              {isProfit ? "+" : ""}{fmt(totalReturn, sym, undefined, 0)}
+            </div>
+            <div className="flex items-center gap-2 mt-1.5 text-xs font-mono">
+              <span className={isProfit ? "text-accent-green/80" : "text-accent-red/80"}>
+                {returnPct >= 0 ? "+" : ""}{returnPct.toFixed(2)}%
+              </span>
+              <span className="text-text-muted">·</span>
+              <span className="text-text-muted">Equity {fmt(totalValue, sym, undefined, 0)}</span>
+            </div>
+          </div>
+        </div>
+
+        {series.length >= 2 && (
+          <div className="mb-3 -mx-1">
+            <Sparkline values={series} width={400} height={48} positive={isProfit} fill responsive />
+          </div>
+        )}
+
+        <div className="flex items-center gap-3 text-[11px] text-text-muted pt-3 border-t border-border/50">
+          <span className="font-mono">{sessions.length} sessions</span>
+          <span className="opacity-40">·</span>
+          <span className="font-mono">{openPositions} open</span>
+          <span className="opacity-40">·</span>
+          <span className="font-mono">{trades} trades</span>
+        </div>
+      </div>
     </div>
   );
 }

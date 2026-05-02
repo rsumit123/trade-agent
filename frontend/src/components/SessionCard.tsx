@@ -42,11 +42,15 @@ export function SessionCard({ session, onDelete }: { session: Session; onDelete?
 
   const isProfit = (portfolio?.total_return ?? 0) >= 0;
   const hasPortfolio = portfolio != null;
-  const sparkValues = daily
-    .slice()
-    .reverse()
+  // Daily series comes oldest→newest from /api/sessions; sparkline expects same
+  const dailyAsc = [...daily].reverse();
+  const sparkValues = dailyAsc
     .map((d) => d.total_value)
     .filter((v): v is number => v != null);
+  // Today's P&L (last entry's daily_pnl — only if it's actually today)
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const lastDay = dailyAsc[dailyAsc.length - 1];
+  const todayPnl = lastDay?.date === todayIso ? lastDay.daily_pnl : null;
 
   const marketColors: Record<string, string> = {
     nse: "bg-accent-green/15 text-accent-green border-accent-green/30",
@@ -225,8 +229,8 @@ export function SessionCard({ session, onDelete }: { session: Session; onDelete?
           </div>
         </div>
 
-        {/* Hero: P&L + sparkline */}
-        <div className="relative flex items-end justify-between gap-3 mb-3">
+        {/* Hero: P&L + today's pill */}
+        <div className="relative flex items-end justify-between gap-3 mb-2">
           <div className="min-w-0 flex-1">
             <div className="text-[10px] uppercase tracking-wider text-text-muted mb-0.5">Total Return</div>
             <div className={cn(
@@ -243,10 +247,27 @@ export function SessionCard({ session, onDelete }: { session: Session; onDelete?
               <span className="text-text-muted"> · {portfolio ? fmt(portfolio.total_value, session.currency_symbol) : "--"}</span>
             </div>
           </div>
-          <div className="shrink-0">
-            <Sparkline values={sparkValues} width={90} height={34} positive={isProfit} />
-          </div>
+          {todayPnl != null && (
+            <span
+              className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-mono font-semibold"
+              style={{
+                background: todayPnl >= 0 ? "rgba(34,197,94,0.12)" : "rgba(239,68,68,0.12)",
+                color: todayPnl >= 0 ? "#22c55e" : "#ef4444",
+                border: `1px solid ${todayPnl >= 0 ? "rgba(34,197,94,0.25)" : "rgba(239,68,68,0.25)"}`,
+              }}
+            >
+              <span className="opacity-70">TODAY</span>
+              {todayPnl >= 0 ? "+" : ""}{fmt(todayPnl, session.currency_symbol, undefined, 0)}
+            </span>
+          )}
         </div>
+
+        {/* Full-width equity sparkline */}
+        {sparkValues.length >= 2 && (
+          <div className="relative mb-3 -mx-1">
+            <Sparkline values={sparkValues} width={300} height={42} positive={isProfit} fill={true} responsive />
+          </div>
+        )}
 
         {/* Meta row */}
         <div className="relative flex items-center gap-3 text-[11px] text-text-muted mb-3 pt-3 border-t border-border/50">

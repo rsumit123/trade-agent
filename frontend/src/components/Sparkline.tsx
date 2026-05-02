@@ -8,6 +8,7 @@ interface SparklineProps {
   strokeWidth?: number;
   fill?: boolean;
   className?: string;
+  responsive?: boolean;
 }
 
 export function Sparkline({
@@ -18,6 +19,7 @@ export function Sparkline({
   strokeWidth = 1.5,
   fill = true,
   className,
+  responsive = false,
 }: SparklineProps) {
   if (!values || values.length < 2) {
     return (
@@ -50,7 +52,14 @@ export function Sparkline({
   const gradId = `spark-grad-${isPositive ? "up" : "dn"}`;
 
   return (
-    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className={className} preserveAspectRatio="none">
+    <svg
+      width={responsive ? "100%" : width}
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
+      className={className}
+      preserveAspectRatio="none"
+      style={responsive ? { display: "block", maxWidth: "100%" } : undefined}
+    >
       <defs>
         <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor={stroke} stopOpacity="0.35" />
