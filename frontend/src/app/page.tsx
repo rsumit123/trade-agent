@@ -87,7 +87,7 @@ export default function MarketingPage() {
             }}
           >
             <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: "#22c55e" }} />
-            Paper trading · Bring your own LLM key
+            Free 24-hour trial · No credit card · No setup
           </div>
 
           <h1
@@ -98,19 +98,22 @@ export default function MarketingPage() {
               letterSpacing: "-0.02em",
             }}
           >
-            <span className="text-text-primary">AI agents that </span>
+            <span className="text-text-primary">Trade with the </span>
             <span style={{
               background: "linear-gradient(120deg, #22c55e 0%, #60a5fa 100%)",
               WebkitBackgroundClip: "text",
               backgroundClip: "text",
               WebkitTextFillColor: "transparent",
-            }}>learn to trade</span>
+            }}>power of AI</span>
             <span className="text-text-primary">.</span>
+            <br className="hidden md:block" />
+            <span className="text-text-primary">Free for a full day.</span>
           </h1>
 
           <p className="text-text-secondary text-lg max-w-2xl mx-auto mb-8 leading-relaxed">
-            Spin up paper-trading agents on Indian equities or crypto. Compare LLMs head-to-head.
-            Replay every decision. Then graduate to real money — only when your numbers say so.
+            Spin up an AI paper-trading agent on Indian equities or crypto. Watch
+            it think, trade, and learn from every move. <strong className="text-text-primary">24 hours of
+            AI trading runtime, on us</strong> — clock only ticks while your agent is live.
           </p>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3 mb-10">
@@ -149,6 +152,52 @@ export default function MarketingPage() {
         </div>
       </section>
 
+      {/* How the free tier works */}
+      <section className="relative px-4 md:px-6 py-12 md:py-16">
+        <div className="max-w-5xl mx-auto">
+          <div className="text-center mb-8">
+            <div className="text-[11px] uppercase tracking-[0.18em] font-semibold text-text-muted mb-2">
+              The free plan
+            </div>
+            <h2 className="text-2xl md:text-3xl font-bold tracking-tight">
+              24 hours of AI trading. No catch.
+            </h2>
+            <p className="text-text-secondary text-sm md:text-base mt-3 max-w-xl mx-auto">
+              The clock only ticks while your agent is actually running. Pause = clock pauses. Sign up today, start tomorrow — your full 24h is waiting.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-5">
+            <PerkCard
+              icon="✓"
+              accent="#22c55e"
+              title="Free 24-hour AI runtime"
+              body="One trading session. Powered by AlphaAgent's AI — zero setup. Crypto users burn it in a day; NSE users stretch it across ~4 trading days."
+            />
+            <PerkCard
+              icon="✓"
+              accent="#22c55e"
+              title="Pause-and-resume clock"
+              body="Stop your agent overnight, weekends, whenever. Your 24 hours don't expire on a calendar — only while the agent is live."
+            />
+            <PerkCard
+              icon="🔒"
+              accent="#f59e0b"
+              title="More sessions & runtime"
+              body="Multiple agents, longer runs, side-by-side model comparisons. Paid plans coming soon — join the waitlist after you sign in."
+              locked
+            />
+            <PerkCard
+              icon="🔒"
+              accent="#f59e0b"
+              title="Bring-your-own AI keys"
+              body="Want to wire in your own OpenRouter or Anthropic key? That'll unlock with the upgrade."
+              locked
+            />
+          </div>
+        </div>
+      </section>
+
       {/* Feature blocks */}
       <section id="features" className="relative px-4 md:px-6 py-16 md:py-24">
         <div className="max-w-5xl mx-auto">
@@ -163,14 +212,14 @@ export default function MarketingPage() {
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-5">
             <Feature
-              icon="⚖️"
-              title="Compare any LLM"
-              body="Run the same backtest against Gemini, Claude, GPT-4o-mini, DeepSeek, Llama. See who actually makes money on your strategy — not what Twitter says."
+              icon="🤖"
+              title="AI agents that trade"
+              body="Powered by frontier AI — no API keys to set up, no models to wire. Sign in and your agent is ready to go on Indian equities or 24/7 crypto."
               accent="#60a5fa"
             />
             <Feature
               icon="💭"
-              title="See the agent's reasoning"
+              title="See the AI's reasoning"
               body="Every decision is logged. Why did it skip TATAMOTORS at 10:45? Why did it short ICICIBANK? Step through the day cycle by cycle."
               accent="#22c55e"
             />
@@ -187,15 +236,15 @@ export default function MarketingPage() {
               accent="#fbbf24"
             />
             <Feature
-              icon="🔐"
-              title="Bring your own key"
-              body="OpenRouter API key stays encrypted at rest. We never see your keys, never see your trades. You own the runtime."
+              icon="⏱"
+              title="24 hours, your way"
+              body="Pause and resume — the clock only ticks while your agent is live. Burn 24h on a single crypto run, or stretch it across multiple NSE trading days."
               accent="#f472b6"
             />
             <Feature
               icon="🛑"
               title="Kill switch built in"
-              body="One tap liquidates every position at market and stops the agent. Confidence to let an LLM drive when you can pull the plug instantly."
+              body="One tap liquidates every position at market and stops the agent. Confidence to let an AI drive when you can pull the plug instantly."
               accent="#ef4444"
             />
           </div>
@@ -216,7 +265,7 @@ export default function MarketingPage() {
             Test ideas before risking ₹1.
           </h3>
           <p className="text-text-secondary mb-6 max-w-xl mx-auto">
-            Sign in with Google. Bring an OpenRouter key. Watch your first agent trade.
+            Sign in with Google. Get 24 hours of AI trading runtime — no card, no keys. Watch your first agent trade in minutes.
           </p>
           <Link
             href="/login"
@@ -261,6 +310,59 @@ function Logo({ small }: { small?: boolean }) {
       <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#0a0e17" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
         <polyline points="22 7 13.5 15.5 8.5 10.5 2 17" />
       </svg>
+    </div>
+  );
+}
+
+function PerkCard({
+  icon, title, body, accent, locked,
+}: { icon: string; title: string; body: string; accent: string; locked?: boolean }) {
+  return (
+    <div
+      className="rounded-2xl p-5 md:p-6"
+      style={{
+        background: locked
+          ? "linear-gradient(180deg, rgba(245,158,11,0.04) 0%, rgba(12,20,36,1) 100%)"
+          : "linear-gradient(180deg, #151d2e 0%, #0c1424 100%)",
+        border: `1px solid ${accent}33`,
+        opacity: locked ? 0.85 : 1,
+      }}
+    >
+      <div className="flex items-start gap-3">
+        <div
+          className="flex items-center justify-center rounded-lg shrink-0"
+          style={{
+            width: 32, height: 32,
+            background: `${accent}1a`,
+            border: `1px solid ${accent}33`,
+            color: accent,
+            fontSize: 16,
+            fontWeight: 700,
+          }}
+        >
+          {icon}
+        </div>
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <h3 className="text-base font-semibold" style={{ color: locked ? "#fcd34d" : "#e2e8f0" }}>
+              {title}
+            </h3>
+            {locked && (
+              <span
+                className="text-[10px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded"
+                style={{
+                  background: "rgba(245,158,11,0.15)",
+                  color: "#fcd34d",
+                  border: "1px solid rgba(245,158,11,0.3)",
+                }}
+              >
+                Coming soon
+              </span>
+            )}
+          </div>
+          <p className="text-sm text-text-secondary leading-relaxed">{body}</p>
+        </div>
+      </div>
     </div>
   );
 }

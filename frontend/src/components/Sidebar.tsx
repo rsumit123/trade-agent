@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { api } from "@/lib/api";
 import { useUser, signOut } from "@/lib/auth";
+import { RuntimeChip } from "@/components/Runtime";
 import type { Session } from "@/lib/types";
 
 interface SidebarProps {
@@ -104,8 +105,13 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
         )}
       </nav>
 
-      {/* Footer — user identity + sign out */}
-      <div style={{ padding: "12px 12px", borderTop: "1px solid #1e293b" }}>
+      {/* Footer — runtime chip + user identity + sign out */}
+      <div style={{ padding: "10px 12px 12px", borderTop: "1px solid #1e293b" }}>
+        {!user?.is_admin && (
+          <div className="mb-2 flex justify-center">
+            <RuntimeChip />
+          </div>
+        )}
         {user ? (
           <div className="flex items-center gap-2 rounded-lg p-2" style={{ background: "#0a0e17" }}>
             {user.picture ? (
@@ -191,6 +197,7 @@ export function MobileTopBar() {
       <div className="flex-1 min-w-0">
         <div className="font-semibold truncate" style={{ color: "#e2e8f0", fontSize: 16 }}>{pageTitle}</div>
       </div>
+      <RuntimeChip compact />
     </div>
   );
 }

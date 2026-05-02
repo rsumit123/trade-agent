@@ -93,8 +93,15 @@ function CreateSessionInner() {
         personality: personality || f.personality,
       }));
     });
-    api<Session[]>("/api/sessions").then(setSessions).catch(() => {});
-  }, [searchParams]);
+    api<Session[]>("/api/sessions").then((list) => {
+      setSessions(list);
+      // Free tier: 1-session cap. If they already have one, send them to it.
+      if (list.length >= 1) {
+        toast.error("Free tier supports 1 session — taking you to your existing one.");
+        router.replace(`/app/sessions/${list[0].session_id}`);
+      }
+    }).catch(() => {});
+  }, [searchParams, router, toast]);
 
   // Auto-sync session_id from display_name (until user edits it manually)
   useEffect(() => {
@@ -503,12 +510,9 @@ function CreateSessionInner() {
         </Collapsible>
       </div>
 
-      {/* Always-visible API key card — required for end users */}
+      {/* Free-tier banner — replaces BYOK */}
       <div className="mb-4 animate-fade-in delay-3">
-        <ApiKeyCard
-          value={form.api_key_env}
-          onChange={(v) => setForm({ ...form, api_key_env: v })}
-        />
+        <FreeTierBanner />
       </div>
 
       {/* Sticky bottom action bar — sits ABOVE the global BottomNav (56px) */}
@@ -757,62 +761,70 @@ function ModelInfo({ provider: _provider, model, market }: { provider: string; m
   );
 }
 
-function ApiKeyCard({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  const [revealed, setRevealed] = useState(false);
-  const looksLikeEnvName = /^[A-Z][A-Z0-9_]+$/.test(value || "");
-  const looksValid = !looksLikeEnvName && value.length >= 20;
+function FreeTierBanner() {
   return (
     <div
       className="rounded-2xl p-4 md:p-5"
       style={{
-        background: "linear-gradient(180deg, #151d2e 0%, #0c1424 100%)",
-        border: `1px solid ${looksValid ? "rgba(34,197,94,0.3)" : "rgba(245,158,11,0.35)"}`,
+        background:
+          "linear-gradient(180deg, rgba(34,197,94,0.06) 0%, #0c1424 100%)",
+        border: "1px solid rgba(34,197,94,0.3)",
       }}
     >
-      <div className="flex items-start gap-3 mb-3">
-        <span style={{ fontSize: 20 }}>🔑</span>
+      <div className="flex items-start gap-3">
+        <div
+          className="flex items-center justify-center rounded-lg shrink-0"
+          style={{
+            width: 36, height: 36,
+            background: "rgba(34,197,94,0.12)",
+            border: "1px solid rgba(34,197,94,0.3)",
+            fontSize: 18,
+          }}
+        >
+          🤖
+        </div>
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold text-text-primary">
-            OpenRouter API Key <span className="text-accent-red">*</span>
+          <div className="text-sm font-semibold text-text-primary mb-1">
+            Free tier · Powered by AlphaAgent&rsquo;s AI
           </div>
-          <p className="text-[11px] text-text-muted leading-relaxed mt-0.5">
-            Required. Encrypted at rest with Fernet. We never see your key in logs.{" "}
-            <a
-              href="https://openrouter.ai/keys"
-              target="_blank"
-              rel="noreferrer noopener"
-              className="text-accent-blue hover:underline"
-            >
-              Get a free key →
-            </a>
+          <p className="text-[12px] text-text-secondary leading-relaxed mb-2">
+            No setup, no API keys. You get <strong className="text-text-primary">24 hours of AI trading runtime</strong>{" "}
+            — the clock only ticks while your agent is actively running. Pause anytime; pick back up later.
           </p>
+          <div className="flex flex-wrap gap-1.5 text-[10px]">
+            <span
+              className="px-2 py-0.5 rounded-full font-semibold uppercase tracking-wider"
+              style={{
+                background: "rgba(34,197,94,0.10)",
+                color: "#22c55e",
+                border: "1px solid rgba(34,197,94,0.25)",
+              }}
+            >
+              ✓ 1 free session
+            </span>
+            <span
+              className="px-2 py-0.5 rounded-full font-semibold uppercase tracking-wider"
+              style={{
+                background: "rgba(34,197,94,0.10)",
+                color: "#22c55e",
+                border: "1px solid rgba(34,197,94,0.25)",
+              }}
+            >
+              ✓ 24h runtime
+            </span>
+            <span
+              className="px-2 py-0.5 rounded-full font-semibold uppercase tracking-wider"
+              style={{
+                background: "rgba(245,158,11,0.10)",
+                color: "#fcd34d",
+                border: "1px solid rgba(245,158,11,0.3)",
+              }}
+            >
+              🔒 multi-session — paid soon
+            </span>
+          </div>
         </div>
       </div>
-      <div className="relative">
-        <input
-          type={revealed ? "text" : "password"}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder="sk-or-v1-..."
-          autoComplete="off"
-          spellCheck={false}
-          className="w-full font-mono text-sm pr-20"
-          style={{ minHeight: 44, fontSize: 16 }}
-        />
-        <button
-          type="button"
-          onClick={() => setRevealed((r) => !r)}
-          className="absolute top-1/2 right-2 -translate-y-1/2 text-[10px] uppercase tracking-wider font-semibold px-2 py-1 rounded text-text-muted hover:text-text-primary"
-          style={{ background: "rgba(0,0,0,0.3)", minHeight: 32 }}
-        >
-          {revealed ? "Hide" : "Show"}
-        </button>
-      </div>
-      {looksLikeEnvName && (
-        <p className="text-[10px] text-accent-amber mt-2" style={{ color: "#fbbf24" }}>
-          Looks like an env var name — paste your actual key (starts with sk-or-...)
-        </p>
-      )}
     </div>
   );
 }

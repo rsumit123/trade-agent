@@ -24,7 +24,11 @@ from agent.auth import (
     current_user, optional_user, require_admin,
     verify_google_token, issue_jwt, COOKIE_NAME, JWT_TTL_SECONDS,
 )
-from agent.users import upsert_user, is_admin
+from agent.users import (
+    upsert_user, is_admin,
+    get_runtime_remaining, add_runtime, mark_trial_started, add_to_waitlist,
+    FREE_RUNTIME_QUOTA_SECONDS,
+)
 from agent.secrets_store import encrypt
 
 # Add parent dir to path so we can import agent modules
@@ -238,11 +242,51 @@ def auth_google(req: GoogleAuthRequest, response: Response):
 
 @app.get("/api/auth/me")
 def auth_me(user: dict = Depends(current_user)):
+    email = user["email"]
+    is_user_admin = user.get("is_admin", False)
+    quota = FREE_RUNTIME_QUOTA_SECONDS
+    used = 0
+    remaining = 10**9 if is_user_admin else 0
+    has_running = False
+    if not is_user_admin:
+        try:
+            from agent.users import get_user
+            u = get_user(email) or {}
+            quota = int(u.get("runtime_quota_seconds") or FREE_RUNTIME_QUOTA_SECONDS)
+            used = int(u.get("runtime_seconds_used") or 0)
+        except Exception:
+            pass
+        # Add live elapsed for any running session owned by this user
+        try:
+            from agent.session import list_sessions, load_session
+            for s in list_sessions():
+                if (s.get("user_email") or "").lower() != email.lower():
+                    continue
+                if not _is_agent_running(s["session_id"])["running"]:
+                    continue
+                has_running = True
+                try:
+                    sc = load_session(s["session_id"])
+                    started = (sc.started_at or "").strip()
+                    if started:
+                        t0 = datetime.fromisoformat(started)
+                        used += int(max(0, (datetime.utcnow() - t0).total_seconds()))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        remaining = max(0, quota - used)
     return {
-        "email": user["email"],
+        "email": email,
         "name": user.get("name", ""),
         "picture": user.get("picture", ""),
-        "is_admin": user.get("is_admin", False),
+        "is_admin": is_user_admin,
+        "tier": "admin" if is_user_admin else "free",
+        "runtime_quota_seconds": quota,
+        "runtime_used_seconds": used,
+        "runtime_remaining_seconds": remaining,
+        "trial_ended": (not is_user_admin) and remaining <= 0,
+        "has_running_session": has_running,
     }
 
 
@@ -250,6 +294,125 @@ def auth_me(user: dict = Depends(current_user)):
 def auth_logout(response: Response):
     response.delete_cookie(COOKIE_NAME, path="/")
     return {"status": "ok"}
+
+
+class WaitlistRequest(BaseModel):
+    email: str
+    source: str = ""
+
+
+@app.post("/api/waitlist")
+def join_waitlist(req: WaitlistRequest):
+    """Public endpoint — capture upgrade interest. Idempotent."""
+    ok = add_to_waitlist(req.email, req.source)
+    return {"status": "ok" if ok else "already_joined"}
+
+
+# ── Runtime quota helpers ────────────────────────────────────
+
+
+def _stamp_started_at(session_id: str) -> None:
+    """Mark a session as currently running for runtime accounting."""
+    try:
+        from agent.session import load_session, save_session
+        sc = load_session(session_id)
+        sc.started_at = datetime.utcnow().isoformat()
+        save_session(sc)
+    except Exception:
+        pass
+
+
+def _bank_runtime(session_id: str) -> int:
+    """Compute elapsed runtime since started_at, add it to the user's used
+    quota, and clear started_at. Returns seconds banked. Idempotent."""
+    try:
+        from agent.session import load_session, save_session
+        sc = load_session(session_id)
+    except Exception:
+        return 0
+    started = (sc.started_at or "").strip()
+    if not started:
+        return 0
+    try:
+        t0 = datetime.fromisoformat(started)
+    except Exception:
+        sc.started_at = ""
+        try:
+            from agent.session import save_session as _ss
+            _ss(sc)
+        except Exception:
+            pass
+        return 0
+    delta = int(max(0, (datetime.utcnow() - t0).total_seconds()))
+    if sc.user_email and not is_admin(sc.user_email):
+        add_runtime(sc.user_email, delta)
+    sc.started_at = ""
+    try:
+        from agent.session import save_session as _ss
+        _ss(sc)
+    except Exception:
+        pass
+    return delta
+
+
+def _user_has_running_session(email: str) -> bool:
+    """Quick check whether the user owns any session whose agent is running."""
+    try:
+        from agent.session import list_sessions
+        e = (email or "").lower()
+        for s in list_sessions():
+            if (s.get("user_email") or "").lower() != e:
+                continue
+            if _is_agent_running(s["session_id"])["running"]:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _enforce_quota_sweep():
+    """Called by the health-checker thread. For each running free-user session,
+    bank live elapsed time; if quota exhausted, stop the agent."""
+    try:
+        from agent.session import list_sessions, load_session
+    except Exception:
+        return
+    for s in list_sessions():
+        sid = s["session_id"]
+        owner = (s.get("user_email") or "").lower()
+        if not owner or is_admin(owner):
+            continue
+        running = _is_agent_running(sid)
+        if not running["running"]:
+            continue
+        # Bank what's elapsed so far without clearing started_at
+        try:
+            sc = load_session(sid)
+        except Exception:
+            continue
+        started = (sc.started_at or "").strip()
+        if started:
+            try:
+                t0 = datetime.fromisoformat(started)
+                delta = int(max(0, (datetime.utcnow() - t0).total_seconds()))
+            except Exception:
+                delta = 0
+            if delta > 0:
+                add_runtime(owner, delta)
+                # Restamp so we don't double-count
+                sc.started_at = datetime.utcnow().isoformat()
+                try:
+                    from agent.session import save_session
+                    save_session(sc)
+                except Exception:
+                    pass
+        # Out of quota? Stop the agent.
+        if get_runtime_remaining(owner) <= 0:
+            try:
+                os.kill(running["pid"], signal.SIGTERM)
+            except Exception:
+                pass
+            _bank_runtime(sid)
 
 
 
@@ -450,6 +613,10 @@ def _start_health_checker():
                 _auto_restart_agents()
             except Exception:
                 pass
+            try:
+                _enforce_quota_sweep()
+            except Exception:
+                pass
 
     t = threading.Thread(target=_check_loop, daemon=True)
     t.start()
@@ -637,30 +804,40 @@ def create_session(req: CreateSessionRequest, user: dict = Depends(current_user)
     if (SESSIONS_DIR / req.session_id / "config.yaml").exists():
         raise HTTPException(409, f"Session '{req.session_id}' already exists")
 
-    # API key requirement: non-admins must provide their own literal key
     is_user_admin = user.get("is_admin", False)
     api_key_encrypted = ""
     api_key_env = req.api_key_env or "OPENROUTER_API_KEY"
+
+    # Admin can still bring their own key (literal in api_key_env field)
     raw_key = (req.api_key_env or "").strip()
-    looks_like_literal_key = len(raw_key) > 20 and not raw_key.isupper() and not raw_key.startswith("OPENROUTER_") and not raw_key.startswith("ANTHROPIC_") and not raw_key.startswith("OPENAI_")
+    looks_like_literal_key = (
+        is_user_admin
+        and len(raw_key) > 20
+        and not raw_key.isupper()
+        and not raw_key.startswith("OPENROUTER_")
+        and not raw_key.startswith("ANTHROPIC_")
+        and not raw_key.startswith("OPENAI_")
+    )
     if looks_like_literal_key:
         api_key_encrypted = encrypt(raw_key)
-        api_key_env = "OPENROUTER_API_KEY"  # placeholder, ignored when encrypted is present
-    elif not is_user_admin:
-        raise HTTPException(
-            400,
-            "OpenRouter API key is required. Get one at openrouter.ai/keys "
-            "(free tier supports several models)."
-        )
+        api_key_env = "OPENROUTER_API_KEY"
 
-    # Per-user session count cap (admins bypass)
+    # Free-tier: 1 session max, no API key (uses platform key)
+    user_email = (user.get("email") or "").lower()
     if not is_user_admin:
         from agent.session import list_sessions
-        existing = [s for s in list_sessions() if (s.get("user_email") or "").lower() == user["email"].lower()]
-        if len(existing) >= 10:
+        owned = [s for s in list_sessions()
+                 if (s.get("user_email") or "").lower() == user_email
+                 and not s.get("parent_session")]
+        if len(owned) >= 1:
             raise HTTPException(
                 403,
-                "You've reached the 10-session limit. Delete one to create another."
+                "Free tier supports 1 session. Delete your existing session or upgrade for more."
+            )
+        if get_runtime_remaining(user_email) <= 0:
+            raise HTTPException(
+                403,
+                "Your free trial has ended. Upgrade for more runtime."
             )
 
     sc = SessionConfig(
@@ -686,7 +863,8 @@ def create_session(req: CreateSessionRequest, user: dict = Depends(current_user)
         backtest_start_date=req.backtest_start_date,
         backtest_end_date=req.backtest_end_date,
         data_source="kite" if req.market in ("nse", "nse-intraday") else "yfinance",
-        user_email=user["email"].lower(),
+        user_email=user_email,
+        tier="admin" if is_user_admin else "free",
     )
     sc.resolve_defaults()
     save_session(sc)
@@ -885,7 +1063,7 @@ def _start_agent_process(session_id: str) -> int:
 
 @app.post("/api/agent/start/{session_id}")
 def start_agent(session_id: str, user: dict = Depends(current_user)):
-    _ensure_session_access(session_id, user)
+    sc = _ensure_session_access(session_id, user)
     """Start the agent loop for a session."""
     from agent.session import SESSIONS_DIR
 
@@ -895,6 +1073,15 @@ def start_agent(session_id: str, user: dict = Depends(current_user)):
     status = _is_agent_running(session_id)
     if status["running"]:
         return {"status": "already_running", "pid": status["pid"]}
+
+    # Free tier: enforce runtime quota
+    owner = (sc.user_email or "").lower()
+    if owner and not is_admin(owner):
+        if get_runtime_remaining(owner) <= 0:
+            raise HTTPException(
+                403,
+                "Your free 24-hour trial has ended. Upgrade for more runtime."
+            )
 
     from agent.session import list_sessions
     all_sessions = list_sessions()
@@ -907,6 +1094,9 @@ def start_agent(session_id: str, user: dict = Depends(current_user)):
         )
 
     pid = _start_agent_process(session_id)
+    _stamp_started_at(session_id)
+    if owner and not is_admin(owner):
+        mark_trial_started(owner)
     return {"status": "started", "pid": pid, "session_id": session_id}
 
 
@@ -921,8 +1111,10 @@ def stop_agent(session_id: str, user: dict = Depends(current_user)):
     pid = status["pid"]
     try:
         os.kill(pid, signal.SIGTERM)
-        return {"status": "stopped", "pid": pid}
+        banked = _bank_runtime(session_id)
+        return {"status": "stopped", "pid": pid, "runtime_banked_seconds": banked}
     except ProcessLookupError:
+        _bank_runtime(session_id)
         return {"status": "not_running"}
     except PermissionError:
         raise HTTPException(403, f"Cannot stop process {pid} — permission denied")
@@ -952,6 +1144,7 @@ def liquidate_session(session_id: str, user: dict = Depends(current_user)):
             if not _is_agent_running(session_id)["running"]:
                 break
             _time.sleep(0.25)
+        _bank_runtime(session_id)
 
     # 2. Load components and fetch live prices
     c = _get_components(session_id)

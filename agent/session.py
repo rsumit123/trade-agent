@@ -73,6 +73,12 @@ class SessionConfig:
 
     # ── Ownership ─────────────────────────────────────────
     user_email: str = ""                         # owner; "" → admin/legacy session
+    tier: str = "free"                           # "free" | "admin" — admin = unlimited runtime
+
+    # ── Runtime accounting ────────────────────────────────
+    # Set when the agent starts; cleared when it stops. Used to bill runtime
+    # against the user's free-tier quota.
+    started_at: str = ""                         # ISO-8601, "" when not running
 
     # ── Metadata ────────────────────────────────────────────
     created_at: str = ""
@@ -152,6 +158,7 @@ _YAML_FIELDS = {
     "data_source",
     "backtest_mode", "backtest_start_date", "backtest_end_date", "backtest_status",
     "parent_session", "user_email", "api_key_encrypted",
+    "tier", "started_at",
 }
 
 
@@ -202,6 +209,8 @@ def list_sessions() -> List[Dict]:
                 "backtest_status": data.get("backtest_status", ""),
                 "parent_session": data.get("parent_session", ""),
                 "user_email": data.get("user_email", ""),
+                "tier": data.get("tier", "free"),
+                "started_at": data.get("started_at", ""),
             })
         except Exception:
             # Skip broken sessions
