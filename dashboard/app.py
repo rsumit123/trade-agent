@@ -182,6 +182,7 @@ MAX_RUNNING_AGENTS_PER_USER = 2  # Per-user limit for non-admins
 FREE_TIER_MODELS = {
     "openai/gpt-4o-mini",
     "google/gemini-2.5-flash",
+    "google/gemini-2.5-flash-lite",
 }
 
 
