@@ -1908,6 +1908,8 @@ def get_dashboard(session_id: str, user: dict = Depends(current_user)):
             "entry_time": t.entry_time, "exit_price": t.exit_price,
             "exit_time": t.exit_time, "pnl": t.pnl, "status": t.status,
             "reason": t.reason, "exit_reason": t.exit_reason,
+            "conviction": t.conviction, "llm_model": t.llm_model,
+            "exit_type": getattr(t, "exit_type", None),
         }
         for t in closed
     ]

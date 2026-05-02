@@ -20,12 +20,13 @@ import { EquityCharts } from "@/components/EquityCharts";
 import { ThinkingLog } from "@/components/ThinkingLog";
 import { CostLedger } from "@/components/CostLedger";
 import { BacktestSection } from "@/components/BacktestSection";
+import { DecisionFeed } from "@/components/DecisionFeed";
 import type {
   PortfolioSummary, ClosedTrade, RiskStatus, Performance,
   WatchlistItem, SessionConfig, AgentStatus,
 } from "@/lib/types";
 
-type Tab = "overview" | "activity" | "insights" | "logs";
+type Tab = "overview" | "decisions" | "activity" | "insights" | "logs";
 
 function PanelSkeleton({ rows = 3 }: { rows?: number }) {
   return (
@@ -166,7 +167,8 @@ export default function SessionDashboard() {
 
   const tabs: { id: Tab; label: string; badge?: string | number }[] = [
     { id: "overview", label: "Overview" },
-    { id: "activity", label: "Activity", badge: trades.length || undefined },
+    { id: "decisions", label: "Decisions", badge: trades.length || undefined },
+    { id: "activity", label: "Activity" },
     { id: "insights", label: "Insights" },
     { id: "logs", label: "Logs" },
   ];
@@ -228,8 +230,8 @@ export default function SessionDashboard() {
             </div>
           </div>
 
-          {/* Watchlist */}
-          <WatchlistPanel items={watchlist} config={config} />
+          {/* Watchlist — hidden during backtest (picks rotate daily, prices are simulated) */}
+          {!isBacktest && <WatchlistPanel items={watchlist} config={config} />}
 
           {/* Directives (accordion, collapsed by default) */}
           {!isBacktest && (
@@ -241,6 +243,12 @@ export default function SessionDashboard() {
               <DirectivePanel sessionId={sessionId} />
             </Collapsible>
           )}
+        </div>
+      )}
+
+      {tab === "decisions" && (
+        <div className="animate-fade-in">
+          <DecisionFeed trades={trades} config={config} />
         </div>
       )}
 
