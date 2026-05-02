@@ -126,6 +126,7 @@ async def auth_middleware(request, call_next):
     public_prefixes = (
         "/api/auth/",
         "/api/market-presets",
+        "/api/waitlist",
         "/health",
     )
     if (
