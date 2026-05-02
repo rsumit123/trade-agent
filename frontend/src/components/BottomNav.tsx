@@ -61,6 +61,9 @@ function NavTab({ href, label, active, icon }: { href: string; label: string; ac
 export function BottomNav() {
   const pathname = usePathname();
 
+  // Hide the global bottom nav on the immersive replay screen (which has its own controls)
+  if (pathname.includes("/replay/")) return null;
+
   // Extract session ID from /sessions/[id] or /sessions/[id]/settings
   const sessionMatch = pathname.match(/^\/sessions\/([^/]+)/);
   const sessionId = sessionMatch ? sessionMatch[1] : null;
