@@ -169,6 +169,8 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
 /** Mobile top bar — no hamburger, bottom nav handles navigation */
 export function MobileTopBar() {
   const pathname = usePathname();
+  const { user } = useUser();
+  const [menuOpen, setMenuOpen] = useState(false);
 
   let pageTitle = "Sessions";
   if (pathname.startsWith("/admin")) pageTitle = "Admin";
@@ -198,6 +200,79 @@ export function MobileTopBar() {
         <div className="font-semibold truncate" style={{ color: "#e2e8f0", fontSize: 16 }}>{pageTitle}</div>
       </div>
       <RuntimeChip compact />
+      {user && (
+        <div className="relative">
+          <button
+            onClick={() => setMenuOpen((o) => !o)}
+            aria-label="Account menu"
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: "50%",
+              background: "#0a0e17",
+              border: "1px solid #1e293b",
+              padding: 0,
+              overflow: "hidden",
+              flexShrink: 0,
+            }}
+          >
+            {user.picture ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={user.picture} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            ) : (
+              <span style={{ color: "#94a3b8", fontSize: 14 }}>
+                {(user.name || user.email).slice(0, 1).toUpperCase()}
+              </span>
+            )}
+          </button>
+          {menuOpen && (
+            <>
+              <div
+                className="fixed inset-0"
+                onClick={() => setMenuOpen(false)}
+                style={{ zIndex: 49, background: "transparent" }}
+              />
+              <div
+                className="absolute right-0 mt-2 rounded-xl overflow-hidden"
+                style={{
+                  zIndex: 50,
+                  width: 240,
+                  background: "#111827",
+                  border: "1px solid #1e293b",
+                  boxShadow: "0 12px 32px -8px rgba(0,0,0,0.6)",
+                }}
+              >
+                <div style={{ padding: "12px 14px", borderBottom: "1px solid #1e293b" }}>
+                  <div className="truncate text-[12px] font-semibold" style={{ color: "#e2e8f0" }}>
+                    {user.name || user.email}
+                  </div>
+                  <div className="truncate text-[11px]" style={{ color: "#94a3b8" }}>
+                    {user.is_admin ? "Admin · " : ""}{user.email}
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    setMenuOpen(false);
+                    signOut();
+                  }}
+                  className="w-full text-left flex items-center gap-2"
+                  style={{
+                    padding: "12px 14px",
+                    background: "transparent",
+                    border: "none",
+                    color: "#fca5a5",
+                    fontSize: 13,
+                    minHeight: 44,
+                  }}
+                >
+                  <span>⤴</span>
+                  <span>Sign out</span>
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
