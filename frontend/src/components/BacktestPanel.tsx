@@ -208,7 +208,7 @@ export function BacktestPanel({ sessionId, config, onComplete }: Props) {
 
   // --- Running: show live progress ---
   if (progress.status === "running") {
-    return <RunningView progress={progress} sym={sym} />;
+    return <RunningView progress={progress} sym={sym} sessionId={sessionId} />;
   }
 
   // --- Completed: show results ---
@@ -292,12 +292,22 @@ export function BacktestPanel({ sessionId, config, onComplete }: Props) {
                   <th style={{ textAlign: "right", padding: "6px 8px", color: "#64748b", fontWeight: 500 }}>P&L</th>
                   <th style={{ textAlign: "right", padding: "6px 8px", color: "#64748b", fontWeight: 500 }}>Return</th>
                   <th style={{ textAlign: "right", padding: "6px 8px", color: "#64748b", fontWeight: 500 }}>Win Rate</th>
+                  <th style={{ textAlign: "right", padding: "6px 8px", color: "#64748b", fontWeight: 500 }}></th>
                 </tr>
               </thead>
               <tbody>
                 {progress.daily_results.map((d) => (
                   <tr key={d.date} style={{ borderBottom: "1px solid #0f172a" }}>
-                    <td style={{ padding: "6px 8px", color: "#cbd5e1", fontFamily: "monospace" }}>{d.date}</td>
+                    <td style={{ padding: "6px 8px", color: "#cbd5e1", fontFamily: "monospace" }}>
+                      <a
+                        href={`/sessions/${sessionId}/replay/${d.date}`}
+                        style={{ color: "#cbd5e1", textDecoration: "none" }}
+                        onMouseEnter={(e) => (e.currentTarget.style.color = "#60a5fa")}
+                        onMouseLeave={(e) => (e.currentTarget.style.color = "#cbd5e1")}
+                      >
+                        {d.date}
+                      </a>
+                    </td>
                     <td style={{ padding: "6px 8px", textAlign: "right", color: "#94a3b8" }}>{d.trades}</td>
                     <td
                       style={{
@@ -328,6 +338,24 @@ export function BacktestPanel({ sessionId, config, onComplete }: Props) {
                       }}
                     >
                       {d.win_rate}%
+                    </td>
+                    <td style={{ padding: "6px 8px", textAlign: "right" }}>
+                      <a
+                        href={`/sessions/${sessionId}/replay/${d.date}`}
+                        style={{
+                          fontSize: 10,
+                          textTransform: "uppercase",
+                          letterSpacing: "0.05em",
+                          fontWeight: 600,
+                          color: "#60a5fa",
+                          textDecoration: "none",
+                          padding: "2px 6px",
+                          borderRadius: 4,
+                          background: "rgba(96,165,250,0.1)",
+                        }}
+                      >
+                        Replay
+                      </a>
                     </td>
                   </tr>
                 ))}
@@ -470,7 +498,7 @@ function MiniStat({
 }
 
 // ── Running view: live transparency UI ────────────────────────
-function RunningView({ progress, sym }: { progress: BacktestProgress; sym: string }) {
+function RunningView({ progress, sym, sessionId }: { progress: BacktestProgress; sym: string; sessionId: string }) {
   const [picksOpen, setPicksOpen] = useState(false);
   const [pastDaysOpen, setPastDaysOpen] = useState(false);
   // Force re-render every 5s so "elapsed" timer ticks
@@ -701,7 +729,14 @@ function RunningView({ progress, sym }: { progress: BacktestProgress; sym: strin
                 <tbody>
                   {progress.daily_results.map((d) => (
                     <tr key={d.date} style={{ borderBottom: "1px solid #0a0f1c" }}>
-                      <td style={{ padding: "6px 8px", color: "#cbd5e1", fontFamily: "monospace" }}>{d.date}</td>
+                      <td style={{ padding: "6px 8px", fontFamily: "monospace" }}>
+                        <a
+                          href={`/sessions/${sessionId}/replay/${d.date}`}
+                          style={{ color: "#60a5fa", textDecoration: "none" }}
+                        >
+                          {d.date}
+                        </a>
+                      </td>
                       <td style={{ padding: "6px 8px", textAlign: "right", color: "#94a3b8" }}>{d.trades}</td>
                       <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "monospace", color: d.daily_pnl >= 0 ? "#22c55e" : "#ef4444" }}>
                         {fmt(d.daily_pnl, sym)}

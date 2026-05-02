@@ -1798,6 +1798,82 @@ def get_cost_ledger(session_id: str, days: int = 30):
     }
 
 
+@app.get("/api/replay/{session_id}")
+def get_replay_day(session_id: str, date: str):
+    """Return all reasoning cycles + trades for a single backtest day.
+
+    Used by the day-replay UI to step through cycle-by-cycle.
+    `date` is YYYY-MM-DD.
+    """
+    from agent.session import SESSIONS_DIR
+    import sqlite3
+
+    if not date or len(date) != 10:
+        raise HTTPException(400, "date must be YYYY-MM-DD")
+
+    sdir = SESSIONS_DIR / session_id
+    if not sdir.exists():
+        raise HTTPException(404, "session not found")
+
+    # 1. Reasoning cycles for the day from thinking.jsonl
+    cycles = []
+    log_path = sdir / "thinking.jsonl"
+    if log_path.exists():
+        try:
+            for line in log_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                ts = rec.get("ts") or ""
+                if ts.startswith(date):
+                    cycles.append(rec)
+        except Exception as e:
+            logger.warning(f"replay: failed reading thinking.jsonl: {e}")
+    cycles.sort(key=lambda r: r.get("ts", ""))
+
+    # 2. Trades that happened on this day (entry OR exit on this date)
+    trades = []
+    db_path = sdir / "trades.db"
+    if db_path.exists():
+        try:
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT * FROM trades WHERE substr(entry_time, 1, 10) = ? "
+                    "OR substr(exit_time, 1, 10) = ? ORDER BY entry_time",
+                    (date, date),
+                ).fetchall()
+                for r in rows:
+                    trades.append(dict(r))
+        except Exception as e:
+            logger.warning(f"replay: failed reading trades.db: {e}")
+
+    # 3. Day summary from backtest_progress.json
+    day_summary = None
+    progress_path = sdir / "backtest_progress.json"
+    if progress_path.exists():
+        try:
+            prog = json.loads(progress_path.read_text())
+            for d in (prog.get("days") or []):
+                if d.get("date") == date:
+                    day_summary = d
+                    break
+        except Exception:
+            pass
+
+    return {
+        "session_id": session_id,
+        "date": date,
+        "cycles": cycles,
+        "trades": trades,
+        "day_summary": day_summary,
+    }
+
+
 @app.get("/api/thinking/{session_id}")
 def get_thinking(session_id: str, limit: int = 50):
     """Return reverse-chronological agent reasoning trail."""

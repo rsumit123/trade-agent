@@ -81,6 +81,37 @@ export interface ThinkingPlaced {
   qty?: number;
   price?: number;
 }
+export interface ReplayTrade {
+  id: number;
+  ticker: string;
+  action: string;
+  direction: string;
+  trade_type: string;
+  quantity: number;
+  entry_price: number;
+  entry_time: string;
+  exit_price: number | null;
+  exit_time: string | null;
+  pnl: number | null;
+  status: string;
+  reason: string;
+  exit_reason: string | null;
+}
+export interface ReplayDayData {
+  session_id: string;
+  date: string;
+  cycles: ThinkingEntry[];
+  trades: ReplayTrade[];
+  day_summary: {
+    date: string;
+    trades: number;
+    total_value: number;
+    daily_pnl: number;
+    total_return_pct: number;
+    win_rate: number;
+  } | null;
+}
+
 export interface ThinkingEntry {
   ts: string;
   phase: "executed" | "rejected" | "observed" | string;
