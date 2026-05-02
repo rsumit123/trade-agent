@@ -39,6 +39,33 @@ export interface ComparisonStatus {
   finished_at?: string;
 }
 
+export interface CostBucket {
+  usd: number;
+  input_tokens: number;
+  output_tokens: number;
+  cycles: number;
+}
+export interface CostByDay {
+  date: string;
+  usd: number;
+  input_tokens: number;
+  output_tokens: number;
+  cycles: number;
+}
+export interface CostByModel {
+  model: string;
+  usd: number;
+  input_tokens: number;
+  output_tokens: number;
+  cycles: number;
+}
+export interface CostLedgerData {
+  lifetime: CostBucket;
+  today: { usd: number; cycles: number };
+  daily: CostByDay[];
+  by_model: CostByModel[];
+}
+
 export interface ThinkingToolCall {
   name: string;
   input: Record<string, unknown>;

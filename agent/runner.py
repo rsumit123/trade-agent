@@ -539,11 +539,49 @@ class TradingAgent:
         logger.info(f"✅ Cycle complete — {len(actions)} actions taken")
         self._cleanup_cycle_directives()
         self._write_thinking_log(actions, bt_date, bt_time)
+        self._write_cost_log(bt_date, bt_time)
         return {
             "status": "ok",
             "actions": actions,
             "portfolio": self.portfolio.get_portfolio_summary(prices),
         }
+
+    def _write_cost_log(self, bt_date=None, bt_time=None):
+        """Persist per-cycle LLM token usage + USD cost to cost.jsonl."""
+        if not self.session:
+            return
+        usage = getattr(self.engine, "last_usage", None) or {}
+        in_tok = int(usage.get("input_tokens", 0) or 0)
+        out_tok = int(usage.get("output_tokens", 0) or 0)
+        if in_tok == 0 and out_tok == 0:
+            return  # nothing happened (e.g. error before any LLM call)
+        try:
+            from .llm_pricing import estimate_usd
+            usd = estimate_usd(self.config.llm_model, in_tok, out_tok)
+        except Exception:
+            usd = 0.0
+
+        from datetime import datetime as _dt
+        if bt_date and bt_time:
+            ts = f"{bt_date}T{bt_time}:00"
+        else:
+            ts = _dt.now().isoformat(timespec="seconds")
+
+        record = {
+            "ts": ts,
+            "model": self.config.llm_model,
+            "input_tokens": in_tok,
+            "output_tokens": out_tok,
+            "calls": int(usage.get("calls", 0) or 0),
+            "usd": round(usd, 6),
+        }
+        try:
+            log_path = self.session.session_dir / "cost.jsonl"
+            with open(log_path, "a", encoding="utf-8") as f:
+                import json as _json
+                f.write(_json.dumps(record) + "\n")
+        except Exception as e:
+            logger.warning(f"Could not write cost log: {e}")
 
     def _write_thinking_log(self, actions, bt_date=None, bt_time=None):
         """Persist the cycle's reasoning trail for transparency UI."""
