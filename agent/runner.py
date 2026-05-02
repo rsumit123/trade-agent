@@ -555,9 +555,10 @@ class TradingAgent:
         out_tok = int(usage.get("output_tokens", 0) or 0)
         if in_tok == 0 and out_tok == 0:
             return  # nothing happened (e.g. error before any LLM call)
+        active_model = self._active_model
         try:
             from .llm_pricing import estimate_usd
-            usd = estimate_usd(self.config.llm_model, in_tok, out_tok)
+            usd = estimate_usd(active_model, in_tok, out_tok)
         except Exception:
             usd = 0.0
 
@@ -569,7 +570,7 @@ class TradingAgent:
 
         record = {
             "ts": ts,
-            "model": self.config.llm_model,
+            "model": active_model,
             "input_tokens": in_tok,
             "output_tokens": out_tok,
             "calls": int(usage.get("calls", 0) or 0),
