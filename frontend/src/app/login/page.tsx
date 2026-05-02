@@ -138,11 +138,11 @@ function LoginInner() {
           <div className="mt-8 pt-5 border-t border-border/50 space-y-2 text-xs text-text-muted">
             <div className="flex items-start gap-2">
               <span style={{ color: "#22c55e" }}>✓</span>
-              <span>Free to sign up. We never see your trades or LLM keys.</span>
+              <span>Free 24-hour AI trading trial — no credit card.</span>
             </div>
             <div className="flex items-start gap-2">
               <span style={{ color: "#22c55e" }}>✓</span>
-              <span>Bring your own OpenRouter key — encrypted at rest.</span>
+              <span>Powered by AlphaAgent&rsquo;s AI — no setup, no API keys.</span>
             </div>
             <div className="flex items-start gap-2">
               <span style={{ color: "#22c55e" }}>✓</span>
