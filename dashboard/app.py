@@ -40,7 +40,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 from agent.config import AgentConfig
 from agent.portfolio import Portfolio
-from agent.market_data import MarketData
+from agent.market_data import MarketData, create_market_data
 from agent.learner import Learner
 from agent.risk_manager import RiskManager
 
@@ -63,7 +63,10 @@ def _get_components(session_id: str = None) -> Dict:
             preset = get_preset(sc.market)
             config = AgentConfig.from_session(sc)
             portfolio = Portfolio(config.db_path, config.starting_capital)
-            market_data = MarketData(config.watchlist, market_preset=preset)
+            # Honor session.data_source — Kite for NSE sessions, yfinance for crypto.
+            # Previously hardcoded yfinance MarketData, which spammed
+            # "possibly delisted" errors on every dashboard poll during NSE backtests.
+            market_data = create_market_data(config, market_preset=preset)
             learner = Learner(config, portfolio)
             risk_manager = RiskManager(config, portfolio)
             _components[sid] = {
