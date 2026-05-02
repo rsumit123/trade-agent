@@ -15,10 +15,17 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, List, Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+
+from agent.auth import (
+    current_user, optional_user, require_admin,
+    verify_google_token, issue_jwt, COOKIE_NAME, JWT_TTL_SECONDS,
+)
+from agent.users import upsert_user, is_admin
+from agent.secrets_store import encrypt
 
 # Add parent dir to path so we can import agent modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -102,6 +109,46 @@ _auto_detect_session()
 app = FastAPI(title="AlphaAgent API", version="2.0.0")
 
 # ── CORS — allow Next.js frontend ────────────────────────────
+# ── Auth middleware: require JWT for all /api/* except whitelist ─────────
+
+
+@app.middleware("http")
+async def auth_middleware(request, call_next):
+    from agent.auth import decode_jwt, COOKIE_NAME
+    path = request.url.path
+    method = request.method
+
+    # Pass through CORS preflight + non-API + auth endpoints + public health
+    public_prefixes = (
+        "/api/auth/",
+        "/api/market-presets",
+        "/health",
+    )
+    if (
+        method == "OPTIONS"
+        or not path.startswith("/api/")
+        or any(path.startswith(p) for p in public_prefixes)
+    ):
+        return await call_next(request)
+
+    # Extract token from header or cookie
+    token = None
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+    if not token:
+        token = request.cookies.get(COOKIE_NAME)
+
+    claims = decode_jwt(token) if token else None
+    if not claims or not claims.get("email"):
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+
+    # Stash on request.state for endpoints to read if needed
+    request.state.user = claims
+    return await call_next(request)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -120,7 +167,90 @@ app.add_middleware(
 
 # ── Pydantic models for request bodies ───────────────────────
 
-MAX_RUNNING_AGENTS = 4  # Safety limit for VM memory
+MAX_RUNNING_AGENTS = 4  # Safety limit for VM memory (global)
+MAX_RUNNING_AGENTS_PER_USER = 2  # Per-user limit for non-admins
+
+
+# ── Auth helpers / endpoints ─────────────────────────────────
+
+
+class GoogleAuthRequest(BaseModel):
+    credential: str  # Google ID token from frontend
+
+
+def _ensure_session_access(session_id: str, user: dict) -> "SessionConfig":  # noqa: F821
+    """Load a session and check ownership. Admins bypass the check.
+
+    Raises 404 if not found, 403 if user does not own the session.
+    """
+    from agent.session import load_session
+    try:
+        sc = load_session(session_id)
+    except FileNotFoundError:
+        raise HTTPException(404, f"Session '{session_id}' not found")
+    owner = (getattr(sc, "user_email", "") or "").lower()
+    if user.get("is_admin"):
+        return sc
+    if not owner:
+        # Legacy session — invisible to non-admins
+        raise HTTPException(404, f"Session '{session_id}' not found")
+    if owner != user.get("email", "").lower():
+        raise HTTPException(403, "Not your session")
+    return sc
+
+
+@app.get("/health")
+def health_check():
+    """Public health probe. No auth — used by Docker healthcheck."""
+    return {"status": "ok", "version": "2.1.0"}
+
+
+@app.post("/api/auth/google")
+def auth_google(req: GoogleAuthRequest, response: Response):
+    """Verify a Google ID token, upsert the user, issue a session JWT."""
+    claims = verify_google_token(req.credential)
+    email = claims.get("email", "").lower()
+    name = claims.get("name", "")
+    picture = claims.get("picture", "")
+    user = upsert_user(email, name, picture)
+    token = issue_jwt(email, name, picture)
+    # httpOnly cookie for browser auth + JSON token for header use
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        max_age=JWT_TTL_SECONDS,
+        httponly=True,
+        samesite="lax",
+        secure=True,
+        path="/",
+    )
+    return {
+        "token": token,
+        "user": {
+            "email": email,
+            "name": name,
+            "picture": picture,
+            "is_admin": is_admin(email),
+            "created_at": user.get("created_at"),
+        },
+    }
+
+
+@app.get("/api/auth/me")
+def auth_me(user: dict = Depends(current_user)):
+    return {
+        "email": user["email"],
+        "name": user.get("name", ""),
+        "picture": user.get("picture", ""),
+        "is_admin": user.get("is_admin", False),
+    }
+
+
+@app.post("/api/auth/logout")
+def auth_logout(response: Response):
+    response.delete_cookie(COOKIE_NAME, path="/")
+    return {"status": "ok"}
+
 
 
 class CreateSessionRequest(BaseModel):
@@ -329,14 +459,19 @@ _start_health_checker()
 
 
 @app.get("/api/sessions")
-def get_sessions():
-    """List all available sessions with running status, portfolio summary, and daily performance."""
+def get_sessions(user: dict = Depends(current_user)):
+    """List sessions owned by the current user."""
     try:
         from agent.session import list_sessions, SESSIONS_DIR
         import sqlite3
         sessions = list_sessions()
         # Hide child sessions from comparison runs unless explicitly requested
         sessions = [s for s in sessions if not s.get("parent_session")]
+        # Scope by ownership — non-admin users only see their own sessions.
+        # Admin users on /api/sessions also see only their own (admin gets the
+        # admin endpoint for the full list).
+        user_email = (user.get("email") or "").lower()
+        sessions = [s for s in sessions if (s.get("user_email") or "").lower() == user_email]
         for s in sessions:
             sid = s["session_id"]
             status = _is_agent_running(sid)
@@ -436,6 +571,40 @@ def get_sessions():
         return []
 
 
+@app.get("/api/admin/sessions")
+def get_admin_sessions(_admin: dict = Depends(require_admin)):
+    """Admin: list ALL sessions (no ownership filter)."""
+    from agent.session import list_sessions, SESSIONS_DIR
+    import sqlite3
+    sessions = list_sessions()
+    sessions = [s for s in sessions if not s.get("parent_session")]
+    for s in sessions:
+        sid = s["session_id"]
+        status = _is_agent_running(sid)
+        s["is_running"] = status["running"]
+        s["pid"] = status["pid"]
+        db_path = SESSIONS_DIR / sid / "trades.db"
+        if db_path.exists():
+            try:
+                conn = sqlite3.connect(str(db_path))
+                row = conn.execute(
+                    "SELECT COUNT(*), SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) "
+                    "FROM trades WHERE status = 'closed'"
+                ).fetchone()
+                conn.close()
+                total = row[0] or 0
+                wins = row[1] or 0
+                s["total_trades"] = total
+                s["win_rate"] = round((wins / total) * 100, 1) if total else None
+            except Exception:
+                s["total_trades"] = 0
+                s["win_rate"] = None
+        else:
+            s["total_trades"] = 0
+            s["win_rate"] = None
+    return sessions
+
+
 @app.get("/api/sessions/current")
 def get_current_session():
     """Get the currently active session ID."""
@@ -460,13 +629,39 @@ def switch_session(session_id: str):
 
 
 @app.post("/api/sessions")
-def create_session(req: CreateSessionRequest):
-    """Create a new trading session."""
+def create_session(req: CreateSessionRequest, user: dict = Depends(current_user)):
+    """Create a new trading session owned by the current user."""
     from agent.session import SessionConfig, save_session, SESSIONS_DIR
 
     # Check if session already exists
     if (SESSIONS_DIR / req.session_id / "config.yaml").exists():
         raise HTTPException(409, f"Session '{req.session_id}' already exists")
+
+    # API key requirement: non-admins must provide their own literal key
+    is_user_admin = user.get("is_admin", False)
+    api_key_encrypted = ""
+    api_key_env = req.api_key_env or "OPENROUTER_API_KEY"
+    raw_key = (req.api_key_env or "").strip()
+    looks_like_literal_key = len(raw_key) > 20 and not raw_key.isupper() and not raw_key.startswith("OPENROUTER_") and not raw_key.startswith("ANTHROPIC_") and not raw_key.startswith("OPENAI_")
+    if looks_like_literal_key:
+        api_key_encrypted = encrypt(raw_key)
+        api_key_env = "OPENROUTER_API_KEY"  # placeholder, ignored when encrypted is present
+    elif not is_user_admin:
+        raise HTTPException(
+            400,
+            "OpenRouter API key is required. Get one at openrouter.ai/keys "
+            "(free tier supports several models)."
+        )
+
+    # Per-user session count cap (admins bypass)
+    if not is_user_admin:
+        from agent.session import list_sessions
+        existing = [s for s in list_sessions() if (s.get("user_email") or "").lower() == user["email"].lower()]
+        if len(existing) >= 10:
+            raise HTTPException(
+                403,
+                "You've reached the 10-session limit. Delete one to create another."
+            )
 
     sc = SessionConfig(
         session_id=req.session_id,
@@ -481,7 +676,8 @@ def create_session(req: CreateSessionRequest):
         watchlist=req.watchlist,
         llm_provider=req.llm_provider,
         llm_model=req.llm_model,
-        api_key_env=req.api_key_env,
+        api_key_env=api_key_env,
+        api_key_encrypted=api_key_encrypted,
         intraday_interval_min=req.intraday_interval_min,
         personality=req.personality,
         created_at=datetime.now().isoformat(),
@@ -490,6 +686,7 @@ def create_session(req: CreateSessionRequest):
         backtest_start_date=req.backtest_start_date,
         backtest_end_date=req.backtest_end_date,
         data_source="kite" if req.market in ("nse", "nse-intraday") else "yfinance",
+        user_email=user["email"].lower(),
     )
     sc.resolve_defaults()
     save_session(sc)
@@ -542,7 +739,8 @@ def create_session(req: CreateSessionRequest):
 
 
 @app.put("/api/sessions/{session_id}")
-def update_session(session_id: str, req: UpdateSessionRequest):
+def update_session(session_id: str, req: UpdateSessionRequest, user: dict = Depends(current_user)):
+    _ensure_session_access(session_id, user)
     """Update an existing session config."""
     from agent.session import load_session, save_session
 
@@ -601,7 +799,8 @@ def update_session(session_id: str, req: UpdateSessionRequest):
 
 
 @app.delete("/api/sessions/{session_id}")
-def delete_session(session_id: str):
+def delete_session(session_id: str, user: dict = Depends(current_user)):
+    _ensure_session_access(session_id, user)
     """Delete a session (only if agent is not running)."""
     import shutil
     from agent.session import SESSIONS_DIR
@@ -685,7 +884,8 @@ def _start_agent_process(session_id: str) -> int:
 
 
 @app.post("/api/agent/start/{session_id}")
-def start_agent(session_id: str):
+def start_agent(session_id: str, user: dict = Depends(current_user)):
+    _ensure_session_access(session_id, user)
     """Start the agent loop for a session."""
     from agent.session import SESSIONS_DIR
 
@@ -711,7 +911,8 @@ def start_agent(session_id: str):
 
 
 @app.post("/api/agent/stop/{session_id}")
-def stop_agent(session_id: str):
+def stop_agent(session_id: str, user: dict = Depends(current_user)):
+    _ensure_session_access(session_id, user)
     """Stop the agent for a session by sending SIGTERM."""
     status = _is_agent_running(session_id)
     if not status["running"]:
@@ -728,7 +929,8 @@ def stop_agent(session_id: str):
 
 
 @app.post("/api/sessions/{session_id}/liquidate")
-def liquidate_session(session_id: str):
+def liquidate_session(session_id: str, user: dict = Depends(current_user)):
+    _ensure_session_access(session_id, user)
     """Kill switch — stop the agent and force-close all open positions at market.
 
     Useful when the user wants out NOW. Sends SIGTERM to the agent, waits briefly
@@ -810,7 +1012,8 @@ _backtest_threads: Dict[str, Any] = {}  # session_id → thread
 
 
 @app.post("/api/backtest/start/{session_id}")
-def start_backtest(session_id: str, req: BacktestRequest):
+def start_backtest(session_id: str, req: BacktestRequest, user: dict = Depends(current_user)):
+    _ensure_session_access(session_id, user)
     """Start a historical backtest in the background."""
     from agent.session import load_session, save_session, SESSIONS_DIR
     import threading
@@ -880,7 +1083,8 @@ def start_backtest(session_id: str, req: BacktestRequest):
 
 
 @app.get("/api/backtest/status/{session_id}")
-def get_backtest_status(session_id: str):
+def get_backtest_status(session_id: str, user: dict = Depends(current_user)):
+    _ensure_session_access(session_id, user)
     """Get backtest progress."""
     from agent.session import SESSIONS_DIR
 
@@ -895,7 +1099,8 @@ def get_backtest_status(session_id: str):
 
 
 @app.get("/api/backtest/results/{session_id}")
-def get_backtest_results(session_id: str):
+def get_backtest_results(session_id: str, user: dict = Depends(current_user)):
+    _ensure_session_access(session_id, user)
     """Get final backtest results."""
     from agent.session import SESSIONS_DIR
 
@@ -927,7 +1132,8 @@ def _model_slug(model: str) -> str:
 
 
 @app.post("/api/backtest/compare/start/{base_session_id}")
-def start_compare_backtest(base_session_id: str, req: BacktestCompareRequest):
+def start_compare_backtest(base_session_id: str, req: BacktestCompareRequest, user: dict = Depends(current_user)):
+    _ensure_session_access(base_session_id, user)
     """Run the same backtest with multiple models, sequentially.
 
     Each model gets a child session cloned from the base. Children are tagged
@@ -1054,7 +1260,8 @@ def start_compare_backtest(base_session_id: str, req: BacktestCompareRequest):
 
 
 @app.get("/api/backtest/compare/status/{base_session_id}")
-def get_compare_status(base_session_id: str):
+def get_compare_status(base_session_id: str, user: dict = Depends(current_user)):
+    _ensure_session_access(base_session_id, user)
     """Return aggregated comparison status: per-child progress + final summary."""
     from agent.session import SESSIONS_DIR
 
@@ -1112,7 +1319,8 @@ def get_compare_status(base_session_id: str):
 
 
 @app.post("/api/backtest/compare/cleanup/{base_session_id}")
-def cleanup_comparison(base_session_id: str):
+def cleanup_comparison(base_session_id: str, user: dict = Depends(current_user)):
+    _ensure_session_access(base_session_id, user)
     """Delete child sessions and the comparison metadata file."""
     import shutil
     from agent.session import SESSIONS_DIR
@@ -1145,7 +1353,8 @@ def cleanup_comparison(base_session_id: str):
 
 
 @app.post("/api/backtest/go-live/{session_id}")
-def backtest_go_live(session_id: str):
+def backtest_go_live(session_id: str, user: dict = Depends(current_user)):
+    _ensure_session_access(session_id, user)
     """Convert a completed backtest session to live trading mode and start the agent."""
     from agent.session import load_session, save_session
 
@@ -1237,7 +1446,8 @@ def _fetch_watchlist_with_timeout(market_data, timeout=5):
 
 
 @app.get("/api/dashboard/{session_id}")
-def get_dashboard(session_id: str):
+def get_dashboard(session_id: str, user: dict = Depends(current_user)):
+    _ensure_session_access(session_id, user)
     """Bundled dashboard endpoint — returns all data in one response."""
     import concurrent.futures
     c = _get_components(session_id)
@@ -1353,7 +1563,8 @@ def get_dashboard(session_id: str):
 
 
 @app.get("/api/portfolio")
-def get_portfolio(session: str = None):
+def get_portfolio(session: str = None, user: dict = Depends(current_user)):
+    if session: _ensure_session_access(session, user)
     """Get current portfolio summary. Fetches live prices with a 5s timeout."""
     c = _get_components(session)
     prices = _fetch_prices_with_timeout(c["market_data"], timeout=5)
@@ -1361,7 +1572,8 @@ def get_portfolio(session: str = None):
 
 
 @app.get("/api/trades/open")
-def get_open_trades(session: str = None):
+def get_open_trades(session: str = None, user: dict = Depends(current_user)):
+    if session: _ensure_session_access(session, user)
     """Get all open positions."""
     c = _get_components(session)
     positions = c["portfolio"].get_open_positions()
@@ -1379,7 +1591,8 @@ def get_open_trades(session: str = None):
 
 
 @app.get("/api/trades/closed")
-def get_closed_trades(limit: int = 30, session: str = None):
+def get_closed_trades(limit: int = 30, session: str = None, user: dict = Depends(current_user)):
+    if session: _ensure_session_access(session, user)
     """Get recent closed trades."""
     c = _get_components(session)
     trades = c["portfolio"].get_closed_trades(limit=limit)
@@ -1398,7 +1611,8 @@ def get_closed_trades(limit: int = 30, session: str = None):
 
 
 @app.get("/api/risk")
-def get_risk_status(session: str = None):
+def get_risk_status(session: str = None, user: dict = Depends(current_user)):
+    if session: _ensure_session_access(session, user)
     """Get current risk metrics. Fetches live prices with a 5s timeout."""
     c = _get_components(session)
     prices = _fetch_prices_with_timeout(c["market_data"], timeout=5)
@@ -1406,14 +1620,16 @@ def get_risk_status(session: str = None):
 
 
 @app.get("/api/performance")
-def get_performance(session: str = None):
+def get_performance(session: str = None, user: dict = Depends(current_user)):
+    if session: _ensure_session_access(session, user)
     """Get aggregate performance stats."""
     c = _get_components(session)
     return c["learner"].get_performance_stats()
 
 
 @app.get("/api/performance/detailed")
-def get_detailed_performance(session: str = None):
+def get_detailed_performance(session: str = None, user: dict = Depends(current_user)):
+    if session: _ensure_session_access(session, user)
     """Get detailed performance breakdown by category + distilled rules."""
     c = _get_components(session)
     learner = c["learner"]
@@ -1500,7 +1716,8 @@ def get_detailed_performance(session: str = None):
 
 
 @app.get("/api/learnings")
-def get_learnings(session: str = None):
+def get_learnings(session: str = None, user: dict = Depends(current_user)):
+    if session: _ensure_session_access(session, user)
     """Get the learning journal contents."""
     c = _get_components(session)
     return {"content": c["learner"].get_learnings(max_chars=10000)}
@@ -1509,7 +1726,8 @@ def get_learnings(session: str = None):
 # ── Live Directives ──────────────────────────────────────────
 
 @app.get("/api/directives")
-def get_directives(session: str = None):
+def get_directives(session: str = None, user: dict = Depends(current_user)):
+    if session: _ensure_session_access(session, user)
     """Get active directives for a session."""
     from agent.session import SESSIONS_DIR
     sid = session or _current_session_id
@@ -1535,7 +1753,8 @@ def get_directives(session: str = None):
 
 
 @app.post("/api/directives")
-def add_directive(req: AddDirectiveRequest, session: str = None):
+def add_directive(req: AddDirectiveRequest, session: str = None, user: dict = Depends(current_user)):
+    if session: _ensure_session_access(session, user)
     """Add a new directive to a session."""
     from agent.session import SESSIONS_DIR
     import random, string, time as _time
@@ -1571,7 +1790,8 @@ def add_directive(req: AddDirectiveRequest, session: str = None):
 
 
 @app.delete("/api/directives/{directive_id}")
-def delete_directive(directive_id: str, session: str = None):
+def delete_directive(directive_id: str, session: str = None, user: dict = Depends(current_user)):
+    if session: _ensure_session_access(session, user)
     """Remove a specific directive."""
     from agent.session import SESSIONS_DIR
 
@@ -1594,7 +1814,8 @@ def delete_directive(directive_id: str, session: str = None):
 # ── Daily Performance ────────────────────────────────────────
 
 @app.get("/api/performance/daily")
-def get_daily_performance(limit: int = 30, session: str = None):
+def get_daily_performance(limit: int = 30, session: str = None, user: dict = Depends(current_user)):
+    if session: _ensure_session_access(session, user)
     """Get per-day performance breakdown from snapshots + trades."""
     import sqlite3
     c = _get_components(session)
@@ -1649,7 +1870,8 @@ def get_daily_performance(limit: int = 30, session: str = None):
 
 
 @app.get("/api/watchlist")
-def get_watchlist(session: str = None):
+def get_watchlist(session: str = None, user: dict = Depends(current_user)):
+    if session: _ensure_session_access(session, user)
     """Get watchlist with current data. Fetches live prices with a 5s timeout."""
     import concurrent.futures
     c = _get_components(session)
@@ -1664,7 +1886,8 @@ def get_watchlist(session: str = None):
 
 
 @app.get("/api/snapshots")
-def get_daily_snapshots(limit: int = 30, session: str = None):
+def get_daily_snapshots(limit: int = 30, session: str = None, user: dict = Depends(current_user)):
+    if session: _ensure_session_access(session, user)
     """Get daily portfolio snapshots for charting."""
     import sqlite3
     c = _get_components(session)
@@ -1686,7 +1909,8 @@ def get_daily_snapshots(limit: int = 30, session: str = None):
 
 
 @app.get("/api/logs")
-def get_logs(lines: int = 150, session: str = None):
+def get_logs(lines: int = 150, session: str = None, user: dict = Depends(current_user)):
+    if session: _ensure_session_access(session, user)
     """Get recent agent log lines."""
     c = _get_components(session)
     log_path = Path(c["config"].log_path)
@@ -1702,7 +1926,8 @@ def get_logs(lines: int = 150, session: str = None):
 
 
 @app.get("/api/journal")
-def get_journal(session: str = None):
+def get_journal(session: str = None, user: dict = Depends(current_user)):
+    if session: _ensure_session_access(session, user)
     """Get full learning journal."""
     c = _get_components(session)
     journal_path = Path(c["config"].learnings_path)
@@ -1714,7 +1939,8 @@ def get_journal(session: str = None):
 
 
 @app.get("/api/cost/{session_id}")
-def get_cost_ledger(session_id: str, days: int = 30):
+def get_cost_ledger(session_id: str, days: int = 30, user: dict = Depends(current_user)):
+    _ensure_session_access(session_id, user)
     """Aggregate LLM cost ledger for a session.
 
     Returns: lifetime totals, per-day series (last N days), and per-model breakdown.
@@ -1799,7 +2025,8 @@ def get_cost_ledger(session_id: str, days: int = 30):
 
 
 @app.get("/api/replay/{session_id}")
-def get_replay_day(session_id: str, date: str):
+def get_replay_day(session_id: str, date: str, user: dict = Depends(current_user)):
+    _ensure_session_access(session_id, user)
     """Return all reasoning cycles + trades for a single backtest day.
 
     Used by the day-replay UI to step through cycle-by-cycle.
@@ -1875,7 +2102,8 @@ def get_replay_day(session_id: str, date: str):
 
 
 @app.get("/api/thinking/{session_id}")
-def get_thinking(session_id: str, limit: int = 50):
+def get_thinking(session_id: str, limit: int = 50, user: dict = Depends(current_user)):
+    _ensure_session_access(session_id, user)
     """Return reverse-chronological agent reasoning trail."""
     from agent.session import SESSIONS_DIR
     log_path = SESSIONS_DIR / session_id / "thinking.jsonl"
@@ -1901,7 +2129,8 @@ def get_thinking(session_id: str, limit: int = 50):
 
 
 @app.get("/api/config")
-def get_config(session: str = None):
+def get_config(session: str = None, user: dict = Depends(current_user)):
+    if session: _ensure_session_access(session, user)
     """Get agent configuration (non-sensitive) + market info for frontend."""
     c = _get_components(session)
     config = c["config"]

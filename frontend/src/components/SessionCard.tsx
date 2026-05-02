@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
 import { api, fmt, pct, cn } from "@/lib/api";
+import { useAppPrefix } from "@/lib/paths";
 import { useToast } from "@/components/Toast";
 import { Sparkline } from "@/components/Sparkline";
 import type { Session } from "@/lib/types";
@@ -23,6 +24,7 @@ export function SessionCard({ session, onDelete }: { session: Session; onDelete?
   const [toggling, setToggling] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const toast = useToast();
+  const prefix = useAppPrefix();
 
   // Use inline data from the sessions list API (no extra API calls)
   const portfolio = session.portfolio ?? null;
@@ -114,7 +116,7 @@ export function SessionCard({ session, onDelete }: { session: Session; onDelete?
   const modelName = formatModel(session.llm_model);
 
   return (
-    <Link href={`/sessions/${session.session_id}`} className="block">
+    <Link href={`${prefix}/sessions/${session.session_id}`} className="block">
       <div className="relative bg-bg-card border border-border rounded-2xl p-4 md:p-5 hover:border-border-accent transition-all group overflow-hidden">
         {/* Ambient gradient for profit/loss */}
         {hasPortfolio && (

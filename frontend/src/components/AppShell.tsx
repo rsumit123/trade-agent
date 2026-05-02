@@ -1,9 +1,22 @@
 "use client";
+import { usePathname } from "next/navigation";
 import { Sidebar, MobileTopBar } from "@/components/Sidebar";
 import { BottomNav } from "@/components/BottomNav";
 import { ToastProvider } from "@/components/Toast";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname() || "";
+  // Marketing + login render full-bleed without app chrome
+  const isPublic = pathname === "/" || pathname.startsWith("/login");
+
+  if (isPublic) {
+    return (
+      <ToastProvider>
+        <main className="min-h-screen">{children}</main>
+      </ToastProvider>
+    );
+  }
+
   return (
     <ToastProvider>
       <Sidebar isOpen={false} onClose={() => {}} />

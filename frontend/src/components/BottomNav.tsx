@@ -63,10 +63,15 @@ export function BottomNav() {
 
   // Hide the global bottom nav on the immersive replay screen (which has its own controls)
   if (pathname.includes("/replay/")) return null;
+  // Hide on marketing + login
+  if (pathname === "/" || pathname.startsWith("/login")) return null;
 
-  // Extract session ID from /sessions/[id] or /sessions/[id]/settings
-  const sessionMatch = pathname.match(/^\/sessions\/([^/]+)/);
-  const sessionId = sessionMatch ? sessionMatch[1] : null;
+  // Determine app prefix and session id
+  const isAdmin = pathname.startsWith("/admin");
+  const prefix = isAdmin ? "/admin" : "/app";
+  // Match either /app/sessions/<id> or /admin/sessions/<id>
+  const sessionMatch = pathname.match(/^\/(app|admin)\/sessions\/([^/]+)/);
+  const sessionId = sessionMatch ? sessionMatch[2] : null;
   const isSessionPage = sessionId && sessionId !== "new";
   const isSettings = pathname.endsWith("/settings");
 
@@ -83,25 +88,25 @@ export function BottomNav() {
     return (
       <nav className="md:hidden fixed bottom-0 inset-x-0 bottom-nav flex items-start justify-around" style={navStyle}>
         <NavTab
-          href="/"
+          href={prefix}
           label="Sessions"
           active={false}
           icon={<HomeIcon active={false} />}
         />
         <NavTab
-          href={`/sessions/${sessionId}#trades`}
+          href={`${prefix}/sessions/${sessionId}#trades`}
           label="Trades"
           active={false}
           icon={<TradesIcon active={false} />}
         />
         <NavTab
-          href={`/sessions/${sessionId}#journal`}
+          href={`${prefix}/sessions/${sessionId}#journal`}
           label="Journal"
           active={false}
           icon={<JournalIcon active={false} />}
         />
         <NavTab
-          href={`/sessions/${sessionId}/settings`}
+          href={`${prefix}/sessions/${sessionId}/settings`}
           label="Settings"
           active={isSettings}
           icon={<SettingsIcon active={isSettings} />}
@@ -114,18 +119,18 @@ export function BottomNav() {
   return (
     <nav className="md:hidden fixed bottom-0 inset-x-0 bottom-nav flex items-start justify-around" style={navStyle}>
       <NavTab
-        href="/"
+        href={prefix}
         label="Sessions"
-        active={pathname === "/"}
-        icon={<HomeIcon active={pathname === "/"} />}
+        active={pathname === prefix}
+        icon={<HomeIcon active={pathname === prefix} />}
       />
       <NavTab
-        href="/sessions/new"
+        href={`${prefix}/sessions/new`}
         label="New Session"
-        active={pathname === "/sessions/new"}
+        active={pathname === `${prefix}/sessions/new`}
         icon={
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
-            stroke="currentColor" strokeWidth={pathname === "/sessions/new" ? 2.5 : 2} strokeLinecap="round" strokeLinejoin="round">
+            stroke="currentColor" strokeWidth={pathname === `${prefix}/sessions/new` ? 2.5 : 2} strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="10" />
             <line x1="12" y1="8" x2="12" y2="16" />
             <line x1="8" y1="12" x2="16" y2="12" />

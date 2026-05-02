@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
 import { api, fmt, pct } from "@/lib/api";
+import { useAppPrefix } from "@/lib/paths";
 import { useToast } from "@/components/Toast";
 import type { BacktestProgress, BacktestPhase, SessionConfig } from "@/lib/types";
 
@@ -35,6 +36,7 @@ export function BacktestPanel({ sessionId, config, onComplete }: Props) {
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const sym = config?.currency_symbol || "$";
+  const prefix = useAppPrefix();
   const toast = useToast();
 
   const fetchProgress = useCallback(() => {
@@ -300,7 +302,7 @@ export function BacktestPanel({ sessionId, config, onComplete }: Props) {
                   <tr key={d.date} style={{ borderBottom: "1px solid #0f172a" }}>
                     <td style={{ padding: "6px 8px", color: "#cbd5e1", fontFamily: "monospace" }}>
                       <a
-                        href={`/sessions/${sessionId}/replay/${d.date}`}
+                        href={`${prefix}/sessions/${sessionId}/replay/${d.date}`}
                         style={{ color: "#cbd5e1", textDecoration: "none" }}
                         onMouseEnter={(e) => (e.currentTarget.style.color = "#60a5fa")}
                         onMouseLeave={(e) => (e.currentTarget.style.color = "#cbd5e1")}
@@ -341,7 +343,7 @@ export function BacktestPanel({ sessionId, config, onComplete }: Props) {
                     </td>
                     <td style={{ padding: "6px 8px", textAlign: "right" }}>
                       <a
-                        href={`/sessions/${sessionId}/replay/${d.date}`}
+                        href={`${prefix}/sessions/${sessionId}/replay/${d.date}`}
                         style={{
                           fontSize: 10,
                           textTransform: "uppercase",
@@ -371,7 +373,7 @@ export function BacktestPanel({ sessionId, config, onComplete }: Props) {
             try {
               await api(`/api/backtest/go-live/${sessionId}`, { method: "POST" });
               toast.success("Switched to live trading!");
-              window.location.href = `/sessions/${sessionId}`;
+              window.location.href = `${prefix}/sessions/${sessionId}`;
             } catch (err) {
               const msg = err instanceof Error ? err.message : "Failed to go live";
               toast.error(msg);
@@ -501,6 +503,7 @@ function MiniStat({
 function RunningView({ progress, sym, sessionId }: { progress: BacktestProgress; sym: string; sessionId: string }) {
   const [picksOpen, setPicksOpen] = useState(false);
   const [pastDaysOpen, setPastDaysOpen] = useState(false);
+  const prefix = useAppPrefix();
   // Force re-render every 5s so "elapsed" timer ticks
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -731,7 +734,7 @@ function RunningView({ progress, sym, sessionId }: { progress: BacktestProgress;
                     <tr key={d.date} style={{ borderBottom: "1px solid #0a0f1c" }}>
                       <td style={{ padding: "6px 8px", fontFamily: "monospace" }}>
                         <a
-                          href={`/sessions/${sessionId}/replay/${d.date}`}
+                          href={`${prefix}/sessions/${sessionId}/replay/${d.date}`}
                           style={{ color: "#60a5fa", textDecoration: "none" }}
                         >
                           {d.date}
