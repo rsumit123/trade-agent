@@ -460,7 +460,9 @@ function CreateSessionInner() {
               }}
               isFree={isFree}
             />
-            <ModelInfo provider={form.llm_provider} model={form.llm_model} market={form.market} />
+            {user?.is_admin && (
+              <ModelInfo provider={form.llm_provider} model={form.llm_model} market={form.market} />
+            )}
           </div>
         </div>
       </FormGroup>
@@ -657,30 +659,30 @@ function ModelSelect({ provider, value, onChange, isFree = false }: { provider: 
       <select value={value} onChange={(e) => onChange(e.target.value)} className="w-full text-sm">
         {isFree && (
           <optgroup label="Free tier">
-            <option value="openai/gpt-4o-mini">✓ GPT-4o Mini — $0.15/M</option>
-            <option value="google/gemini-2.5-flash">✓ Gemini 2.5 Flash — $0.15/M</option>
+            <option value="openai/gpt-4o-mini">✓ GPT-4o Mini</option>
+            <option value="google/gemini-2.5-flash">✓ Gemini 2.5 Flash</option>
           </optgroup>
         )}
         <optgroup label={isFree ? "🔒 Locked — Paid tier coming soon" : "Anthropic"}>
-          <option value="anthropic/claude-haiku-4-5">{lock("anthropic/claude-haiku-4-5", "Claude Haiku 4.5 — $0.80/M")}</option>
+          <option value="anthropic/claude-haiku-4-5">{lock("anthropic/claude-haiku-4-5", "Claude Haiku 4.5")}</option>
         </optgroup>
         {!isFree && (
           <optgroup label="Google">
-            <option value="google/gemini-2.5-flash">Gemini 2.5 Flash — $0.15/M</option>
+            <option value="google/gemini-2.5-flash">Gemini 2.5 Flash</option>
           </optgroup>
         )}
         {!isFree && (
           <optgroup label="OpenAI">
-            <option value="openai/gpt-4o-mini">GPT-4o Mini — $0.15/M</option>
+            <option value="openai/gpt-4o-mini">GPT-4o Mini</option>
           </optgroup>
         )}
         <optgroup label={isFree ? "🔒 Meta — Paid" : "Meta"}>
-          <option value="meta-llama/llama-4-maverick">{lock("meta-llama/llama-4-maverick", "Llama 4 Maverick — $0.20/M")}</option>
-          <option value="meta-llama/llama-4-scout">{lock("meta-llama/llama-4-scout", "Llama 4 Scout — $0.10/M")}</option>
+          <option value="meta-llama/llama-4-maverick">{lock("meta-llama/llama-4-maverick", "Llama 4 Maverick")}</option>
+          <option value="meta-llama/llama-4-scout">{lock("meta-llama/llama-4-scout", "Llama 4 Scout")}</option>
         </optgroup>
         <optgroup label={isFree ? "🔒 DeepSeek — Paid" : "DeepSeek"}>
-          <option value="deepseek/deepseek-chat-v3-0324">{lock("deepseek/deepseek-chat-v3-0324", "DeepSeek V3 — $0.14/M")}</option>
-          <option value="deepseek/deepseek-r1">{lock("deepseek/deepseek-r1", "DeepSeek R1 — $0.55/M")}</option>
+          <option value="deepseek/deepseek-chat-v3-0324">{lock("deepseek/deepseek-chat-v3-0324", "DeepSeek V3")}</option>
+          <option value="deepseek/deepseek-r1">{lock("deepseek/deepseek-r1", "DeepSeek R1")}</option>
         </optgroup>
       </select>
     );

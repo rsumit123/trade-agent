@@ -80,6 +80,12 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
         </div>
         <NavItem href={prefix} label={isAdmin ? "Admin · Sessions" : "Sessions"} icon="grid" active={pathname === prefix} onClick={handleNavClick} />
         <NavItem href={`${prefix}/sessions/new`} label="New Session" icon="plus" active={pathname === `${prefix}/sessions/new`} onClick={handleNavClick} />
+        {user?.is_admin && isAdmin && (
+          <>
+            <NavItem href="/admin/users" label="Users" icon="grid" active={pathname.startsWith("/admin/users")} onClick={handleNavClick} />
+            <NavItem href="/admin/waitlist" label="Waitlist" icon="grid" active={pathname.startsWith("/admin/waitlist")} onClick={handleNavClick} />
+          </>
+        )}
         {user?.is_admin && !isAdmin && (
           <NavItem href="/admin" label="Admin Panel" icon="grid" active={false} onClick={handleNavClick} />
         )}

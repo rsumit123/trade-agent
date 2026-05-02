@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useUser } from "@/lib/auth";
 import { SessionsListView } from "@/components/SessionsListView";
+import { AdminStatsStrip } from "@/components/AdminStatsStrip";
 
 export default function AdminHome() {
   const router = useRouter();
@@ -31,12 +32,15 @@ export default function AdminHome() {
   }
 
   return (
-    <SessionsListView
-      endpoint="admin"
-      newHref="/admin/sessions/new"
-      sessionHrefBase="/admin/sessions"
-      title="Admin · All Sessions"
-      subtitle="Every session across every user. Be careful."
-    />
+    <>
+      <AdminStatsStrip />
+      <SessionsListView
+        endpoint="admin"
+        newHref="/admin/sessions/new"
+        sessionHrefBase="/admin/sessions"
+        title="Admin · All Sessions"
+        subtitle="Every session across every user. Be careful."
+      />
+    </>
   );
 }
