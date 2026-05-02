@@ -96,6 +96,9 @@ export interface ReplayTrade {
   status: string;
   reason: string;
   exit_reason: string | null;
+  conviction?: number | null;
+  llm_model?: string | null;
+  exit_type?: string | null;
 }
 export interface ReplayDayData {
   session_id: string;
