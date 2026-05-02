@@ -354,3 +354,42 @@ class LLMWebSearchTool:
                 "required": ["action", "reason", "conviction"]
             }
         }
+
+    @staticmethod
+    def get_update_levels_tool() -> Dict[str, Any]:
+        """Tool for adjusting stop/target on an existing open position
+        (e.g. trailing stop after a favorable move, tightening stop on
+        signs of reversal). Cannot change ticker or quantity — those
+        require closing and re-opening."""
+        return {
+            "name": "update_levels",
+            "description": (
+                "Adjust the stop_price or target_price of an OPEN trade. "
+                "Use this to trail a stop after a favorable move, tighten "
+                "a stop when reversal signs appear, or extend a target. "
+                "Provide at least one of stop_price or target_price. "
+                "trade_id is required and must point to an open trade."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "trade_id": {
+                        "type": "integer",
+                        "description": "ID of the OPEN trade whose levels you want to adjust"
+                    },
+                    "stop_price": {
+                        "type": "number",
+                        "description": "New stop_price (omit to leave unchanged)"
+                    },
+                    "target_price": {
+                        "type": "number",
+                        "description": "New target_price (omit to leave unchanged)"
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Why are you adjusting? Reference the rule or signal."
+                    },
+                },
+                "required": ["trade_id", "reason"]
+            }
+        }

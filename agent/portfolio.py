@@ -285,6 +285,34 @@ class Portfolio:
         trade.exit_type = exit_type or "manual"
         return trade
 
+    # ── In-flight position tweaks ─────────────────────────────
+
+    def update_levels(
+        self,
+        trade_id: int,
+        stop_price: Optional[float] = None,
+        target_price: Optional[float] = None,
+    ) -> Optional[Trade]:
+        """Adjust stop / target on an open position. No-op fields stay as-is.
+        Returns the updated Trade, or None if not found / not open."""
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT * FROM trades WHERE id = ? AND status = 'open'",
+                (trade_id,),
+            ).fetchone()
+            if not row:
+                return None
+            trade = self._row_to_trade(row)
+            new_stop = stop_price if stop_price is not None else trade.stop_price
+            new_target = target_price if target_price is not None else trade.target_price
+            conn.execute(
+                "UPDATE trades SET stop_price = ?, target_price = ? WHERE id = ?",
+                (new_stop, new_target, trade_id),
+            )
+            trade.stop_price = new_stop
+            trade.target_price = new_target
+        return trade
+
     # ── Queries ───────────────────────────────────────────────
 
     def get_open_positions(self) -> List[Trade]:
