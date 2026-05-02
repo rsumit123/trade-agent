@@ -923,3 +923,331 @@ TATAPOWER respects momentum over overbought signals intraday. Filter overbought 
 
 • **Pattern:** Hotel/hospitality stocks whipsaw on sentiment shifts. Require stronger structural support before entry.
 
+
+### 2026-04-27 09:16 — Exit: BPCL.NS
+**EXIT** 200x BPCL.NS | WIN ✅ | ₹308.35 → ₹308.85 | P&L: ₹+100.00 (+0.16%) | held 162h40m
+
+• **Thesis miss**: Oil held firm but BPCL didn't reprice margin expansion. Market priced in demand destruction faster than your 1–3 day window allowed. You correctly identified the dislocation but underestimated macro headwinds overriding refining fundamentals.
+
+• **What worked**: Exit discipline was sharp—you cut when thesis deteriorated (flat price + volume collapse + SMA break) rather than averaging down. Accepting -₹210 loss saved capital for better setups.
+
+• **What failed**: Entry timing on a 162-hour hold. Mechanical dislocations need 6–24h validation, not days. You held through thesis invalidation signals.
+
+• **Next time**: On refinery plays, set a hard 48h exit if margin expansion doesn't show in price action. Don't extend swing thesis beyond initial repricing window.
+
+
+### 2026-04-27 09:33 — Entry: INFY.NS
+**ENTRY** 150x INFY.NS @ ₹1175.00  [intraday]
+  *Thesis: Oversold RSI bounce (30.5) near support (1.87% below). IT sector repricing post-weakness. Above VWAP ₹1169.66 signals positive structure. Target ₹1195–1210, stop ₹1150. Risk/reward 1:2 favorable. Intraday reversion play on macro dislocation.*
+
+
+### 2026-04-27 11:10 — Entry: ADANIGREEN.NS
+**ENTRY** 155x ADANIGREEN.NS @ ₹1242.85  [intraday]
+  *Thesis: Extreme overbought (RSI 89.6 — highest on watchlist). Price 1.14% below 5d resistance at ₹1257.35. Low volume (0.67x) signals momentum exhaustion. Power sector profit-taking likely. Target ₹1207 (mean reversion), Stop ₹1263 (above resistance). Intraday setup, 1:1.1 R/R favorable.*
+
+
+### 2026-04-27 11:10 — Entry: TATAPOWER.NS
+**ENTRY** 300x TATAPOWER.NS @ ₹453.75  [intraday]
+  *Thesis: Extreme overbought (RSI 85.5), 0.45% below 5d resistance. Volume LOW (0.98x) = distribution. Rally +4.34% on low follow-through suggests momentum exhaustion. Target ₹440 (support, 2.9% down), Stop ₹460 (above resistance). Intraday reversion trade.*
+
+
+### 2026-04-27 11:27 — Exit: ADANIGREEN.NS
+**EXIT** 155x ADANIGREEN.NS | LOSS ❌ | ₹1242.85 → ₹1251.75 | P&L: ₹-1379.50 (+0.72%) | held 16m
+
+# ADANIGREEN.NS Trade Reflection
+
+• **Thesis Failed**: Extreme RSI overbought (89.6) didn't trigger mean reversion as expected. Sector momentum (power rally) overwhelmed technical exhaustion signals. Exit was pragmatic risk management—cutting ₹1,379 loss vs. risking ₹11,595 at stop.
+
+• **What Went Wrong**: Over-relied on RSI divergence without confirming sector sentiment. Low volume alone wasn't enough to signal reversal in a strong uptrend. Didn't weight the fact that ADANIGREEN rides power sector tailwinds, which can sustain overbought conditions longer than mean reversion suggests.
+
+• **Next Time**: Before entry, assess sector momentum (is power rallying?). If yes, lower conviction on mean-reversion setups. Tighten stop or skip the trade entirely.
+
+• **Pattern**: Overbought RSI ≠ reversal guarantee in momentum plays. Thesis alignment matters more than single indicators.
+
+
+### 2026-04-27 11:43 — Exit: INFY.NS
+**EXIT** 150x INFY.NS | LOSS ❌ | ₹1175.00 → ₹1172.20 | P&L: ₹-420.00 (-0.24%) | held 2h9m
+
+## Trade Reflection: INFY.NS
+
+• **Thesis breakdown**: RSI oversold bounce setup looked sound on technicals, but macro fundamentals (weak IT earnings, demand concerns) overwhelmed the intraday reversion signal. You correctly identified deteriorating support and exited before larger losses—disciplined risk management.
+
+• **What worked**: Quick thesis invalidation and exit decision (only -0.24%). Stop placement at ₹1150 was sensible. What failed: underweighted sector headwinds against a mean-reversion setup; RSI 30.5 alone insufficient without macro tailwind.
+
+• **Next time**: Screen IT sector momentum/earnings sentiment *before* entry. A bounce-play needs either positive macro or at least neutral sentiment—you had neither.
+
+• **Pattern**: INFY intraday bounces work best in recovery rallies, not drawdown phases. Wait for sector stabilization signals first.
+
+
+### 2026-04-27 12:17 — Entry: TANLA.NS
+**ENTRY** 150x TANLA.NS @ ₹553.50  [intraday]
+  *Thesis: Post-earnings distribution exhaustion. RSI 70.8 overbought, +14.76% on 18.19x volume spike today, 0.45% from 5d resistance ₹560. Earnings call today = final trigger for profit-taking. Q4 beat already priced in. Target ₹540 (support), Stop ₹565. Risk 1:2.4 R/R intraday reversal setup.*
+
+
+### 2026-04-27 12:17 — Entry: ADANIGREEN.NS
+**ENTRY** 100x ADANIGREEN.NS @ ₹1240.95  [intraday]
+  *Thesis: Extreme overbought exhaustion. RSI 89.5 (highest on watchlist), 1.35% from 5d resistance ₹1257, low volume (0.83x) despite +8.5% range move = momentum fade. Price pinned at ceiling with nowhere to go. Heatwave sentiment exhausted. Target ₹1210 (support), Stop ₹1265. Intraday reversion, Risk 1:1.2 R/R.*
+
+
+### 2026-04-27 12:34 — Exit: TANLA.NS
+**EXIT** 150x TANLA.NS | LOSS ❌ | ₹553.50 → ₹571.65 | P&L: ₹-2722.50 (+3.28%) | held 16m
+
+# TANLA.NS Trade Reflection
+
+**Thesis vs Reality:**
+Predicted distribution exhaustion; got institutional accumulation instead. Earnings beat + dividend triggered buying, not selling. Stop was breached mid-trade—disciplined exit saved further damage.
+
+**What Went Wrong:**
+Over-relied on RSI overbought + volume spike as reversal signals without confirming *who* was buying. Missed that positive earnings guidance reverses post-earnings weakness; didn't account for dividend catalyzing fresh accumulation.
+
+**Key Takeaway:**
+Before entering earnings plays, check analyst expectations vs. actual guidance. A beat on *forward guidance* (not just Q4 results) attracts institutions, not distribution. Would've avoided the setup entirely.
+
+**Pattern for TANLA:**
+This stock spikes on good news. On next earnings, wait for post-spike consolidation rather than chasing reversal setups immediately after call.
+
+
+### 2026-04-27 13:38 — Exit: ADANIGREEN.NS
+**EXIT** 100x ADANIGREEN.NS | WIN ✅ | ₹1240.95 → ₹1229.00 | P&L: ₹+1195.00 (-0.96%) | held 81m
+
+# Trade Reflection: ADANIGREEN.NS
+
+• **Thesis vs. Reality**: Overbought exhaustion was valid (RSI 89.5), but the reversion was shallow (-0.96%) and slow. You exited on risk management grounds (unfavorable R/R near market close) rather than thesis confirmation. The trade didn't fail—it just didn't deliver the 1.2R you targeted.
+
+• **What Worked**: Position sizing and early exit discipline prevented a forced liquidation. Recognizing the shift from 1:1.2 to 1:1.56 R/R showed good risk awareness.
+
+• **What Didn't**: Extreme RSI alone didn't trigger decisive selling pressure. Low volume signal was present but insufficient to drive meaningful reversion.
+
+• **Next Time**: Don't hold extreme RSI shorts into 3 PM unless you have confirmed breakdown below support. Exit at 50% profit if thesis doesn't confirm by midday; don't wait for forced-close scenarios.
+
+
+### 2026-04-27 13:39 — Exit: TATAPOWER.NS
+**EXIT** 300x TATAPOWER.NS | WIN ✅ | ₹453.75 → ₹453.30 | P&L: ₹+135.00 (-0.10%) | held 2h28m
+
+## Trade Reflection: TATAPOWER.NS
+
+• **Thesis vs. Reality**: Overbought RSI + low-volume rally suggested mean reversion to ₹440. Price stalled at resistance but never rolled over decisively. Exited defensively at breakeven to avoid MOC risk—a prudent risk call, but the trade never developed the conviction needed to hold through the target.
+
+• **What Worked**: Identified exhaustion correctly (RSI 85.5, weak volume). Exit discipline prevented a potential loss during 3:15 PM squeeze.
+
+• **What Didn't**: No pullback confirmation before entry. Entered on thesis alone without a micro-structure trigger (e.g., lower high, volume drop into support).
+
+• **Next Time**: Wait for a 1–2% pullback *into* support with volume compression before shorting overbought rallies. Entry timing matters as much as thesis.
+
+
+### 2026-04-27 13:39 — Entry: SIEMENS.NS
+**ENTRY** 50x SIEMENS.NS @ ₹3855.00  [intraday]
+  *Thesis: Extreme overbought reversal setup. RSI 77.5 (highest since rally start), only 1.14% from 5d resistance ₹3,901, vol_ratio 0.33 (ultra-low despite +1.26% move) = distribution exhaustion. Price above VWAP ₹3,843 suggests momentum fade. Intraday target ₹3,760 (support, -2.5%), stop ₹3,920 (above resistance, +1.6%). Risk 1:1.6 R/R. Conservative sizing (50 shares) after exiting prior shorts.*
+
+
+### 2026-04-27 13:55 — Exit: SIEMENS.NS
+**EXIT** 50x SIEMENS.NS | LOSS ❌ | ₹3855.00 → ₹3868.30 | P&L: ₹-665.00 (+0.35%) | held 16m
+
+## Trade Reflection – SIEMENS.NS
+
+• **Thesis vs. Reality:** RSI overbought signal was *correct* (77.8), but market macro (Nifty +0.84%, SMIDs strong) overrode mean-reversion setup. Price ground higher on ultra-low volume—distribution thesis failed to trigger reversal. Exited disciplined rather than chase into close.
+
+• **What Worked:** Recognized thesis wasn't playing out in real-time; avoided holding into MOC squeeze. Conservative 50-share sizing protected downside. Stop placement above resistance was sound.
+
+• **What Failed:** Entered short *without* pullback confirmation. Overbought RSI alone isn't sufficient in decisively bullish macro. Should've waited for price to kiss support first.
+
+• **Next Time:** Before shorting overbought intraday setups in bullish market structure—**require a lower timeframe pullback touch (15m/5m) near VWAP before entry.** Thesis timing beats thesis correctness.
+
+
+### 2026-04-27 14:12 — Entry: ADANIGREEN.NS
+**ENTRY** 30x ADANIGREEN.NS @ ₹1228.60  [intraday]
+  *Thesis: Extreme overbought reversal: RSI 87.1 (highest on watchlist), price below VWAP ₹1,237.99 (distribution), down -0.62% while Nifty rallies (bearish divergence), 2.4% from resistance ₹1,257. Intraday mean-reversion target ₹1,190 (-3.1%), stop ₹1,250 above resistance. Risk 1:1.8 R/R. Conservative sizing after two consecutive short losses.*
+
+
+### 2026-04-27 14:44 — Exit: ADANIGREEN.NS
+**EXIT** 30x ADANIGREEN.NS | LOSS ❌ | ₹1228.60 → ₹1229.30 | P&L: ₹-21.00 (+0.06%) | held 32m
+
+# ADANIGREEN.NS Trade Reflection
+
+**Thesis vs. Reality:**
+Overbought setup was technically sound (RSI 87.1, below VWAP, divergence), but macro headwinds—a strong Nifty rally—overpowered mean-reversion logic. You exited on lack of confirmation rather than a true reversal trigger.
+
+**What Went Wrong:**
+Three consecutive shorts without conviction signals poor conviction filtering. You were already down ₹3.8k; exiting to "preserve capital" is actually just cutting losses reactively, not strategically.
+
+**Next Time:**
+Before entering the 3rd short of the day, ask: *"Is this conviction-based or revenge trading?"* Set a hard rule—max 2 short attempts per session, or switch to long bias if macro is bullish.
+
+**Pattern:**
+ADANIGREEN rallies hard with Nifty. Don't short it on pure overbought technicals without macro alignment.
+
+
+### 2026-04-28 10:22 — Entry: INFY.NS
+**ENTRY** 40x INFY.NS @ ₹1161.00  [intraday]
+  *Thesis: Extreme oversold bounce setup: RSI 27.7 (bottom percentile), near support 0.83%, IT sector capitulation. Nifty flat/neutral macro won't resist early-day bounce. Tight stop (₹1,145, -1.4%), target ₹1,185 (+2%), 1.5:1 R/R. Capital preservation focus after 3 short losses.*
+
+
+### 2026-04-28 12:31 — Exit: INFY.NS
+**EXIT** 40x INFY.NS | LOSS ❌ | ₹1161.00 → ₹1156.20 | P&L: ₹-192.00 (-0.41%) | held 2h9m
+
+# INFY.NS Reflection
+
+**Thesis vs. Reality:**
+Expected oversold bounce didn't materialize despite RSI 27.7. Nifty's flatness wasn't enough to offset sector headwinds—IT weakness (HCL/Infosys earnings, FII selling) overpowered technicals.
+
+**What Worked/Didn't:**
+✓ Tight stop and risk management prevented larger loss after 3 consecutive shorts  
+✗ Oversold RSI alone insufficient in negative sector macro; ignored that macro > technicals intraday
+
+**Next Time:**
+Before entry, cross-check sector ETF (Nifty IT) momentum. If sector is rolling over, don't rely on single-stock oversold bounces—wait for sector stabilization first. RSI 27.7 means nothing if FII selling persists.
+
+**Pattern:** INFY intraday bounces fail when IT sector macro is weak. Respect sector gravity.
+
+
+### 2026-04-28 13:04 — Entry: TATACHEM.NS
+**ENTRY** 20x TATACHEM.NS @ ₹803.20  [intraday]
+  *Thesis: Exhaustion reversal on extreme overbought setup: RSI 69.7, +10.9% gap on 4.4x volume (panic buying), at resistance 806.4 (0.67%), macro bearish (FII selling, crude pressure). Classic one-day spike distribution pattern. Target ₹770 (-3.9%), stop ₹815 (+1.7% risk), 2.3:1 R/R. Conservative sizing after recent losses.*
+
+
+### 2026-04-28 13:36 — Exit: TATACHEM.NS
+**EXIT** 20x TATACHEM.NS | LOSS ❌ | ₹803.20 → ₹810.15 | P&L: ₹-139.00 (+0.87%) | held 31m
+
+# TATACHEM.NS - Trade Reflection
+
+**Thesis vs. Reality:**
+Assumed exhaustion reversal on overbought RSI, but price action contradicted it—6.7x volume at VWAP signaled accumulation, not distribution. Macro headwinds (FII selling, crude) didn't override micro strength.
+
+**What Went Wrong:**
+Entered on a *pattern assumption* without confirming initial weakness. Price held above VWAP immediately, which should have been a red flag. Stop was too tight (₹40 away from exit), forcing an early exit under emotional pressure after 4 consecutive losses.
+
+**Next Time:**
+Wait for *at least one lower candle close below VWAP* before entering exhaustion reversals. Don't let loss streaks compress your stops—respect planned R/R or skip the trade.
+
+**Pattern Note:**
+TATACHEM gaps strongly on volume; respect accumulation signals over macro sentiment alone.
+
+
+### 2026-04-29 09:33 — Entry: BANDHANBNK.NS
+**ENTRY** 30x BANDHANBNK.NS @ ₹194.20  [swing]
+  *Thesis: Volume breakout (2.93x avg), RSI 52.3 (neutral), gap +8.58% on accumulation volume, not overbought, support 12.97% below provides cushion. Banking sector DII inflow on Nifty stabilization. Target ₹206 (+6.2%), stop ₹188 (-2.6%). R/R 2.4:1. Respects capital preservation after recent losses.*
+
+
+### 2026-04-29 10:21 — Entry: IDEA.NS
+**ENTRY** 50x IDEA.NS @ ₹10.47  [intraday]
+  *Thesis: Overbought exhaustion short: RSI 77.0 (extreme), +5.33% gap-up on 0.62x vol (low volume spike = distribution), price ₹10.48 just rejected at 5d high ₹10.55 (res 0.67%), above VWAP 10.32. Support 10.59% provides 3:1 R/R (target ₹9.80, stop ₹10.70). Intraday mean-reversion setup, Nifty flat/macro bearish won't sustain spike.*
+
+
+### 2026-04-29 12:14 — Exit: IDEA.NS
+**EXIT** 50x IDEA.NS | WIN ✅ | ₹10.47 → ₹10.34 | P&L: ₹+6.50 (-1.24%) | held 113m
+
+# Trade Reflection: IDEA.NS Short
+
+**Thesis vs. Reality:**
+Setup was textbook (RSI 77, low-vol gap-up, resistance rejection), but macro Nifty rally (+900pts) overpowered the intraday mean-reversion signal. Stock held VWAP support despite overbought conditions—index strength was the override factor.
+
+**What Worked / Failed:**
+✓ Risk/reward was clean (3:1)  
+✗ Ignored macro context—didn't check Nifty momentum before entry  
+✗ Thesis break was clear (price >VWAP, RSI not rolling), but forced exit at 3:15 PM meant no proper test of support
+
+**Concrete Fix:**
+Check 5m/15m Nifty momentum *before* taking intraday shorts on individual stocks. Skip the setup if index is rallying hard—overbought micro-signals fail in strong macros.
+
+**Pattern for IDEA:**
+Low-liquidity counter (0.62x vol) + macro headwinds = poor risk/reward despite technicals. Stick to high-conviction setups on liquid stocks.
+
+
+### 2026-04-29 13:04 — Entry: DEVYANI.NS
+**ENTRY** 50x DEVYANI.NS @ ₹119.61  [swing]
+  *Thesis: Breakout on 2.15x volume, RSI 56.1 (neutral), price ₹119.68 above VWAP ₹118.65, 5d support ₹106.11 (11.3% below provides cushion). SMA trend intact. Macro bullish (Nifty +1.22%, broad-based rally). Entry ~₹120, target ₹125 (+4.2%), stop ₹115 (-4.2%), R/R 1:1. Conservative sizing respects capital preservation.*
+
+
+### 2026-04-30 20:23 — Entry: NAVINFLUOR.NS
+**ENTRY** 2x NAVINFLUOR.NS @ ₹6821.00  [intraday]
+  *Thesis: Overbought exhaustion: RSI 72.6, massive 8.5x volume spike signals distribution, price below VWAP (₹6,890) = divergence. 5d support at ₹6,262 (-6.84%) provides clean R/R 1:1. Macro tailwinds (crude >$115, FII selling) favor pullback. Target ₹6,262, stop ₹6,900 (VWAP break). Intraday setup exploiting short-term mean reversion.*
+
+
+### 2026-05-01 09:16 — Exit: NAVINFLUOR.NS
+**EXIT** 2x NAVINFLUOR.NS | LOSS ❌ | ₹6821.00 → ₹6821.00 | P&L: ₹+0.00 (+0.00%) | held 12h53m
+
+## Trade Reflection: NAVINFLUOR.NS SHORT
+
+• **Thesis vs. Reality:** Overbought setup was sound (RSI 72.6, volume spike, VWAP divergence), but the trade never moved. You held overnight against your own rules—the real failure, not the market thesis.
+
+• **What Went Wrong:** Discipline collapse. A SHORT position should never carry overnight risk in a volatile mid-cap. You violated your own exit rule, forcing a flat breakeven close instead of taking a clean loss or win.
+
+• **Next Time:** Set a hard 3:15 PM exit alarm for ALL intraday shorts. Non-negotiable. Exit at market close, don't rationalize holding.
+
+• **Pattern:** NAVINFLUOR is volatile enough for intraday mean-reversion plays, but only if you stick to session boundaries. Respect your rules or stop shorting.
+
+
+### 2026-05-01 09:17 — Exit: BANDHANBNK.NS
+**EXIT** 30x BANDHANBNK.NS | WIN ✅ | ₹194.20 → ₹199.72 | P&L: ₹+165.60 (+2.84%) | held 47h43m
+
+# Trade Reflection: BANDHANBNK.NS
+
+• **Thesis vs. Reality**: Volume breakout and sector inflow setup was sound, but you exited well short of the ₹206 target (only +2.84% vs. +6.2% planned). RSI overbought at 80.7 triggered the exit—a valid risk management call, but macro headwinds (FII selling, crude spike) were known *before* entry and should have tightened your hold conditions upfront.
+
+• **What Worked**: Respected capital preservation discipline by locking profit early rather than holding into deteriorating macro. Stop placement was sensible.
+
+• **What Didn't**: Left 55% of target money on the table. RSI extremes alone shouldn't override a 2.4:1 R/R setup unless macro shifted materially post-entry.
+
+• **Next Time**: Pre-define macro circuit-breakers *at entry*—if FII outflows exceed X or crude hits Y, trim 50% at first profit target rather than holding full position into overbought signals.
+
+
+### 2026-05-01 10:06 — Entry: ADANIPORTS.NS
+**ENTRY** 15x ADANIPORTS.NS @ ₹1675.50  [intraday]
+  *Thesis: Extreme overbought RSI 81.8 + high volume 1.7x + near 5d resistance (1.2%). Macro headwinds (FII outflows, rupee weakness, crude surge) pressuring infrastructure. Mean-reversion intraday short. DISCIPLINE: Hard 3:15 PM IST exit—no overnight holds. Target ₹1,630 (-1.65%), stop ₹1,680 (+1.38%).*
+
+
+### 2026-05-01 10:57 — Exit: DEVYANI.NS
+**EXIT** 50x DEVYANI.NS | WIN ✅ | ₹119.61 → ₹125.15 | P&L: ₹+277.00 (+4.63%) | held 45h53m
+
+# DEVYANI.NS Trade Reflection
+
+**Thesis vs. Reality:**
+Breakout thesis played out (+4.63%), but macro deterioration (FPI outflows, rupee weakness) forced early partial exit rather than riding to target. The setup was sound; macro was the limiting factor.
+
+**What Worked:**
+Conservative 50% trim locked profit at +2.28% while preserving upside exposure. R/R discipline and identified macro headwinds in real-time prevented overexposure.
+
+**What Didn't:**
+Held second half too long—macro tailwinds had reversed significantly. Should have exited the remaining 25 shares at same time rather than hoping for ₹130.
+
+**Next Time:**
+When macro regime flips (FPI outflows >₹1L cr + rupee weakness), exit full position immediately, don't split exits. Swing trades lack buffer for macro shocks.
+
+
+### 2026-05-01 13:23 — Exit: ADANIPORTS.NS
+**EXIT** 15x ADANIPORTS.NS | LOSS ❌ | ₹1675.50 → ₹1675.50 | P&L: ₹+0.00 (+0.00%) | held 3h17m
+
+# Trade Reflection: ADANIPORTS.NS Intraday Short
+
+**Thesis vs. Reality:**
+Overbought RSI setup was valid, but the trade never moved your direction. You exited flat despite a +1.10% profit window, suggesting you closed a losing position disguised as profit-taking. The macro headwinds (FII outflows, rupee weakness) didn't materialize as downward pressure intraday.
+
+**What Worked/Failed:**
+✓ Discipline on hard 3:15 PM exit saved you from overnight risk.
+✗ Holding a break-even trade for 3h17m burned opportunity cost. You should've exited at first -0.5% to -1% loss within 30min if thesis failed.
+
+**Next Time:**
+Set a *time-stop* at 60min. If RSI mean-reversion doesn't trigger a 0.5%+ move by then, exit—thesis invalidated. Don't camp break-even trades.
+
+**Pattern:**
+Intraday shorts on ADANIPORTS need sharper entries (5min rejection candles, not just RSI). Avoid macro-thesis shorts on infrastructure—sector too correlated to FII flows.
+
+
+### 2026-05-01 14:12 — Entry: BAJAJ-AUTO.NS
+**ENTRY** 15x BAJAJ-AUTO.NS @ ₹10039.00  [intraday]
+  *Thesis: Overbought mean-reversion short: RSI 71.6 + 4.72% rally on 3.3x vol into 5d resistance (0.51% away). Macro bearish (FPI outflows, rupee at 95, crude surge). Target ₹9,750 (-2.4%), stop ₹10,030 (+0.36%), R/R 6.7:1. Intraday discipline: close by 3:15 PM IST. Distribution pattern + resistance rejection expected.*
+
+
+### 2026-05-01 15:20 — Exit: BAJAJ-AUTO.NS
+**EXIT** 15x BAJAJ-AUTO.NS | LOSS ❌ | ₹10039.00 → ₹10039.00 | P&L: ₹+0.00 (+0.00%) | held 68m
+
+# Trade Reflection: BAJAJ-AUTO.NS
+
+• **Thesis vs. Reality**: Strong setup (RSI overbought, resistance proximity, macro headwinds) but the stock held support. End-of-day forced cover at breakeven eliminated potential downside capture—the trade never got the chance to work or fail on merit.
+
+• **What Went Wrong**: Rigid EOD discipline conflicted with position management. A 68-minute hold suggests conviction wasn't strong enough to justify the 6.7:1 R/R if the trade was being exited on a timer rather than a trigger.
+
+• **Next Time**: Define a *time-based exit only if price action invalidates the thesis* (e.g., break above ₹10,050). Don't let clock rules override setup quality.
+
+• **Pattern**: BAJAJ-AUTO respects its 5d resistance harder than macro suggests—watch for mean-reversion rejections here before shorting.
+
