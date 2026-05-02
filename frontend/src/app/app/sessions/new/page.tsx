@@ -5,7 +5,11 @@ import Link from "next/link";
 import { api, cn, fmt } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { Collapsible } from "@/components/Collapsible";
+import { useUser } from "@/lib/auth";
+import { UpgradeLockButton } from "@/components/Runtime";
 import type { MarketPreset, Session } from "@/lib/types";
+
+const FREE_TIER_MODELS = new Set(["openai/gpt-4o-mini", "google/gemini-2.5-flash"]);
 
 type PresetKey = "nse-intraday" | "nse-swing" | "crypto" | "custom";
 
@@ -38,6 +42,8 @@ function CreateSessionInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const toast = useToast();
+  const { user } = useUser();
+  const isFree = !!user && !user.is_admin;
   const [presets, setPresets] = useState<Record<string, MarketPreset>>({});
   const [sessions, setSessions] = useState<Session[]>([]);
   const [creating, setCreating] = useState(false);
@@ -53,7 +59,7 @@ function CreateSessionInner() {
     daily_loss_limit_pct: 0.02,
     per_trade_loss_limit_pct: 0.01,
     llm_provider: "openrouter",
-    llm_model: "anthropic/claude-haiku-4-5",
+    llm_model: "openai/gpt-4o-mini",
     api_key_env: "OPENROUTER_API_KEY",
     personality: "",
     import_learnings_from: "",
@@ -196,10 +202,16 @@ function CreateSessionInner() {
             icon="📈"
           />
           <ModePill
-            label="Backtest"
-            subLabel="Replay history"
+            label={isFree ? "🔒 Backtest" : "Backtest"}
+            subLabel={isFree ? "Paid tier — coming soon" : "Replay history"}
             active={form.backtest_mode}
-            onClick={() => setForm((f) => ({ ...f, backtest_mode: true }))}
+            onClick={() => {
+              if (isFree) {
+                toast.error("Backtests are locked on the free tier. Upgrade to replay history.");
+                return;
+              }
+              setForm((f) => ({ ...f, backtest_mode: true }));
+            }}
             icon="⏳"
             accent="purple"
           />
@@ -409,32 +421,45 @@ function CreateSessionInner() {
       </FormGroup>
 
       {/* LLM Model */}
-      <FormGroup title="LLM Model" delay={5}>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div>
-            <label className="block text-[11px] text-text-muted mb-1.5">Provider</label>
-            <select
-              value={form.llm_provider}
-              onChange={(e) => {
-                const provider = e.target.value;
-                const defaults: Record<string, { model: string; keyEnv: string }> = {
-                  openrouter: { model: "anthropic/claude-haiku-4-5", keyEnv: "OPENROUTER_API_KEY" },
-                  anthropic: { model: "claude-sonnet-4-5-20250929", keyEnv: "ANTHROPIC_API_KEY" },
-                  openai: { model: "gpt-4o", keyEnv: "OPENAI_API_KEY" },
-                };
-                const d = defaults[provider] || defaults.openrouter;
-                setForm({ ...form, llm_provider: provider, llm_model: d.model, api_key_env: d.keyEnv });
-              }}
-              className="w-full text-sm"
-            >
-              <option value="openrouter">OpenRouter</option>
-              <option value="anthropic">Anthropic</option>
-              <option value="openai">OpenAI</option>
-            </select>
-          </div>
+      <FormGroup title="AI Model" delay={5}>
+        <div className={isFree ? "" : "grid grid-cols-1 sm:grid-cols-2 gap-3"}>
+          {!isFree && (
+            <div>
+              <label className="block text-[11px] text-text-muted mb-1.5">Provider</label>
+              <select
+                value={form.llm_provider}
+                onChange={(e) => {
+                  const provider = e.target.value;
+                  const defaults: Record<string, { model: string; keyEnv: string }> = {
+                    openrouter: { model: "anthropic/claude-haiku-4-5", keyEnv: "OPENROUTER_API_KEY" },
+                    anthropic: { model: "claude-sonnet-4-5-20250929", keyEnv: "ANTHROPIC_API_KEY" },
+                    openai: { model: "gpt-4o", keyEnv: "OPENAI_API_KEY" },
+                  };
+                  const d = defaults[provider] || defaults.openrouter;
+                  setForm({ ...form, llm_provider: provider, llm_model: d.model, api_key_env: d.keyEnv });
+                }}
+                className="w-full text-sm"
+              >
+                <option value="openrouter">OpenRouter</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="openai">OpenAI</option>
+              </select>
+            </div>
+          )}
           <div>
             <label className="block text-[11px] text-text-muted mb-1.5">Model</label>
-            <ModelSelect provider={form.llm_provider} value={form.llm_model} onChange={(v) => setForm({ ...form, llm_model: v })} />
+            <ModelSelect
+              provider={form.llm_provider}
+              value={form.llm_model}
+              onChange={(v) => {
+                if (isFree && !FREE_TIER_MODELS.has(v)) {
+                  toast.error("This model is locked on the free tier. Upgrade for access to all models.");
+                  return;
+                }
+                setForm({ ...form, llm_model: v });
+              }}
+              isFree={isFree}
+            />
             <ModelInfo provider={form.llm_provider} model={form.llm_model} market={form.market} />
           </div>
         </div>
@@ -624,26 +649,38 @@ function ModePill({ label, subLabel, active, onClick, icon, accent }: {
   );
 }
 
-function ModelSelect({ provider, value, onChange }: { provider: string; value: string; onChange: (v: string) => void }) {
+function ModelSelect({ provider, value, onChange, isFree = false }: { provider: string; value: string; onChange: (v: string) => void; isFree?: boolean }) {
   if (provider === "openrouter") {
+    const lock = (id: string, label: string) =>
+      isFree && !FREE_TIER_MODELS.has(id) ? `🔒 ${label} (Paid)` : label;
     return (
       <select value={value} onChange={(e) => onChange(e.target.value)} className="w-full text-sm">
-        <optgroup label="Anthropic">
-          <option value="anthropic/claude-haiku-4-5">Claude Haiku 4.5 — $0.80/M</option>
+        {isFree && (
+          <optgroup label="Free tier">
+            <option value="openai/gpt-4o-mini">✓ GPT-4o Mini — $0.15/M</option>
+            <option value="google/gemini-2.5-flash">✓ Gemini 2.5 Flash — $0.15/M</option>
+          </optgroup>
+        )}
+        <optgroup label={isFree ? "🔒 Locked — Paid tier coming soon" : "Anthropic"}>
+          <option value="anthropic/claude-haiku-4-5">{lock("anthropic/claude-haiku-4-5", "Claude Haiku 4.5 — $0.80/M")}</option>
         </optgroup>
-        <optgroup label="Google">
-          <option value="google/gemini-2.5-flash">Gemini 2.5 Flash — $0.15/M</option>
+        {!isFree && (
+          <optgroup label="Google">
+            <option value="google/gemini-2.5-flash">Gemini 2.5 Flash — $0.15/M</option>
+          </optgroup>
+        )}
+        {!isFree && (
+          <optgroup label="OpenAI">
+            <option value="openai/gpt-4o-mini">GPT-4o Mini — $0.15/M</option>
+          </optgroup>
+        )}
+        <optgroup label={isFree ? "🔒 Meta — Paid" : "Meta"}>
+          <option value="meta-llama/llama-4-maverick">{lock("meta-llama/llama-4-maverick", "Llama 4 Maverick — $0.20/M")}</option>
+          <option value="meta-llama/llama-4-scout">{lock("meta-llama/llama-4-scout", "Llama 4 Scout — $0.10/M")}</option>
         </optgroup>
-        <optgroup label="OpenAI">
-          <option value="openai/gpt-4o-mini">GPT-4o Mini — $0.15/M</option>
-        </optgroup>
-        <optgroup label="Meta">
-          <option value="meta-llama/llama-4-maverick">Llama 4 Maverick — $0.20/M</option>
-          <option value="meta-llama/llama-4-scout">Llama 4 Scout — $0.10/M</option>
-        </optgroup>
-        <optgroup label="DeepSeek">
-          <option value="deepseek/deepseek-chat-v3-0324">DeepSeek V3 — $0.14/M</option>
-          <option value="deepseek/deepseek-r1">DeepSeek R1 — $0.55/M</option>
+        <optgroup label={isFree ? "🔒 DeepSeek — Paid" : "DeepSeek"}>
+          <option value="deepseek/deepseek-chat-v3-0324">{lock("deepseek/deepseek-chat-v3-0324", "DeepSeek V3 — $0.14/M")}</option>
+          <option value="deepseek/deepseek-r1">{lock("deepseek/deepseek-r1", "DeepSeek R1 — $0.55/M")}</option>
         </optgroup>
       </select>
     );

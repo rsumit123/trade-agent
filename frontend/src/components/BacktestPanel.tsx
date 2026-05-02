@@ -3,6 +3,8 @@ import { useEffect, useState, useCallback } from "react";
 import { api, fmt, pct } from "@/lib/api";
 import { useAppPrefix } from "@/lib/paths";
 import { useToast } from "@/components/Toast";
+import { useUser } from "@/lib/auth";
+import { UpgradeLockButton } from "@/components/Runtime";
 import type { BacktestProgress, BacktestPhase, SessionConfig } from "@/lib/types";
 
 // ── Phase metadata: icon, color, label, description ──────────
@@ -29,6 +31,8 @@ interface Props {
 }
 
 export function BacktestPanel({ sessionId, config, onComplete }: Props) {
+  const { user } = useUser();
+  const isFree = !!user && !user.is_admin;
   const [progress, setProgress] = useState<BacktestProgress | null>(null);
   const [starting, setStarting] = useState(false);
   const [goingLive, setGoingLive] = useState(false);
@@ -71,6 +75,31 @@ export function BacktestPanel({ sessionId, config, onComplete }: Props) {
       setStarting(false);
     }
   };
+
+  // --- Free tier: locked card ---
+  if (isFree && (!progress || progress.status === "not_started")) {
+    return (
+      <div
+        style={{
+          background: "linear-gradient(180deg, rgba(245,158,11,0.05), #151d2e)",
+          border: "1px solid rgba(245,158,11,0.3)",
+          borderRadius: 12,
+          padding: 16,
+        }}
+      >
+        <div className="flex items-center gap-2 mb-2">
+          <span style={{ fontSize: 18 }}>🔒</span>
+          <h3 style={{ fontSize: 13, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "#fcd34d" }}>
+            Backtest — Paid feature
+          </h3>
+        </div>
+        <p className="text-text-muted text-xs mb-3">
+          Replay months of historical data and watch your AI trade through it. Available on the upgrade — coming soon.
+        </p>
+        <UpgradeLockButton label="Unlock backtests" fullWidth />
+      </div>
+    );
+  }
 
   // --- Not started: show start form ---
   if (!progress || progress.status === "not_started") {

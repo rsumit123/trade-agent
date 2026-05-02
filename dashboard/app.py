@@ -175,6 +175,23 @@ app.add_middleware(
 MAX_RUNNING_AGENTS = 4  # Safety limit for VM memory (global)
 MAX_RUNNING_AGENTS_PER_USER = 2  # Per-user limit for non-admins
 
+# Models a free-tier user is allowed to pick. Cheap = won't blow up our
+# OpenRouter bill. Everything else is shown in the UI but locked.
+FREE_TIER_MODELS = {
+    "openai/gpt-4o-mini",
+    "google/gemini-2.5-flash",
+}
+
+
+def _check_free_model_allowed(model: str) -> None:
+    """Raise 403 if a free user tried to pick a paid-tier model."""
+    if (model or "") not in FREE_TIER_MODELS:
+        raise HTTPException(
+            403,
+            "This model is locked on the free tier. Pick GPT-4o Mini or Gemini 2.5 Flash, "
+            "or upgrade for access to Claude, Llama, DeepSeek, and more."
+        )
+
 
 # ── Auth helpers / endpoints ─────────────────────────────────
 
@@ -826,6 +843,13 @@ def create_session(req: CreateSessionRequest, user: dict = Depends(current_user)
     # Free-tier: 1 session max, no API key (uses platform key)
     user_email = (user.get("email") or "").lower()
     if not is_user_admin:
+        # Locked on free tier: paid models, backtests
+        _check_free_model_allowed(req.llm_model)
+        if req.backtest_mode:
+            raise HTTPException(
+                403,
+                "Backtests are locked on the free tier. Upgrade to run historical replays."
+            )
         from agent.session import list_sessions
         owned = [s for s in list_sessions()
                  if (s.get("user_email") or "").lower() == user_email
@@ -927,6 +951,10 @@ def update_session(session_id: str, req: UpdateSessionRequest, user: dict = Depe
         sc = load_session(session_id)
     except FileNotFoundError:
         raise HTTPException(404, f"Session '{session_id}' not found")
+
+    # Free tier: reject paid-model swaps
+    if not user.get("is_admin") and req.llm_model:
+        _check_free_model_allowed(req.llm_model)
 
     # Update only provided fields
     for field_name, value in req.model_dump(exclude_none=True).items():
@@ -1208,6 +1236,11 @@ _backtest_threads: Dict[str, Any] = {}  # session_id → thread
 @app.post("/api/backtest/start/{session_id}")
 def start_backtest(session_id: str, req: BacktestRequest, user: dict = Depends(current_user)):
     _ensure_session_access(session_id, user)
+    if not user.get("is_admin"):
+        raise HTTPException(
+            403,
+            "Backtests are locked on the free tier. Upgrade to run historical replays."
+        )
     """Start a historical backtest in the background."""
     from agent.session import load_session, save_session, SESSIONS_DIR
     import threading
@@ -1328,6 +1361,11 @@ def _model_slug(model: str) -> str:
 @app.post("/api/backtest/compare/start/{base_session_id}")
 def start_compare_backtest(base_session_id: str, req: BacktestCompareRequest, user: dict = Depends(current_user)):
     _ensure_session_access(base_session_id, user)
+    if not user.get("is_admin"):
+        raise HTTPException(
+            403,
+            "Model comparison is locked on the free tier. Upgrade to compare AIs head-to-head."
+        )
     """Run the same backtest with multiple models, sequentially.
 
     Each model gets a child session cloned from the base. Children are tagged
