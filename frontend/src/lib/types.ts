@@ -333,6 +333,7 @@ export interface BacktestDayResult {
 
 export type BacktestPhase =
   | "init"
+  | "prefetch"
   | "scanning"
   | "selecting"
   | "trading"

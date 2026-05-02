@@ -10,6 +10,11 @@ For each simulated day:
 
 After N days: agent has a full set of trades + distilled rules,
 ready to go live with proven strategies.
+
+Performance: at startup we pre-fetch the NIFTY 500 daily candles for the
+entire backtest window in one pass. The per-day scanner slices in memory
+instead of hammering Kite (was ~15 min/day on 2,963 stocks — now ~0s/day
+after a one-time ~3 min pre-fetch).
 """
 
 import json
@@ -22,6 +27,18 @@ from typing import Dict, List, Any, Optional, Callable
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+# NIFTY 500 list shipped with the repo. Source: NSE archives.
+_NIFTY500_FILE = Path(__file__).parent / "data" / "nifty500.json"
+
+
+def _load_nifty500_symbols() -> List[str]:
+    try:
+        data = json.loads(_NIFTY500_FILE.read_text())
+        return list(data.get("symbols") or [])
+    except Exception as e:
+        logger.warning(f"Failed to load NIFTY 500 list: {e}")
+        return []
 
 
 class BacktestEngine:
@@ -107,6 +124,87 @@ class BacktestEngine:
             _time.sleep(0.1)
 
         return result
+
+    def _prefetch_market_data(
+        self,
+        tickers: List[str],
+        start_date: date,
+        end_date: date,
+        lookback_days: int = 40,
+        on_progress=None,
+    ) -> Dict[str, pd.DataFrame]:
+        """One-shot fetch of daily candles for the ENTIRE backtest window.
+
+        Returns {ticker: full_DataFrame}. The per-day scanner then slices
+        from these frames instead of making fresh Kite calls every day.
+
+        Kite's `historical_data` is rate-limited to ~3 req/s; with 0.35s
+        between calls and ~500 NIFTY 500 stocks this takes ~3 min — paid
+        once per backtest, not once per day.
+        """
+        fetch_start = (start_date - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        fetch_end = end_date.strftime("%Y-%m-%d")
+        result: Dict[str, pd.DataFrame] = {}
+        failed = 0
+
+        for idx, ticker in enumerate(tickers):
+            token = self._get_token(ticker)
+            if not token:
+                continue
+            try:
+                candles = self.kite.historical_data(
+                    instrument_token=token,
+                    from_date=fetch_start,
+                    to_date=fetch_end,
+                    interval="day",
+                )
+                if candles and len(candles) >= 2:
+                    df = pd.DataFrame(candles)
+                    if "date" in df.columns:
+                        df["date"] = pd.to_datetime(df["date"])
+                    result[ticker] = df
+            except Exception:
+                failed += 1
+            if on_progress and (idx + 1) % 20 == 0:
+                try:
+                    on_progress(idx + 1, len(tickers))
+                except Exception:
+                    pass
+            if (idx + 1) % 100 == 0:
+                logger.info(f"    Pre-fetch: {idx + 1}/{len(tickers)} done ({len(result)} ok, {failed} failed)")
+            _time.sleep(0.35)  # Kite historical_data: 3 req/sec
+
+        logger.info(f"  📊 Pre-fetch complete: {len(result)}/{len(tickers)} stocks loaded into memory")
+        if on_progress:
+            try:
+                on_progress(len(tickers), len(tickers))
+            except Exception:
+                pass
+        return result
+
+    def _slice_prefetched_for_day(
+        self,
+        prefetched: Dict[str, pd.DataFrame],
+        trade_date: date,
+    ) -> Dict[str, pd.DataFrame]:
+        """Per-day view of pre-fetched data: rows up to and including trade_date.
+        Returns dict of frames suitable for `scan_phase1_historical`."""
+        sliced: Dict[str, pd.DataFrame] = {}
+        for ticker, df in prefetched.items():
+            try:
+                if "date" not in df.columns:
+                    continue
+                ds = df["date"]
+                # Strip tz if present so naive comparisons work
+                if hasattr(ds, "dt") and ds.dt.tz is not None:
+                    ds = ds.dt.tz_localize(None)
+                mask = ds.dt.date <= trade_date
+                d = df[mask]
+                if len(d) >= 2:
+                    sliced[ticker] = d
+            except Exception:
+                continue
+        return sliced
 
     def _fetch_daily_candles_fast(self, tickers: List[str], end_date: date, lookback_days: int = 5, on_progress=None) -> Dict[str, pd.DataFrame]:
         """Fast bulk fetch of short-lookback daily candles for scanner.
@@ -221,16 +319,21 @@ class BacktestEngine:
             return t if t is not None else datetime.now()
         agent.portfolio._clock = _sim_clock
 
-        # Pre-market scanner for dynamic stock selection each day
+        # Pre-market scanner for dynamic stock selection each day.
+        # Universe = NIFTY 500 (top index members by inclusion). Falls back
+        # to the cached instrument list if the bundled file is missing.
         from .premarket_scanner import PreMarketScanner
         scanner = PreMarketScanner(self.kite)
-        # Build scan pool from cached instrument list (all ~3000 NSE equities)
-        scan_instruments = scanner._ensure_instrument_cache()
-        scan_pool = [f"{i['tradingsymbol']}.NS" for i in scan_instruments]
-        if len(scan_pool) < 100:
-            # Fallback to base watchlist if instrument cache is empty
+        n500 = _load_nifty500_symbols()
+        if n500:
+            scan_pool = [f"{s}.NS" for s in n500]
+            logger.info(f"📋 Scanner pool: NIFTY 500 ({len(scan_pool)} stocks)")
+        else:
+            scan_instruments = scanner._ensure_instrument_cache()
+            scan_pool = [f"{i['tradingsymbol']}.NS" for i in scan_instruments]
+            logger.warning(f"NIFTY 500 list missing; falling back to full instrument cache ({len(scan_pool)} stocks)")
+        if len(scan_pool) < 50:
             scan_pool = list(base_tickers)
-        logger.info(f"📋 Scanner pool: {len(scan_pool)} stocks (will pick top 25 each day)")
 
         results = {
             "start_date": start_date.isoformat(),
@@ -284,6 +387,28 @@ class BacktestEngine:
         # Write initial progress immediately so UI can show "running" from start
         _save()
 
+        # ── Pre-fetch the full backtest window for the scan pool ─────────
+        # This is the biggest speed win: one upfront ~3min batch instead
+        # of ~15min per simulated day on Kite.
+        results["current_phase"] = "prefetch"
+        results["phase_progress"] = 0
+        results["phase_total"] = len(scan_pool)
+        results["phase_detail"] = f"Pre-fetching NIFTY 500 daily candles for {trading_days[0]} → {trading_days[-1]}"
+        _save()
+
+        def _on_prefetch_progress(scanned, total):
+            results["phase_progress"] = scanned
+            results["phase_total"] = total
+            _save()
+
+        prefetched_daily = self._prefetch_market_data(
+            scan_pool,
+            start_date=trading_days[0],
+            end_date=trading_days[-1],
+            lookback_days=40,
+            on_progress=_on_prefetch_progress,
+        )
+
         for day_idx, trade_date in enumerate(trading_days):
             # Snapshot total_value at start of day for accurate daily P&L
             try:
@@ -316,9 +441,13 @@ class BacktestEngine:
 
             try:
                 # 0. Run historical pre-market scanner to pick today's stocks
-                #    Scans all ~3000 NSE equities — fast fetch with 2-day lookback
-                logger.info(f"  🔍 Running pre-market scanner ({len(scan_pool)} stocks) for {trade_date}...")
-                broad_daily = self._fetch_daily_candles_fast(scan_pool, trade_date, lookback_days=5, on_progress=_on_scan_progress)
+                #    Slices from the pre-fetched daily data (no Kite hits here)
+                logger.info(f"  🔍 Running pre-market scanner (NIFTY 500, {len(prefetched_daily)} cached) for {trade_date}...")
+                broad_daily = self._slice_prefetched_for_day(prefetched_daily, trade_date)
+                # Surface progress as 'done' for the UI's scanning bar
+                results["phase_progress"] = len(broad_daily)
+                results["phase_total"] = len(prefetched_daily)
+                _save()
 
                 if broad_daily:
                     # Phase: LLM picking top 25 stocks

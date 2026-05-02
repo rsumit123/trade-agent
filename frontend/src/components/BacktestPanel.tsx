@@ -10,7 +10,8 @@ import type { BacktestProgress, BacktestPhase, SessionConfig } from "@/lib/types
 // ── Phase metadata: icon, color, label, description ──────────
 const PHASE_META: Record<BacktestPhase, { icon: string; color: string; label: string; hint: string }> = {
   init:      { icon: "\u{1F680}", color: "#94a3b8", label: "Setting up",       hint: "Initializing agent and market data..." },
-  scanning:  { icon: "\u{1F50D}", color: "#60a5fa", label: "Scanning market",  hint: "Filtering ~3,000 NSE stocks for movers" },
+  prefetch:  { icon: "\u{1F4E5}", color: "#fbbf24", label: "Pre-fetching data", hint: "Downloading NIFTY 500 daily candles for the full backtest window — one-time setup" },
+  scanning:  { icon: "\u{1F50D}", color: "#60a5fa", label: "Scanning market",  hint: "Filtering NIFTY 500 stocks for today's movers (in-memory)" },
   selecting: { icon: "\u{1F3AF}", color: "#818cf8", label: "Picking stocks",   hint: "LLM selecting top 25 with thesis" },
   trading:   { icon: "\u{1F4B9}", color: "#a78bfa", label: "Trading",          hint: "Stepping through 15-min bars" },
   closing:   { icon: "\u{1F514}", color: "#fbbf24", label: "Closing day",      hint: "Force-closing intraday positions" },
@@ -132,9 +133,23 @@ export function BacktestPanel({ sessionId, config, onComplete }: Props) {
             Backtest
           </h3>
         </div>
-        <p className="text-text-muted text-xs mb-4">
+        <p className="text-text-muted text-xs mb-3">
           Replay historical market data. The agent picks stocks each morning, trades through the day, and learns from results.
         </p>
+        <div
+          className="text-[11px] mb-4 flex items-start gap-2 rounded-lg p-2.5"
+          style={{
+            background: "rgba(96,165,250,0.08)",
+            border: "1px solid rgba(96,165,250,0.25)",
+            color: "#93c5fd",
+          }}
+        >
+          <span>ℹ️</span>
+          <span>
+            Universe: <strong>NIFTY 500</strong> (top index members). Daily candles are pre-fetched
+            once at start (~2-3 min), so per-day scanning is near-instant.
+          </span>
+        </div>
 
         {/* Quick presets — full width on mobile */}
         <div className="grid grid-cols-4 gap-2 mb-4">
@@ -629,7 +644,7 @@ function RunningView({ progress, sym, sessionId }: { progress: BacktestProgress;
               <SubProgress
                 current={progress.phase_progress}
                 total={progress.phase_total}
-                label={phase === "scanning" ? "stocks scanned" : phase === "trading" ? "bars processed" : "items"}
+                label={phase === "prefetch" ? "stocks pre-fetched" : phase === "scanning" ? "stocks scanned" : phase === "trading" ? "bars processed" : "items"}
                 color={meta.color}
               />
             )}
