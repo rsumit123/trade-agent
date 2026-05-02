@@ -14,7 +14,7 @@ function chipColors(remaining: number, ended: boolean) {
 /** Compact runtime chip — shows remaining free trial time. Hidden for admins. */
 export function RuntimeChip({ compact = false }: { compact?: boolean }) {
   const r = useRuntime();
-  if (r.loading || r.isAdmin) return null;
+  if (r.loading || r.isAdmin || r.tier === "paid") return null;
   const c = chipColors(r.remainingSeconds, r.trialEnded);
   const label = r.trialEnded ? "Trial ended" : `${formatRuntime(r.remainingSeconds)} free left`;
   return (
@@ -43,7 +43,7 @@ export function RuntimeChip({ compact = false }: { compact?: boolean }) {
 export function TrialBanner() {
   const r = useRuntime();
   const [open, setOpen] = useState(false);
-  if (r.loading || r.isAdmin) return null;
+  if (r.loading || r.isAdmin || r.tier === "paid") return null;
   if (r.remainingSeconds >= 3600) return null;
   if (r.trialEnded) return null; // modal handles ended state
   const critical = r.remainingSeconds < 600;
@@ -84,7 +84,7 @@ export function TrialEndedModal() {
   const r = useRuntime();
   const [open, setOpen] = useState(true);
   const [waitlistOpen, setWaitlistOpen] = useState(false);
-  if (r.loading || r.isAdmin || !r.trialEnded || !open) return null;
+  if (r.loading || r.isAdmin || r.tier === "paid" || !r.trialEnded || !open) return null;
   return (
     <>
       <div
@@ -165,7 +165,7 @@ export function TrialEndedModal() {
 export function TrialEndedFooterStrip() {
   const r = useRuntime();
   const [open, setOpen] = useState(false);
-  if (r.loading || r.isAdmin || !r.trialEnded) return null;
+  if (r.loading || r.isAdmin || r.tier === "paid" || !r.trialEnded) return null;
   return (
     <>
       <div

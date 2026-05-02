@@ -9,7 +9,11 @@ import { useUser } from "@/lib/auth";
 import { UpgradeLockButton } from "@/components/Runtime";
 import type { MarketPreset, Session } from "@/lib/types";
 
-const FREE_TIER_MODELS = new Set(["openai/gpt-4o-mini", "google/gemini-2.5-flash"]);
+const FREE_TIER_MODELS = new Set([
+  "openai/gpt-4o-mini",
+  "google/gemini-2.5-flash",
+  "google/gemini-2.5-flash-lite",
+]);
 
 type PresetKey = "nse-intraday" | "nse-swing" | "crypto" | "custom";
 
@@ -661,8 +665,9 @@ function ModelSelect({ provider, value, onChange, isFree = false }: { provider: 
       <select value={value} onChange={(e) => onChange(e.target.value)} className="w-full text-sm">
         {isFree && (
           <optgroup label="Free tier">
-            <option value="openai/gpt-4o-mini">✓ GPT-4o Mini</option>
+            <option value="google/gemini-2.5-flash-lite">✓ Gemini 2.5 Flash Lite (cheapest)</option>
             <option value="google/gemini-2.5-flash">✓ Gemini 2.5 Flash</option>
+            <option value="openai/gpt-4o-mini">✓ GPT-4o Mini</option>
           </optgroup>
         )}
         <optgroup label={isFree ? "🔒 Locked — Paid tier coming soon" : "Anthropic"}>
@@ -670,6 +675,7 @@ function ModelSelect({ provider, value, onChange, isFree = false }: { provider: 
         </optgroup>
         {!isFree && (
           <optgroup label="Google">
+            <option value="google/gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
             <option value="google/gemini-2.5-flash">Gemini 2.5 Flash</option>
           </optgroup>
         )}
