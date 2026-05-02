@@ -43,6 +43,8 @@ export function BacktestPanel({ sessionId, config, onComplete }: Props) {
   const prefix = useAppPrefix();
   const toast = useToast();
 
+  const todayIso = new Date().toISOString().split("T")[0];
+
   const fetchProgress = useCallback(() => {
     api<BacktestProgress>(`/api/backtest/status/${sessionId}`)
       .then((data) => {
@@ -174,6 +176,7 @@ export function BacktestPanel({ sessionId, config, onComplete }: Props) {
             <input
               type="date"
               value={startDate}
+              max={todayIso}
               onChange={(e) => setStartDate(e.target.value)}
               className="w-full font-mono"
               style={{
@@ -192,6 +195,7 @@ export function BacktestPanel({ sessionId, config, onComplete }: Props) {
             <input
               type="date"
               value={endDate}
+              max={todayIso}
               onChange={(e) => setEndDate(e.target.value)}
               className="w-full font-mono"
               style={{

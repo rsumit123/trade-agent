@@ -19,8 +19,7 @@ import { DailyTracker } from "@/components/DailyTracker";
 import { EquityCharts } from "@/components/EquityCharts";
 import { ThinkingLog } from "@/components/ThinkingLog";
 import { CostLedger } from "@/components/CostLedger";
-import { BacktestPanel } from "@/components/BacktestPanel";
-import { BacktestCompare } from "@/components/BacktestCompare";
+import { BacktestSection } from "@/components/BacktestSection";
 import type {
   PortfolioSummary, ClosedTrade, RiskStatus, Performance,
   WatchlistItem, SessionConfig, AgentStatus,
@@ -190,13 +189,13 @@ export default function SessionDashboard() {
 
       {/* Backtest panel always above tabs */}
       {isBacktest && (
-        <div className="mb-4 md:mb-5 animate-fade-in delay-1 space-y-4">
-          <BacktestPanel sessionId={sessionId} config={config} onComplete={loadAll} />
-          <BacktestCompare
-            baseSessionId={sessionId}
+        <div className="mb-4 md:mb-5 animate-fade-in delay-1">
+          <BacktestSection
+            sessionId={sessionId}
             config={config}
             defaultStart={config?.backtest_start_date || ""}
             defaultEnd={config?.backtest_end_date || ""}
+            onComplete={loadAll}
           />
         </div>
       )}

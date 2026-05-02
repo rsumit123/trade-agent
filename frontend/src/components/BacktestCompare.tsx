@@ -212,6 +212,7 @@ export function BacktestCompare({ baseSessionId, config, defaultStart, defaultEn
               <input
                 type="date"
                 value={startDate}
+                max={new Date().toISOString().split("T")[0]}
                 onChange={(e) => setStartDate(e.target.value)}
                 className="w-full text-sm"
                 style={{ minHeight: 44, fontSize: 16 }}
@@ -222,6 +223,7 @@ export function BacktestCompare({ baseSessionId, config, defaultStart, defaultEn
               <input
                 type="date"
                 value={endDate}
+                max={new Date().toISOString().split("T")[0]}
                 onChange={(e) => setEndDate(e.target.value)}
                 className="w-full text-sm"
                 style={{ minHeight: 44, fontSize: 16 }}
