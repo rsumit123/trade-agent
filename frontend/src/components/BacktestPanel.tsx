@@ -32,7 +32,7 @@ interface Props {
 
 export function BacktestPanel({ sessionId, config, onComplete }: Props) {
   const { user } = useUser();
-  const isFree = !!user && !user.is_admin;
+  const isFree = !!user && !user.is_admin && user.tier !== "paid";
   const [progress, setProgress] = useState<BacktestProgress | null>(null);
   const [starting, setStarting] = useState(false);
   const [goingLive, setGoingLive] = useState(false);
