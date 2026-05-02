@@ -143,8 +143,45 @@ class TradingAgent:
         elif tool_name == "place_trade":
             return self._execute_trade(tool_input)
 
+        elif tool_name == "update_levels":
+            return self._update_levels(tool_input)
+
         else:
             return {"error": f"Unknown tool: {tool_name}"}
+
+    def _update_levels(self, tool_input: Dict) -> Dict:
+        """Adjust stop_price / target_price on an existing open position.
+        At least one of the two must be provided. trade_id is required."""
+        trade_id = tool_input.get("trade_id")
+        if trade_id is None:
+            return {"success": False, "error": "trade_id required"}
+        new_stop = tool_input.get("stop_price")
+        new_target = tool_input.get("target_price")
+        reason = tool_input.get("reason", "") or ""
+        if new_stop is None and new_target is None:
+            return {"success": False, "error": "Provide stop_price and/or target_price"}
+        try:
+            updated = self.portfolio.update_levels(
+                int(trade_id),
+                stop_price=float(new_stop) if new_stop is not None else None,
+                target_price=float(new_target) if new_target is not None else None,
+            )
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        if not updated:
+            return {"success": False, "error": f"Trade {trade_id} not open or not found"}
+        logger.info(
+            f"🔧 Levels updated for trade {trade_id} ({updated.ticker}): "
+            f"stop={updated.stop_price}, target={updated.target_price} — {reason[:80]}"
+        )
+        return {
+            "success": True,
+            "action": "UPDATE_LEVELS",
+            "trade_id": int(trade_id),
+            "ticker": updated.ticker,
+            "stop_price": updated.stop_price,
+            "target_price": updated.target_price,
+        }
 
     @property
     def _active_model(self) -> str:

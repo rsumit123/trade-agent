@@ -4,13 +4,14 @@ import { api, fmt, cn } from "@/lib/api";
 import { useToast } from "./Toast";
 import type { ComparisonStatus, ComparisonChild, SessionConfig } from "@/lib/types";
 
-const AVAILABLE_MODELS: { id: string; label: string; tag?: string; price?: string }[] = [
-  { id: "google/gemini-2.5-flash",       label: "Gemini 2.5 Flash",  tag: "Cheapest", price: "$0.15/M" },
-  { id: "openai/gpt-4o-mini",            label: "GPT-4o Mini",       tag: "Cheapest", price: "$0.15/M" },
-  { id: "anthropic/claude-haiku-4-5",    label: "Claude Haiku 4.5",  tag: "Fastest",  price: "$0.80/M" },
-  { id: "deepseek/deepseek-chat-v3-0324",label: "DeepSeek V3",       tag: "Cheapest", price: "$0.14/M" },
-  { id: "deepseek/deepseek-r1",          label: "DeepSeek R1",       tag: "Reasoning", price: "$0.55/M" },
-  { id: "meta-llama/llama-4-maverick",   label: "Llama 4 Maverick",  tag: "Balanced", price: "$0.20/M" },
+const AVAILABLE_MODELS: { id: string; label: string; tag?: string }[] = [
+  { id: "google/gemini-2.5-flash-lite",  label: "Gemini 2.5 Flash Lite", tag: "Cheapest" },
+  { id: "google/gemini-2.5-flash",       label: "Gemini 2.5 Flash",  tag: "Cheap" },
+  { id: "openai/gpt-4o-mini",            label: "GPT-4o Mini",       tag: "Cheap" },
+  { id: "anthropic/claude-haiku-4-5",    label: "Claude Haiku 4.5",  tag: "Fastest" },
+  { id: "deepseek/deepseek-chat-v3-0324",label: "DeepSeek V3",       tag: "Cheap" },
+  { id: "deepseek/deepseek-r1",          label: "DeepSeek R1",       tag: "Reasoning" },
+  { id: "meta-llama/llama-4-maverick",   label: "Llama 4 Maverick",  tag: "Balanced" },
 ];
 
 const COLORS = ["#60a5fa", "#22c55e", "#f59e0b", "#a78bfa", "#ef4444"];
@@ -196,9 +197,6 @@ export function BacktestCompare({ baseSessionId, config, defaultStart, defaultEn
                     <div className="flex items-center gap-2 text-[10px]">
                       {m.tag && (
                         <span className="text-text-muted uppercase tracking-wider">{m.tag}</span>
-                      )}
-                      {m.price && (
-                        <span className="text-text-muted font-mono">{m.price}</span>
                       )}
                     </div>
                   </button>

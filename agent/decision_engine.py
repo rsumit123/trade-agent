@@ -270,6 +270,7 @@ def _get_tool_defs(config, is_backtest: bool = False):
         LLMWebSearchTool.get_portfolio_tool(),
         LLMWebSearchTool.get_stock_detail_tool(market_preset=preset),
         LLMWebSearchTool.get_trade_tool(market_preset=preset),
+        LLMWebSearchTool.get_update_levels_tool(),
     ]
     if not is_backtest:
         tools.insert(0, LLMWebSearchTool.tool_definition(market_preset=preset))
