@@ -252,6 +252,7 @@ function CreateSessionInner() {
               <input
                 type="date"
                 value={form.backtest_start_date}
+                max={new Date().toISOString().split("T")[0]}
                 onChange={(e) => setForm({ ...form, backtest_start_date: e.target.value })}
                 className="w-full font-mono text-sm"
               />
@@ -261,6 +262,7 @@ function CreateSessionInner() {
               <input
                 type="date"
                 value={form.backtest_end_date}
+                max={new Date().toISOString().split("T")[0]}
                 onChange={(e) => setForm({ ...form, backtest_end_date: e.target.value })}
                 className="w-full font-mono text-sm"
               />

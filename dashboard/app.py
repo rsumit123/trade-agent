@@ -1449,6 +1449,8 @@ def start_backtest(session_id: str, req: BacktestRequest, user: dict = Depends(c
     sc.backtest_start_date = req.start_date
     sc.backtest_end_date = req.end_date
     sc.backtest_status = "running"
+    # Stamp started_at so backtest runtime is billed against the user's quota
+    sc.started_at = datetime.utcnow().isoformat()
     save_session(sc)
 
     def _run_backtest():
@@ -1472,6 +1474,12 @@ def start_backtest(session_id: str, req: BacktestRequest, user: dict = Depends(c
             logging.getLogger("dashboard").error(f"Backtest failed: {e}")
             sc.backtest_status = f"failed: {str(e)[:100]}"
             save_session(sc)
+        finally:
+            # Bank actual elapsed runtime against the user's quota
+            try:
+                _bank_runtime(session_id)
+            except Exception:
+                pass
 
     thread = threading.Thread(target=_run_backtest, daemon=True)
     thread.start()
@@ -1606,6 +1614,11 @@ def start_compare_backtest(base_session_id: str, req: BacktestCompareRequest, us
     }
     meta_path.write_text(json.dumps(meta, indent=2))
 
+    # Stamp started_at on base session so the comparison's runtime is
+    # billed against the user's quota (banked when orchestration ends).
+    base_sc.started_at = datetime.utcnow().isoformat()
+    save_session(base_sc)
+
     def _orchestrate():
         from agent.kite_auth import KiteAuth
         from agent.backtest_engine import BacktestEngine
@@ -1654,6 +1667,11 @@ def start_compare_backtest(base_session_id: str, req: BacktestCompareRequest, us
         meta["status"] = "completed" if any_completed else "failed"
         meta["finished_at"] = _dt.now().isoformat()
         meta_path.write_text(json.dumps(meta, indent=2))
+        # Bank elapsed runtime against base session's owner
+        try:
+            _bank_runtime(base_session_id)
+        except Exception:
+            pass
 
     thread = threading.Thread(target=_orchestrate, daemon=True)
     thread.start()
