@@ -152,7 +152,7 @@ function CreateSessionInner() {
       } else if (startAfter) {
         await api(`/api/agent/start/${form.session_id}`, { method: "POST" });
       }
-      router.push(`/sessions/${form.session_id}`);
+      router.push(`/app/sessions/${form.session_id}`);
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : "Failed to create session");
       setCreating(false);
@@ -499,21 +499,16 @@ function CreateSessionInner() {
               </div>
             )}
 
-            {/* API Key env */}
-            <div className="pt-4 border-t border-border/60">
-              <div className="text-[11px] uppercase tracking-wider font-semibold text-text-muted mb-2">API Key Env</div>
-              <input
-                value={form.api_key_env}
-                onChange={(e) => setForm({ ...form, api_key_env: e.target.value })}
-                placeholder="OPENROUTER_API_KEY"
-                className="w-full font-mono text-sm"
-              />
-              <span className="text-[10px] text-text-muted block mt-1.5">
-                Name of server env var holding the API key. Leave as default unless using a custom key.
-              </span>
-            </div>
           </div>
         </Collapsible>
+      </div>
+
+      {/* Always-visible API key card — required for end users */}
+      <div className="mb-4 animate-fade-in delay-3">
+        <ApiKeyCard
+          value={form.api_key_env}
+          onChange={(v) => setForm({ ...form, api_key_env: v })}
+        />
       </div>
 
       {/* Sticky bottom action bar — sits ABOVE the global BottomNav (56px) */}
@@ -758,6 +753,66 @@ function ModelInfo({ provider: _provider, model, market }: { provider: string; m
       <div className="text-[10px] text-text-muted mt-1.5">
         Est. {cyclesPerDay} cycles/day × ~{inTokensPerCycle / 1000}k in / ~{outTokensPerCycle / 1000}k out
       </div>
+    </div>
+  );
+}
+
+function ApiKeyCard({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [revealed, setRevealed] = useState(false);
+  const looksLikeEnvName = /^[A-Z][A-Z0-9_]+$/.test(value || "");
+  const looksValid = !looksLikeEnvName && value.length >= 20;
+  return (
+    <div
+      className="rounded-2xl p-4 md:p-5"
+      style={{
+        background: "linear-gradient(180deg, #151d2e 0%, #0c1424 100%)",
+        border: `1px solid ${looksValid ? "rgba(34,197,94,0.3)" : "rgba(245,158,11,0.35)"}`,
+      }}
+    >
+      <div className="flex items-start gap-3 mb-3">
+        <span style={{ fontSize: 20 }}>🔑</span>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold text-text-primary">
+            OpenRouter API Key <span className="text-accent-red">*</span>
+          </div>
+          <p className="text-[11px] text-text-muted leading-relaxed mt-0.5">
+            Required. Encrypted at rest with Fernet. We never see your key in logs.{" "}
+            <a
+              href="https://openrouter.ai/keys"
+              target="_blank"
+              rel="noreferrer noopener"
+              className="text-accent-blue hover:underline"
+            >
+              Get a free key →
+            </a>
+          </p>
+        </div>
+      </div>
+      <div className="relative">
+        <input
+          type={revealed ? "text" : "password"}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="sk-or-v1-..."
+          autoComplete="off"
+          spellCheck={false}
+          className="w-full font-mono text-sm pr-20"
+          style={{ minHeight: 44, fontSize: 16 }}
+        />
+        <button
+          type="button"
+          onClick={() => setRevealed((r) => !r)}
+          className="absolute top-1/2 right-2 -translate-y-1/2 text-[10px] uppercase tracking-wider font-semibold px-2 py-1 rounded text-text-muted hover:text-text-primary"
+          style={{ background: "rgba(0,0,0,0.3)", minHeight: 32 }}
+        >
+          {revealed ? "Hide" : "Show"}
+        </button>
+      </div>
+      {looksLikeEnvName && (
+        <p className="text-[10px] text-accent-amber mt-2" style={{ color: "#fbbf24" }}>
+          Looks like an env var name — paste your actual key (starts with sk-or-...)
+        </p>
+      )}
     </div>
   );
 }

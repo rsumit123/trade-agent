@@ -51,6 +51,7 @@ class SessionConfig:
     llm_provider: str = "openrouter"
     llm_model: str = "anthropic/claude-haiku-4-5"
     api_key_env: str = "OPENROUTER_API_KEY"     # env var name OR literal key
+    api_key_encrypted: str = ""                 # Fernet-encrypted user-provided key (preferred over api_key_env)
 
     # ── Schedule ────────────────────────────────────────────
     intraday_interval_min: int = 15
@@ -69,6 +70,9 @@ class SessionConfig:
 
     # ── Comparison ────────────────────────────────────────
     parent_session: str = ""                     # if non-empty, this is a child of parent_session
+
+    # ── Ownership ─────────────────────────────────────────
+    user_email: str = ""                         # owner; "" → admin/legacy session
 
     # ── Metadata ────────────────────────────────────────────
     created_at: str = ""
@@ -97,7 +101,15 @@ class SessionConfig:
 
     @property
     def api_key(self) -> str:
-        """Resolve API key: try as env var name first, then as literal key."""
+        """Resolve API key. Priority: encrypted user key > env var > literal."""
+        if self.api_key_encrypted:
+            try:
+                from .secrets_store import decrypt
+                v = decrypt(self.api_key_encrypted)
+                if v:
+                    return v
+            except Exception:
+                pass
         val = os.environ.get(self.api_key_env, "")
         if val:
             return val
@@ -139,7 +151,7 @@ _YAML_FIELDS = {
     "intraday_interval_min", "personality", "created_at",
     "data_source",
     "backtest_mode", "backtest_start_date", "backtest_end_date", "backtest_status",
-    "parent_session",
+    "parent_session", "user_email", "api_key_encrypted",
 }
 
 
@@ -189,6 +201,7 @@ def list_sessions() -> List[Dict]:
                 "backtest_mode": data.get("backtest_mode", False),
                 "backtest_status": data.get("backtest_status", ""),
                 "parent_session": data.get("parent_session", ""),
+                "user_email": data.get("user_email", ""),
             })
         except Exception:
             # Skip broken sessions

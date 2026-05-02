@@ -114,7 +114,7 @@ export default function SessionSettingsPage() {
     try {
       await api(`/api/sessions/${sessionId}`, { method: "DELETE" });
       toast.success("Session deleted");
-      router.push("/");
+      router.push("/app");
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : "Failed to delete");
       setDeleting(false);
@@ -127,7 +127,7 @@ export default function SessionSettingsPage() {
       {/* Header */}
       <div className="flex items-center gap-3 mb-5">
         <Link
-          href={`/sessions/${sessionId}`}
+          href={`/app/sessions/${sessionId}`}
           className="flex items-center justify-center rounded-xl border border-border hover:border-border-accent hover:bg-bg-card transition-all text-text-muted hover:text-text-primary shrink-0"
           style={{ width: 44, height: 44 }}
           aria-label="Back to dashboard"

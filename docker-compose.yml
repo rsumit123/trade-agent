@@ -20,7 +20,7 @@ services:
     # The Linux OOM killer handles the edge case if it ever overflows
     stop_grace_period: 30s
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/sessions"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 5s
       retries: 3

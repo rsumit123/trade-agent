@@ -2,6 +2,7 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { api, fmt, pct, cn } from "@/lib/api";
+import { useAppPrefix } from "@/lib/paths";
 import { useToast } from "@/components/Toast";
 import { Sparkline } from "@/components/Sparkline";
 import type { AgentStatus, PortfolioSummary, Performance, SessionConfig, DailyPerformance } from "@/lib/types";
@@ -21,6 +22,7 @@ export function DashboardHero({
   sessionId, config, portfolio, perf, agentStatus, isBacktest, onStatusChange, lastUpdated,
 }: Props) {
   const toast = useToast();
+  const prefix = useAppPrefix();
   const [daily, setDaily] = useState<DailyPerformance[]>([]);
   const [toggling, setToggling] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -181,7 +183,7 @@ export function DashboardHero({
                   {modelName && <span className="text-text-secondary">{modelName}</span>}
                 </div>
                 <Link
-                  href={`/sessions/${sessionId}/settings`}
+                  href={`${prefix}/sessions/${sessionId}/settings`}
                   className="block w-full text-left px-3 py-2.5 text-xs font-medium text-text-secondary hover:bg-bg-secondary transition-colors border-t border-border"
                   onClick={() => setMenuOpen(false)}
                 >

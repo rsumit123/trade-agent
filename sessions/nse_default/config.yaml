@@ -12,3 +12,4 @@ llm_provider: openrouter
 llm_model: anthropic/claude-haiku-4-5
 api_key_env: OPENROUTER_API_KEY
 created_at: '2026-04-02T22:13:54.485863'
+user_email: thetinkerer018@gmail.com

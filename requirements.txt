@@ -25,3 +25,8 @@ pyyaml>=6.0
 # Zerodha Kite Connect (real-time NSE data + order placement)
 kiteconnect>=5.0.0
 pyotp>=2.9.0
+
+# Auth (Google OAuth + JWT + per-user API key encryption)
+google-auth>=2.30.0
+PyJWT>=2.8.0
+cryptography>=42.0.0
