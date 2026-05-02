@@ -216,11 +216,13 @@ export default function HomePage() {
         <PortfolioRollup
           totalReturn={rollup.totalReturn}
           totalValue={rollup.totalValue}
+          totalCapital={rollup.totalCapital}
           returnPct={rollup.returnPct}
           openPositions={rollup.openPositions}
           trades={rollup.trades}
           todayPnl={rollup.todayPnl}
           sessions={sessions}
+          liveCount={liveCount}
         />
       )}
 
@@ -280,22 +282,28 @@ export default function HomePage() {
 function PortfolioRollup({
   totalReturn,
   totalValue,
+  totalCapital,
   returnPct,
   openPositions,
   trades,
   todayPnl,
   sessions,
+  liveCount,
 }: {
   totalReturn: number;
   totalValue: number;
+  totalCapital: number;
   returnPct: number;
   openPositions: number;
   trades: number;
   todayPnl: number;
   sessions: Session[];
+  liveCount: number;
 }) {
   const isProfit = totalReturn >= 0;
-  // Pick a single currency symbol — use the most common across sessions (NSE-heavy users see ₹)
+  const accent = isProfit ? "#22c55e" : "#ef4444";
+
+  // Pick a single currency symbol (most common across sessions)
   const symCounts: Record<string, number> = {};
   sessions.forEach((s) => {
     const sym = s.currency_symbol || "$";
@@ -303,91 +311,190 @@ function PortfolioRollup({
   });
   const sym = Object.entries(symCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || "$";
 
-  // Build a combined daily series (sum of total_value across sessions, by date)
+  // Build combined daily total_value series for the watermark sparkline
   const byDate: Record<string, number> = {};
   sessions.forEach((s) => {
     (s.daily ?? []).forEach((d) => {
-      if (d.total_value != null) {
-        byDate[d.date] = (byDate[d.date] || 0) + d.total_value;
-      }
+      if (d.total_value != null) byDate[d.date] = (byDate[d.date] || 0) + d.total_value;
     });
   });
-  const series = Object.keys(byDate)
-    .sort()
-    .map((d) => byDate[d]);
+  const series = Object.keys(byDate).sort().map((d) => byDate[d]);
 
   return (
     <div
-      className="relative rounded-2xl p-4 md:p-5 mb-5 overflow-hidden animate-fade-in"
+      className="relative rounded-2xl p-5 md:p-6 mb-6 overflow-hidden animate-fade-in"
       style={{
-        background: "#151d2e",
-        border: `1px solid ${isProfit ? "rgba(34,197,94,0.25)" : "rgba(239,68,68,0.25)"}`,
+        // Layered: deep base, ambient profit/loss radial glow, faint dotted texture
+        background: `
+          radial-gradient(ellipse 80% 60% at 100% 0%, ${accent}26 0%, transparent 60%),
+          radial-gradient(ellipse 60% 40% at 0% 100%, ${accent}14 0%, transparent 60%),
+          linear-gradient(135deg, #0c1424 0%, #0a0e17 100%)
+        `,
+        border: `1px solid ${accent}33`,
+        boxShadow: `0 1px 0 0 ${accent}22 inset, 0 24px 48px -24px ${accent}33, 0 0 0 1px rgba(255,255,255,0.02) inset`,
       }}
     >
+      {/* Subtle grid texture */}
       <div
-        className="absolute inset-x-0 top-0 h-24 pointer-events-none opacity-60"
+        className="absolute inset-0 pointer-events-none opacity-[0.04]"
         style={{
-          background: isProfit
-            ? "linear-gradient(180deg, rgba(34,197,94,0.08) 0%, transparent 100%)"
-            : "linear-gradient(180deg, rgba(239,68,68,0.08) 0%, transparent 100%)",
+          backgroundImage:
+            "linear-gradient(to right, #ffffff 1px, transparent 1px), linear-gradient(to bottom, #ffffff 1px, transparent 1px)",
+          backgroundSize: "32px 32px",
         }}
       />
-      <div className="relative">
-        <div className="flex items-center justify-between mb-3">
-          <div className="text-[10px] uppercase tracking-wider font-semibold text-text-muted">
-            All Sessions Combined
+
+      {/* Watermark sparkline behind content */}
+      {series.length >= 2 && (
+        <div
+          className="absolute inset-x-0 bottom-0 pointer-events-none"
+          style={{ height: "70%", opacity: 0.18 }}
+        >
+          <div className="absolute inset-0">
+            <Sparkline
+              values={series}
+              width={800}
+              height={200}
+              positive={isProfit}
+              fill
+              strokeWidth={2}
+              responsive
+            />
           </div>
-          {todayPnl !== 0 && (
+        </div>
+      )}
+
+      <div className="relative">
+        {/* Top brand row */}
+        <div className="flex items-center justify-between mb-4 md:mb-5">
+          <div className="flex items-center gap-2">
             <span
-              className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-mono font-semibold"
+              className="inline-block rounded-full"
               style={{
-                background: todayPnl >= 0 ? "rgba(34,197,94,0.12)" : "rgba(239,68,68,0.12)",
-                color: todayPnl >= 0 ? "#22c55e" : "#ef4444",
-                border: `1px solid ${todayPnl >= 0 ? "rgba(34,197,94,0.25)" : "rgba(239,68,68,0.25)"}`,
+                width: 6,
+                height: 6,
+                background: accent,
+                boxShadow: `0 0 0 4px ${accent}26`,
+              }}
+            />
+            <span
+              className="text-[10px] uppercase font-bold tracking-[0.2em]"
+              style={{ color: "#cbd5e1", letterSpacing: "0.18em" }}
+            >
+              PORTFOLIO
+            </span>
+            <span className="text-[10px] uppercase tracking-wider text-text-muted">
+              · {sessions.length} session{sessions.length === 1 ? "" : "s"}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            {liveCount > 0 && (
+              <div
+                className="flex items-center gap-1.5 px-2 py-1 rounded-md"
+                style={{
+                  background: "rgba(34,197,94,0.1)",
+                  border: "1px solid rgba(34,197,94,0.25)",
+                }}
+              >
+                <span
+                  className="inline-block rounded-full animate-pulse-dot"
+                  style={{
+                    width: 6,
+                    height: 6,
+                    background: "#22c55e",
+                    boxShadow: "0 0 0 3px rgba(34,197,94,0.2)",
+                  }}
+                />
+                <span className="text-[10px] font-mono font-semibold text-accent-green">
+                  {liveCount} LIVE
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Hero number — bigger, no monospace for warmth, with tabular-nums for alignment */}
+        <div className="mb-1">
+          <div
+            className="font-bold tracking-tight leading-none flex items-baseline gap-2"
+            style={{
+              fontSize: 44,
+              color: accent,
+              fontVariantNumeric: "tabular-nums",
+              fontFeatureSettings: '"tnum"',
+              textShadow: `0 0 32px ${accent}33`,
+            }}
+          >
+            <span style={{ fontSize: 22, lineHeight: 1 }}>{isProfit ? "▲" : "▼"}</span>
+            <span>{isProfit ? "+" : ""}{fmt(totalReturn, sym, undefined, 0)}</span>
+            <span
+              className="font-semibold"
+              style={{
+                fontSize: 18,
+                color: isProfit ? "rgba(34,197,94,0.7)" : "rgba(239,68,68,0.7)",
               }}
             >
-              <span className="opacity-70">TODAY</span>
-              {todayPnl >= 0 ? "+" : ""}{fmt(todayPnl, sym, undefined, 0)}
+              {returnPct >= 0 ? "+" : ""}{returnPct.toFixed(2)}%
             </span>
-          )}
-        </div>
-
-        <div className="flex items-end justify-between gap-3 mb-3">
-          <div className="min-w-0 flex-1">
-            <div
-              className={cn(
-                "font-mono font-bold tracking-tight leading-none flex items-baseline gap-1.5",
-                isProfit ? "text-accent-green" : "text-accent-red"
-              )}
-              style={{ fontSize: 32 }}
-            >
-              <span style={{ fontSize: 18, lineHeight: 1 }}>{isProfit ? "▲" : "▼"}</span>
-              {isProfit ? "+" : ""}{fmt(totalReturn, sym, undefined, 0)}
-            </div>
-            <div className="flex items-center gap-2 mt-1.5 text-xs font-mono">
-              <span className={isProfit ? "text-accent-green/80" : "text-accent-red/80"}>
-                {returnPct >= 0 ? "+" : ""}{returnPct.toFixed(2)}%
-              </span>
-              <span className="text-text-muted">·</span>
-              <span className="text-text-muted">Equity {fmt(totalValue, sym, undefined, 0)}</span>
-            </div>
           </div>
         </div>
+        <div className="text-[11px] uppercase tracking-wider text-text-muted mb-5">
+          Total realized + unrealized P&amp;L across all agents
+        </div>
 
-        {series.length >= 2 && (
-          <div className="mb-3 -mx-1">
-            <Sparkline values={series} width={400} height={48} positive={isProfit} fill responsive />
-          </div>
-        )}
-
-        <div className="flex items-center gap-3 text-[11px] text-text-muted pt-3 border-t border-border/50">
-          <span className="font-mono">{sessions.length} sessions</span>
-          <span className="opacity-40">·</span>
-          <span className="font-mono">{openPositions} open</span>
-          <span className="opacity-40">·</span>
-          <span className="font-mono">{trades} trades</span>
+        {/* KPI tiles */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-3">
+          <Tile
+            label="Equity"
+            value={fmt(totalValue, sym, undefined, 0)}
+            sub={`Capital ${fmt(totalCapital, sym, undefined, 0)}`}
+          />
+          <Tile
+            label="Today"
+            value={`${todayPnl >= 0 ? "+" : ""}${fmt(todayPnl, sym, undefined, 0)}`}
+            valueColor={todayPnl >= 0 ? "#22c55e" : "#ef4444"}
+            sub={todayPnl === 0 ? "No moves yet" : todayPnl >= 0 ? "Profit today" : "Loss today"}
+          />
+          <Tile label="Open" value={String(openPositions)} sub={`${liveCount} agent${liveCount === 1 ? "" : "s"} live`} />
+          <Tile label="Trades" value={String(trades)} sub="lifetime closed" />
         </div>
       </div>
+    </div>
+  );
+}
+
+function Tile({
+  label,
+  value,
+  sub,
+  valueColor,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  valueColor?: string;
+}) {
+  return (
+    <div
+      className="rounded-xl px-3 py-2.5"
+      style={{
+        background: "rgba(0,0,0,0.25)",
+        border: "1px solid rgba(255,255,255,0.04)",
+        backdropFilter: "blur(6px)",
+      }}
+    >
+      <div className="text-[9px] uppercase tracking-[0.15em] font-semibold text-text-muted mb-1">
+        {label}
+      </div>
+      <div
+        className="font-mono font-semibold leading-none"
+        style={{ fontSize: 16, color: valueColor || "#f1f5f9" }}
+      >
+        {value}
+      </div>
+      {sub && (
+        <div className="text-[10px] text-text-muted mt-1 truncate">{sub}</div>
+      )}
     </div>
   );
 }
