@@ -27,7 +27,9 @@ from agent.auth import (
 from agent.users import (
     upsert_user, is_admin,
     get_runtime_remaining, add_runtime, mark_trial_started, add_to_waitlist,
-    FREE_RUNTIME_QUOTA_SECONDS,
+    is_paid_or_admin, get_tier, set_user_tier, set_runtime_quota,
+    list_all_users, list_waitlist,
+    FREE_RUNTIME_QUOTA_SECONDS, PAID_RUNTIME_QUOTA_SECONDS,
 )
 from agent.secrets_store import encrypt
 
@@ -262,7 +264,11 @@ def auth_google(req: GoogleAuthRequest, response: Response):
 def auth_me(user: dict = Depends(current_user)):
     email = user["email"]
     is_user_admin = user.get("is_admin", False)
-    quota = FREE_RUNTIME_QUOTA_SECONDS
+    tier = "admin" if is_user_admin else get_tier(email)
+    default_quota = (
+        PAID_RUNTIME_QUOTA_SECONDS if tier == "paid" else FREE_RUNTIME_QUOTA_SECONDS
+    )
+    quota = default_quota
     used = 0
     remaining = 10**9 if is_user_admin else 0
     has_running = False
@@ -270,7 +276,7 @@ def auth_me(user: dict = Depends(current_user)):
         try:
             from agent.users import get_user
             u = get_user(email) or {}
-            quota = int(u.get("runtime_quota_seconds") or FREE_RUNTIME_QUOTA_SECONDS)
+            quota = int(u.get("runtime_quota_seconds") or default_quota)
             used = int(u.get("runtime_seconds_used") or 0)
         except Exception:
             pass
@@ -299,7 +305,7 @@ def auth_me(user: dict = Depends(current_user)):
         "name": user.get("name", ""),
         "picture": user.get("picture", ""),
         "is_admin": is_user_admin,
-        "tier": "admin" if is_user_admin else "free",
+        "tier": tier,
         "runtime_quota_seconds": quota,
         "runtime_used_seconds": used,
         "runtime_remaining_seconds": remaining,
@@ -362,6 +368,7 @@ def _bank_runtime(session_id: str) -> int:
             pass
         return 0
     delta = int(max(0, (datetime.utcnow() - t0).total_seconds()))
+    # Admins are unlimited; paid + free both bank runtime
     if sc.user_email and not is_admin(sc.user_email):
         add_runtime(sc.user_email, delta)
     sc.started_at = ""
@@ -398,6 +405,7 @@ def _enforce_quota_sweep():
     for s in list_sessions():
         sid = s["session_id"]
         owner = (s.get("user_email") or "").lower()
+        # Admins are unlimited; paid + free both burn against their quota
         if not owner or is_admin(owner):
             continue
         running = _is_agent_running(sid)
@@ -790,6 +798,157 @@ def get_admin_sessions(_admin: dict = Depends(require_admin)):
     return sessions
 
 
+# ── Admin: users, stats, waitlist ────────────────────────────
+
+
+class AdminUserPatchRequest(BaseModel):
+    tier: Optional[str] = None                   # "free" | "paid"
+    runtime_quota_seconds: Optional[int] = None  # raw override
+    runtime_seconds_used: Optional[int] = None   # admin can reset to 0
+
+
+@app.get("/api/admin/users")
+def admin_list_users(_admin: dict = Depends(require_admin)):
+    """Admin: list all signed-in users with tier + runtime info + session count."""
+    from agent.session import list_sessions
+    sessions = list_sessions()
+    by_owner: Dict[str, int] = {}
+    running_by_owner: Dict[str, int] = {}
+    for s in sessions:
+        owner = (s.get("user_email") or "").lower()
+        if not owner or s.get("parent_session"):
+            continue
+        by_owner[owner] = by_owner.get(owner, 0) + 1
+        if _is_agent_running(s["session_id"])["running"]:
+            running_by_owner[owner] = running_by_owner.get(owner, 0) + 1
+
+    out = []
+    for u in list_all_users():
+        email = u["email"]
+        tier = u["tier"]
+        default_quota = (
+            PAID_RUNTIME_QUOTA_SECONDS if tier == "paid" else FREE_RUNTIME_QUOTA_SECONDS
+        )
+        quota = int(u.get("runtime_quota_seconds") or default_quota)
+        used = int(u.get("runtime_seconds_used") or 0)
+        remaining = 10**9 if u.get("is_admin") else max(0, quota - used)
+        out.append({
+            "email": email,
+            "name": u.get("name") or "",
+            "picture": u.get("picture") or "",
+            "tier": tier,
+            "is_admin": u.get("is_admin", False),
+            "created_at": u.get("created_at"),
+            "last_login": u.get("last_login"),
+            "trial_started_at": u.get("trial_started_at"),
+            "runtime_quota_seconds": quota,
+            "runtime_used_seconds": used,
+            "runtime_remaining_seconds": remaining,
+            "session_count": by_owner.get(email, 0),
+            "running_session_count": running_by_owner.get(email, 0),
+        })
+    return out
+
+
+@app.patch("/api/admin/users/{email}")
+def admin_patch_user(
+    email: str,
+    req: AdminUserPatchRequest,
+    _admin: dict = Depends(require_admin),
+):
+    """Admin: change a user's tier, runtime quota, or used. Tier change auto-bumps quota."""
+    if is_admin(email):
+        raise HTTPException(400, "Cannot edit admin users via this endpoint (admin tier is env-driven).")
+
+    if req.tier is not None:
+        if req.tier not in ("free", "paid"):
+            raise HTTPException(400, "tier must be 'free' or 'paid'")
+        try:
+            set_user_tier(email, req.tier)
+        except ValueError as e:
+            raise HTTPException(404, str(e))
+
+    if req.runtime_quota_seconds is not None or req.runtime_seconds_used is not None:
+        # Default current values if only one was provided
+        from agent.users import get_user
+        cur = get_user(email) or {}
+        cur_tier = cur.get("tier") or "free"
+        default_quota = (
+            PAID_RUNTIME_QUOTA_SECONDS if cur_tier == "paid" else FREE_RUNTIME_QUOTA_SECONDS
+        )
+        new_quota = (
+            req.runtime_quota_seconds
+            if req.runtime_quota_seconds is not None
+            else int(cur.get("runtime_quota_seconds") or default_quota)
+        )
+        new_used = (
+            req.runtime_seconds_used
+            if req.runtime_seconds_used is not None
+            else int(cur.get("runtime_seconds_used") or 0)
+        )
+        set_runtime_quota(email, new_quota, new_used)
+
+    from agent.users import get_user
+    return get_user(email) or {}
+
+
+@app.get("/api/admin/stats")
+def admin_stats(_admin: dict = Depends(require_admin)):
+    """Admin: rollup stats — users, sessions, backtests, trades."""
+    import sqlite3
+    from agent.session import list_sessions, SESSIONS_DIR
+    users = list_all_users()
+    sessions = list_sessions()
+    parent_sessions = [s for s in sessions if not s.get("parent_session")]
+
+    running = 0
+    backtests_running = 0
+    total_trades = 0
+    today_trades = 0
+    today_iso = datetime.utcnow().date().isoformat()
+    for s in parent_sessions:
+        sid = s["session_id"]
+        if _is_agent_running(sid)["running"]:
+            running += 1
+        if (s.get("backtest_status") or "").startswith("running"):
+            backtests_running += 1
+        db_path = SESSIONS_DIR / sid / "trades.db"
+        if db_path.exists():
+            try:
+                conn = sqlite3.connect(str(db_path))
+                row = conn.execute("SELECT COUNT(*) FROM trades").fetchone()
+                total_trades += row[0] or 0
+                row2 = conn.execute(
+                    "SELECT COUNT(*) FROM trades WHERE substr(entry_time, 1, 10) = ?",
+                    (today_iso,),
+                ).fetchone()
+                today_trades += row2[0] or 0
+                conn.close()
+            except Exception:
+                pass
+
+    by_tier = {"free": 0, "paid": 0, "admin": 0}
+    for u in users:
+        by_tier[u["tier"]] = by_tier.get(u["tier"], 0) + 1
+
+    return {
+        "users_total": len(users),
+        "users_by_tier": by_tier,
+        "sessions_total": len(parent_sessions),
+        "sessions_running": running,
+        "backtests_running": backtests_running,
+        "trades_total": total_trades,
+        "trades_today": today_trades,
+        "waitlist_count": len(list_waitlist()),
+    }
+
+
+@app.get("/api/admin/waitlist")
+def admin_waitlist(_admin: dict = Depends(require_admin)):
+    """Admin: list emails captured via waitlist."""
+    return list_waitlist()
+
+
 @app.get("/api/sessions/current")
 def get_current_session():
     """Get the currently active session ID."""
@@ -823,6 +982,9 @@ def create_session(req: CreateSessionRequest, user: dict = Depends(current_user)
         raise HTTPException(409, f"Session '{req.session_id}' already exists")
 
     is_user_admin = user.get("is_admin", False)
+    user_email = (user.get("email") or "").lower()
+    user_tier = get_tier(user_email)
+    is_paid = user_tier == "paid"
     api_key_encrypted = ""
     api_key_env = req.api_key_env or "OPENROUTER_API_KEY"
 
@@ -840,10 +1002,8 @@ def create_session(req: CreateSessionRequest, user: dict = Depends(current_user)
         api_key_encrypted = encrypt(raw_key)
         api_key_env = "OPENROUTER_API_KEY"
 
-    # Free-tier: 1 session max, no API key (uses platform key)
-    user_email = (user.get("email") or "").lower()
-    if not is_user_admin:
-        # Locked on free tier: paid models, backtests
+    # Free-tier-only restrictions (paid + admin bypass)
+    if user_tier == "free":
         _check_free_model_allowed(req.llm_model)
         if req.backtest_mode:
             raise HTTPException(
@@ -863,6 +1023,13 @@ def create_session(req: CreateSessionRequest, user: dict = Depends(current_user)
             raise HTTPException(
                 403,
                 "Your free trial has ended. Upgrade for more runtime."
+            )
+    elif is_paid:
+        # Paid users still pay against their (larger) runtime quota
+        if get_runtime_remaining(user_email) <= 0:
+            raise HTTPException(
+                403,
+                "Your paid runtime quota is exhausted. Contact support to top up."
             )
 
     sc = SessionConfig(
@@ -889,7 +1056,7 @@ def create_session(req: CreateSessionRequest, user: dict = Depends(current_user)
         backtest_end_date=req.backtest_end_date,
         data_source="kite" if req.market in ("nse", "nse-intraday") else "yfinance",
         user_email=user_email,
-        tier="admin" if is_user_admin else "free",
+        tier=user_tier,
     )
     sc.resolve_defaults()
     save_session(sc)
@@ -952,8 +1119,8 @@ def update_session(session_id: str, req: UpdateSessionRequest, user: dict = Depe
     except FileNotFoundError:
         raise HTTPException(404, f"Session '{session_id}' not found")
 
-    # Free tier: reject paid-model swaps
-    if not user.get("is_admin") and req.llm_model:
+    # Free tier: reject paid-model swaps (paid + admin can pick anything)
+    if get_tier(user["email"]) == "free" and req.llm_model:
         _check_free_model_allowed(req.llm_model)
 
     # Update only provided fields
@@ -1103,14 +1270,17 @@ def start_agent(session_id: str, user: dict = Depends(current_user)):
     if status["running"]:
         return {"status": "already_running", "pid": status["pid"]}
 
-    # Free tier: enforce runtime quota
+    # Enforce runtime quota for free + paid (admin = unlimited)
     owner = (sc.user_email or "").lower()
     if owner and not is_admin(owner):
         if get_runtime_remaining(owner) <= 0:
-            raise HTTPException(
-                403,
+            tier = get_tier(owner)
+            msg = (
                 "Your free 24-hour trial has ended. Upgrade for more runtime."
+                if tier == "free"
+                else "Your runtime quota is exhausted. Contact support to top up."
             )
+            raise HTTPException(403, msg)
 
     from agent.session import list_sessions
     all_sessions = list_sessions()
@@ -1236,7 +1406,7 @@ _backtest_threads: Dict[str, Any] = {}  # session_id → thread
 @app.post("/api/backtest/start/{session_id}")
 def start_backtest(session_id: str, req: BacktestRequest, user: dict = Depends(current_user)):
     _ensure_session_access(session_id, user)
-    if not user.get("is_admin"):
+    if not is_paid_or_admin(user["email"]):
         raise HTTPException(
             403,
             "Backtests are locked on the free tier. Upgrade to run historical replays."
@@ -1361,7 +1531,7 @@ def _model_slug(model: str) -> str:
 @app.post("/api/backtest/compare/start/{base_session_id}")
 def start_compare_backtest(base_session_id: str, req: BacktestCompareRequest, user: dict = Depends(current_user)):
     _ensure_session_access(base_session_id, user)
-    if not user.get("is_admin"):
+    if not is_paid_or_admin(user["email"]):
         raise HTTPException(
             403,
             "Model comparison is locked on the free tier. Upgrade to compare AIs head-to-head."

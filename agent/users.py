@@ -18,6 +18,8 @@ USERS_DB = Path(__file__).parent.parent / "users.db"
 
 # 24 hours of agent runtime per free user
 FREE_RUNTIME_QUOTA_SECONDS = 24 * 60 * 60
+# Paid tier (manually granted by admin): 5 days of agent runtime
+PAID_RUNTIME_QUOTA_SECONDS = 5 * 24 * 60 * 60
 
 
 def _admin_emails() -> set:
@@ -43,7 +45,8 @@ def init_db():
                 last_login REAL,
                 runtime_quota_seconds INTEGER DEFAULT 86400,
                 runtime_seconds_used INTEGER DEFAULT 0,
-                trial_started_at REAL
+                trial_started_at REAL,
+                tier TEXT DEFAULT 'free'
             )"""
         )
         # Migrations for existing dbs
@@ -54,6 +57,8 @@ def init_db():
             c.execute("ALTER TABLE users ADD COLUMN runtime_seconds_used INTEGER DEFAULT 0")
         if "trial_started_at" not in existing_cols:
             c.execute("ALTER TABLE users ADD COLUMN trial_started_at REAL")
+        if "tier" not in existing_cols:
+            c.execute("ALTER TABLE users ADD COLUMN tier TEXT DEFAULT 'free'")
         c.execute(
             """CREATE TABLE IF NOT EXISTS waitlist (
                 email TEXT PRIMARY KEY,
@@ -93,11 +98,109 @@ def get_user(email: str) -> Optional[dict]:
         return None
     user = dict(row)
     user["is_admin"] = email in _admin_emails()
+    # Admins effectively have admin tier regardless of stored value
+    if user["is_admin"]:
+        user["tier"] = "admin"
+    elif not user.get("tier"):
+        user["tier"] = "free"
     return user
 
 
 def is_admin(email: str) -> bool:
     return (email or "").lower().strip() in _admin_emails()
+
+
+def get_tier(email: str) -> str:
+    """Returns 'admin', 'paid', or 'free'. Admin env override always wins."""
+    if is_admin(email):
+        return "admin"
+    u = get_user(email)
+    if not u:
+        return "free"
+    return u.get("tier") or "free"
+
+
+def is_paid_or_admin(email: str) -> bool:
+    """True if the user has access to paid features (paid tier or admin)."""
+    return get_tier(email) in ("paid", "admin")
+
+
+def set_user_tier(email: str, tier: str, *, grant_runtime: bool = True) -> dict:
+    """Promote/demote a user. When promoting free->paid, optionally grants
+    fresh runtime quota (and zeroes used) so the user starts clean."""
+    if tier not in ("free", "paid"):
+        raise ValueError(f"Invalid tier: {tier!r} (must be 'free' or 'paid')")
+    init_db()
+    email = (email or "").lower().strip()
+    if is_admin(email):
+        # Admin tier is env-driven; refuse DB writes that would mislead
+        return get_user(email) or {}
+    with _conn() as c:
+        existing = c.execute("SELECT tier FROM users WHERE email = ?", (email,)).fetchone()
+        if not existing:
+            raise ValueError(f"User not found: {email}")
+        if grant_runtime:
+            new_quota = (
+                PAID_RUNTIME_QUOTA_SECONDS if tier == "paid" else FREE_RUNTIME_QUOTA_SECONDS
+            )
+            c.execute(
+                "UPDATE users SET tier = ?, runtime_quota_seconds = ?, runtime_seconds_used = 0 "
+                "WHERE email = ?",
+                (tier, new_quota, email),
+            )
+        else:
+            c.execute("UPDATE users SET tier = ? WHERE email = ?", (tier, email))
+    return get_user(email) or {}
+
+
+def set_runtime_quota(email: str, quota_seconds: int, used_seconds: Optional[int] = None) -> dict:
+    """Admin override: set raw quota and (optionally) reset used."""
+    init_db()
+    email = (email or "").lower().strip()
+    with _conn() as c:
+        if used_seconds is not None:
+            c.execute(
+                "UPDATE users SET runtime_quota_seconds = ?, runtime_seconds_used = ? "
+                "WHERE email = ?",
+                (int(quota_seconds), int(used_seconds), email),
+            )
+        else:
+            c.execute(
+                "UPDATE users SET runtime_quota_seconds = ? WHERE email = ?",
+                (int(quota_seconds), email),
+            )
+    return get_user(email) or {}
+
+
+def list_all_users() -> list:
+    """Admin view — list all users with metadata."""
+    init_db()
+    admins = _admin_emails()
+    out = []
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT email, name, picture, created_at, last_login, "
+            "runtime_quota_seconds, runtime_seconds_used, trial_started_at, tier "
+            "FROM users ORDER BY last_login DESC"
+        ).fetchall()
+    for r in rows:
+        d = dict(r)
+        d["is_admin"] = d["email"] in admins
+        if d["is_admin"]:
+            d["tier"] = "admin"
+        elif not d.get("tier"):
+            d["tier"] = "free"
+        out.append(d)
+    return out
+
+
+def list_waitlist() -> list:
+    init_db()
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT email, created_at, source FROM waitlist ORDER BY created_at DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ── Runtime quota helpers ───────────────────────────────────────
@@ -110,7 +213,11 @@ def get_runtime_remaining(email: str) -> int:
     u = get_user(email)
     if not u:
         return 0
-    quota = int(u.get("runtime_quota_seconds") or FREE_RUNTIME_QUOTA_SECONDS)
+    tier = u.get("tier") or "free"
+    default_quota = (
+        PAID_RUNTIME_QUOTA_SECONDS if tier == "paid" else FREE_RUNTIME_QUOTA_SECONDS
+    )
+    quota = int(u.get("runtime_quota_seconds") or default_quota)
     used = int(u.get("runtime_seconds_used") or 0)
     return max(0, quota - used)
 
