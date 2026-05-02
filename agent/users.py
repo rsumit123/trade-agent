@@ -9,12 +9,27 @@ actively running (pause = clock pauses).
 """
 
 import os
+import shutil
 import sqlite3
 import time
 from pathlib import Path
 from typing import Optional
 
-USERS_DB = Path(__file__).parent.parent / "users.db"
+# Live under sessions/ so it's covered by the existing Docker volume mount
+# and survives container rebuilds. (Previously /app/users.db lived in the
+# container's writeable layer and got wiped on every `docker compose --build`.)
+_SESSIONS_DIR = Path(__file__).parent.parent / "sessions"
+USERS_DB = _SESSIONS_DIR / "_users.db"
+
+# One-time migration: if the new path doesn't exist but the legacy path does,
+# move the legacy file in. Safe to retry — only runs while old path exists.
+_LEGACY_USERS_DB = Path(__file__).parent.parent / "users.db"
+if _LEGACY_USERS_DB.exists() and not USERS_DB.exists():
+    try:
+        _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(_LEGACY_USERS_DB), str(USERS_DB))
+    except Exception:
+        pass
 
 # 24 hours of agent runtime per free user
 FREE_RUNTIME_QUOTA_SECONDS = 24 * 60 * 60
@@ -69,6 +84,12 @@ def init_db():
 
 
 def upsert_user(email: str, name: str = "", picture: str = "") -> dict:
+    """Insert a new user or refresh login metadata for an existing one.
+
+    On UPDATE we ONLY touch name / picture / last_login. Never tier, never
+    quota, never used — those are managed exclusively via set_user_tier
+    and set_runtime_quota. Re-login must never reset paid status.
+    """
     init_db()
     email = email.lower().strip()
     now = time.time()
@@ -82,8 +103,8 @@ def upsert_user(email: str, name: str = "", picture: str = "") -> dict:
         else:
             c.execute(
                 "INSERT INTO users (email, name, picture, created_at, last_login, "
-                "runtime_quota_seconds, runtime_seconds_used) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "runtime_quota_seconds, runtime_seconds_used, tier) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'free')",
                 (email, name, picture, now, now, FREE_RUNTIME_QUOTA_SECONDS, 0),
             )
     return get_user(email)
