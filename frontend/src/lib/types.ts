@@ -224,6 +224,9 @@ export interface ClosedTrade {
   status: string;
   reason: string;
   exit_reason: string;
+  conviction?: number | null;
+  llm_model?: string | null;
+  exit_type?: string | null;
 }
 
 export interface RiskStatus {
