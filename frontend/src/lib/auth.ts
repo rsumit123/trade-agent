@@ -11,7 +11,7 @@ export interface AuthUser {
   name: string;
   picture: string;
   is_admin: boolean;
-  tier?: "free" | "admin";
+  tier?: "free" | "paid" | "admin";
   runtime_quota_seconds?: number;
   runtime_used_seconds?: number;
   runtime_remaining_seconds?: number;
