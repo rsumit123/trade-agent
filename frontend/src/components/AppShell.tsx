@@ -3,6 +3,7 @@ import { usePathname } from "next/navigation";
 import { Sidebar, MobileTopBar } from "@/components/Sidebar";
 import { BottomNav } from "@/components/BottomNav";
 import { ToastProvider } from "@/components/Toast";
+import { TrialBanner, TrialEndedFooterStrip, TrialEndedModal } from "@/components/Runtime";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() || "";
@@ -25,6 +26,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <div className="flex flex-col min-h-screen app-content">
         {/* Mobile top bar: hidden on md+ */}
         <MobileTopBar />
+        {/* Trial-related banners — sticky to top of content */}
+        <TrialEndedFooterStrip />
+        <TrialBanner />
         {/* Main content — pb-bottom-nav reserves space for fixed bottom nav on mobile */}
         <main className="flex-1 overflow-y-auto pb-bottom-nav md:pb-0">
           {children}
@@ -33,6 +37,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       {/* Mobile bottom nav */}
       <BottomNav />
+
+      {/* Modal — only renders when trial has ended */}
+      <TrialEndedModal />
     </ToastProvider>
   );
 }

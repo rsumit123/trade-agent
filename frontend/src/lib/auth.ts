@@ -11,6 +11,12 @@ export interface AuthUser {
   name: string;
   picture: string;
   is_admin: boolean;
+  tier?: "free" | "admin";
+  runtime_quota_seconds?: number;
+  runtime_used_seconds?: number;
+  runtime_remaining_seconds?: number;
+  trial_ended?: boolean;
+  has_running_session?: boolean;
 }
 
 const USER_KEY = "alphaagent_user";
