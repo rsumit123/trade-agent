@@ -1713,6 +1713,91 @@ def get_journal(session: str = None):
     return {"content": journal_path.read_text()}
 
 
+@app.get("/api/cost/{session_id}")
+def get_cost_ledger(session_id: str, days: int = 30):
+    """Aggregate LLM cost ledger for a session.
+
+    Returns: lifetime totals, per-day series (last N days), and per-model breakdown.
+    """
+    from agent.session import SESSIONS_DIR
+    from collections import defaultdict
+    from datetime import datetime as _dt, timedelta as _td
+
+    log_path = SESSIONS_DIR / session_id / "cost.jsonl"
+    if not log_path.exists():
+        return {
+            "lifetime": {"usd": 0, "input_tokens": 0, "output_tokens": 0, "cycles": 0},
+            "today": {"usd": 0, "cycles": 0},
+            "daily": [],
+            "by_model": [],
+        }
+
+    by_day = defaultdict(lambda: {"usd": 0.0, "input_tokens": 0, "output_tokens": 0, "cycles": 0})
+    by_model = defaultdict(lambda: {"usd": 0.0, "input_tokens": 0, "output_tokens": 0, "cycles": 0})
+    lifetime = {"usd": 0.0, "input_tokens": 0, "output_tokens": 0, "cycles": 0}
+    today_str = _dt.now().date().isoformat()
+
+    cutoff = (_dt.now() - _td(days=days)).date().isoformat()
+
+    try:
+        for line in log_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            day = (r.get("ts") or "")[:10]
+            usd = float(r.get("usd") or 0.0)
+            inp = int(r.get("input_tokens") or 0)
+            out = int(r.get("output_tokens") or 0)
+            model = r.get("model") or "unknown"
+
+            lifetime["usd"] += usd
+            lifetime["input_tokens"] += inp
+            lifetime["output_tokens"] += out
+            lifetime["cycles"] += 1
+
+            if day >= cutoff:
+                d = by_day[day]
+                d["usd"] += usd
+                d["input_tokens"] += inp
+                d["output_tokens"] += out
+                d["cycles"] += 1
+
+            m = by_model[model]
+            m["usd"] += usd
+            m["input_tokens"] += inp
+            m["output_tokens"] += out
+            m["cycles"] += 1
+    except Exception as e:
+        logger.warning(f"cost ledger read failed: {e}")
+
+    daily = [
+        {"date": d, **{k: round(v, 6) if k == "usd" else v for k, v in vals.items()}}
+        for d, vals in sorted(by_day.items())
+    ]
+    by_model_list = sorted(
+        [{"model": m, **{k: round(v, 6) if k == "usd" else v for k, v in vals.items()}}
+         for m, vals in by_model.items()],
+        key=lambda x: -x["usd"],
+    )
+
+    today = by_day.get(today_str, {"usd": 0.0, "cycles": 0})
+    return {
+        "lifetime": {
+            "usd": round(lifetime["usd"], 6),
+            "input_tokens": lifetime["input_tokens"],
+            "output_tokens": lifetime["output_tokens"],
+            "cycles": lifetime["cycles"],
+        },
+        "today": {"usd": round(today.get("usd", 0.0), 6), "cycles": today.get("cycles", 0)},
+        "daily": daily,
+        "by_model": by_model_list,
+    }
+
+
 @app.get("/api/thinking/{session_id}")
 def get_thinking(session_id: str, limit: int = 50):
     """Return reverse-chronological agent reasoning trail."""

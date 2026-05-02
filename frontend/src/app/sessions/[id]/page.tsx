@@ -18,6 +18,7 @@ import { DirectivePanel } from "@/components/DirectivePanel";
 import { DailyTracker } from "@/components/DailyTracker";
 import { EquityCharts } from "@/components/EquityCharts";
 import { ThinkingLog } from "@/components/ThinkingLog";
+import { CostLedger } from "@/components/CostLedger";
 import { BacktestPanel } from "@/components/BacktestPanel";
 import { BacktestCompare } from "@/components/BacktestCompare";
 import type {
@@ -255,6 +256,7 @@ export default function SessionDashboard() {
       {tab === "insights" && (
         <div className="space-y-4 md:space-y-5 animate-fade-in">
           <PerformancePanel perf={perf} config={config} />
+          <CostLedger sessionId={sessionId} />
           <LearningInsights sessionId={sessionId} currencySymbol={config?.currency_symbol || "$"} />
           <JournalPanel content={journal} />
         </div>

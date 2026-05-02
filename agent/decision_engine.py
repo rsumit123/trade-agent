@@ -284,6 +284,7 @@ class AnthropicDecisionEngine:
     def __init__(self, config: AgentConfig):
         self.config = config
         self.last_reasoning: List[Dict] = []
+        self.last_usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
         try:
             import anthropic
             self.client = anthropic.Anthropic(api_key=config.api_key)
@@ -323,6 +324,7 @@ class AnthropicDecisionEngine:
         messages = [{"role": "user", "content": context}]
         actions_taken = []
         reasoning_trail: List[Dict] = []
+        usage_acc = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
         max_iterations = 10
 
         for i in range(max_iterations):
@@ -337,6 +339,15 @@ class AnthropicDecisionEngine:
             except Exception as e:
                 logger.error(f"LLM API error: {e}")
                 break
+
+            try:
+                u = getattr(response, "usage", None)
+                if u is not None:
+                    usage_acc["input_tokens"] += int(getattr(u, "input_tokens", 0) or 0)
+                    usage_acc["output_tokens"] += int(getattr(u, "output_tokens", 0) or 0)
+                    usage_acc["calls"] += 1
+            except Exception:
+                pass
 
             assistant_content = response.content
             messages.append({"role": "assistant", "content": assistant_content})
@@ -377,6 +388,7 @@ class AnthropicDecisionEngine:
             messages.append({"role": "user", "content": tool_results})
 
         self.last_reasoning = reasoning_trail
+        self.last_usage = usage_acc
         return actions_taken
 
 
@@ -391,6 +403,7 @@ class OpenRouterDecisionEngine:
     def __init__(self, config: AgentConfig):
         self.config = config
         self.last_reasoning: List[Dict] = []
+        self.last_usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
         try:
             import openai
         except ImportError:
@@ -438,6 +451,7 @@ class OpenRouterDecisionEngine:
         ]
         actions_taken = []
         reasoning_trail: List[Dict] = []
+        usage_acc = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
         max_iterations = 10
 
         for i in range(max_iterations):
@@ -452,6 +466,15 @@ class OpenRouterDecisionEngine:
             except Exception as e:
                 logger.error(f"LLM API error: {e}")
                 break
+
+            try:
+                u = getattr(response, "usage", None)
+                if u is not None:
+                    usage_acc["input_tokens"] += int(getattr(u, "prompt_tokens", 0) or 0)
+                    usage_acc["output_tokens"] += int(getattr(u, "completion_tokens", 0) or 0)
+                    usage_acc["calls"] += 1
+            except Exception:
+                pass
 
             msg = response.choices[0].message
             messages.append(msg)
@@ -499,6 +522,7 @@ class OpenRouterDecisionEngine:
                 })
 
         self.last_reasoning = reasoning_trail
+        self.last_usage = usage_acc
         return actions_taken
 
     @staticmethod
