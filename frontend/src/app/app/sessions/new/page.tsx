@@ -43,7 +43,8 @@ function CreateSessionInner() {
   const searchParams = useSearchParams();
   const toast = useToast();
   const { user } = useUser();
-  const isFree = !!user && !user.is_admin;
+  // Free = signed in but neither paid nor admin. Paid users get full access.
+  const isFree = !!user && !user.is_admin && user.tier !== "paid";
   const [presets, setPresets] = useState<Record<string, MarketPreset>>({});
   const [sessions, setSessions] = useState<Session[]>([]);
   const [creating, setCreating] = useState(false);
@@ -101,13 +102,14 @@ function CreateSessionInner() {
     });
     api<Session[]>("/api/sessions").then((list) => {
       setSessions(list);
-      // Free tier: 1-session cap. If they already have one, send them to it.
-      if (list.length >= 1) {
+      // Free tier: 1-session cap. Paid + admin can create multiple.
+      const freeCapped = !!user && !user.is_admin && user.tier !== "paid";
+      if (freeCapped && list.length >= 1) {
         toast.error("Free tier supports 1 session — taking you to your existing one.");
         router.replace(`/app/sessions/${list[0].session_id}`);
       }
     }).catch(() => {});
-  }, [searchParams, router, toast]);
+  }, [searchParams, router, toast, user]);
 
   // Auto-sync session_id from display_name (until user edits it manually)
   useEffect(() => {
