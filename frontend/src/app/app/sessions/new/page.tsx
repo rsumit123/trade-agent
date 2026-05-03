@@ -439,7 +439,7 @@ function CreateSessionInner() {
                 onChange={(e) => {
                   const provider = e.target.value;
                   const defaults: Record<string, { model: string; keyEnv: string }> = {
-                    openrouter: { model: "anthropic/claude-haiku-4-5", keyEnv: "OPENROUTER_API_KEY" },
+                    openrouter: { model: "google/gemini-2.5-flash", keyEnv: "OPENROUTER_API_KEY" },
                     anthropic: { model: "claude-sonnet-4-5-20250929", keyEnv: "ANTHROPIC_API_KEY" },
                     openai: { model: "gpt-4o", keyEnv: "OPENAI_API_KEY" },
                   };
@@ -665,16 +665,19 @@ function ModelSelect({ provider, value, onChange, isFree = false }: { provider: 
       isFree && !FREE_TIER_MODELS.has(id) ? `🔒 ${label} (Paid)` : label;
     return (
       <select value={value} onChange={(e) => onChange(e.target.value)} className="w-full text-sm">
+        <optgroup label="🆓 Free OpenRouter models (zero cost)">
+          <option value="qwen/qwen3-next-80b-a3b-instruct:free">Qwen3 Next 80B (best free)</option>
+          <option value="z-ai/glm-4.5-air:free">GLM 4.5 Air</option>
+          <option value="meta-llama/llama-3.3-70b-instruct:free">Llama 3.3 70B</option>
+          <option value="openai/gpt-oss-120b:free">GPT-OSS 120B</option>
+        </optgroup>
         {isFree && (
-          <optgroup label="Free tier">
-            <option value="google/gemini-2.5-flash-lite">✓ Gemini 2.5 Flash Lite (cheapest)</option>
+          <optgroup label="Cheap paid (free tier allowed)">
+            <option value="google/gemini-2.5-flash-lite">✓ Gemini 2.5 Flash Lite</option>
             <option value="google/gemini-2.5-flash">✓ Gemini 2.5 Flash</option>
             <option value="openai/gpt-4o-mini">✓ GPT-4o Mini</option>
           </optgroup>
         )}
-        <optgroup label={isFree ? "🔒 Locked — Paid tier coming soon" : "Anthropic"}>
-          <option value="anthropic/claude-haiku-4-5">{lock("anthropic/claude-haiku-4-5", "Claude Haiku 4.5")}</option>
-        </optgroup>
         {!isFree && (
           <optgroup label="Google">
             <option value="google/gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
@@ -700,7 +703,6 @@ function ModelSelect({ provider, value, onChange, isFree = false }: { provider: 
   if (provider === "anthropic") {
     return (
       <select value={value} onChange={(e) => onChange(e.target.value)} className="w-full text-sm">
-        <option value="claude-haiku-4-5-20250929">Claude Haiku 4.5</option>
         <option value="claude-sonnet-4-5-20250929">Claude Sonnet 4.5</option>
         <option value="claude-opus-4-0-20250514">Claude Opus 4</option>
       </select>
@@ -723,16 +725,20 @@ type ModelMeta = {
 };
 
 const MODEL_META: Record<string, ModelMeta> = {
-  // OpenRouter
-  "anthropic/claude-haiku-4-5":          { inPrice: 0.80, outPrice: 4.0,  tags: ["fastest", "balanced"] },
+  // OpenRouter — free
+  "qwen/qwen3-next-80b-a3b-instruct:free": { inPrice: 0, outPrice: 0, tags: ["cheapest", "balanced"] },
+  "z-ai/glm-4.5-air:free":                 { inPrice: 0, outPrice: 0, tags: ["cheapest", "balanced"] },
+  "meta-llama/llama-3.3-70b-instruct:free":{ inPrice: 0, outPrice: 0, tags: ["cheapest"] },
+  "openai/gpt-oss-120b:free":              { inPrice: 0, outPrice: 0, tags: ["cheapest", "best-reasoning"] },
+  // OpenRouter — paid
   "google/gemini-2.5-flash":             { inPrice: 0.15, outPrice: 0.60, tags: ["cheapest", "fastest"] },
+  "google/gemini-2.5-flash-lite":        { inPrice: 0.075, outPrice: 0.30, tags: ["cheapest", "fastest"] },
   "openai/gpt-4o-mini":                  { inPrice: 0.15, outPrice: 0.60, tags: ["cheapest"] },
   "meta-llama/llama-4-maverick":         { inPrice: 0.20, outPrice: 0.80, tags: ["balanced"] },
   "meta-llama/llama-4-scout":            { inPrice: 0.10, outPrice: 0.40, tags: ["cheapest"] },
   "deepseek/deepseek-chat-v3-0324":      { inPrice: 0.14, outPrice: 0.56, tags: ["cheapest"] },
   "deepseek/deepseek-r1":                { inPrice: 0.55, outPrice: 2.20, tags: ["best-reasoning"] },
   // Anthropic direct
-  "claude-haiku-4-5-20250929":           { inPrice: 1.00, outPrice: 5.0,  tags: ["fastest", "balanced"] },
   "claude-sonnet-4-5-20250929":          { inPrice: 3.00, outPrice: 15.0, tags: ["best-reasoning"] },
   "claude-opus-4-0-20250514":            { inPrice: 15.0, outPrice: 75.0, tags: ["best-reasoning"] },
   // OpenAI direct

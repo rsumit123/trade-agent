@@ -42,7 +42,7 @@ class AgentConfig:
     llm_provider: str = "openrouter"  # "anthropic", "openai", or "openrouter"
     anthropic_model: str = "claude-sonnet-4-5-20250929"
     openai_model: str = "gpt-4o"
-    openrouter_model: str = "anthropic/claude-haiku-4-5"
+    openrouter_model: str = "google/gemini-2.5-flash"
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
     # ── Session Integration (set by from_session()) ──────────
@@ -110,7 +110,7 @@ class AgentConfig:
         model = sc.llm_model
         anthropic_model = model if sc.llm_provider == "anthropic" else "claude-sonnet-4-5-20250929"
         openai_model = model if sc.llm_provider == "openai" else "gpt-4o"
-        openrouter_model = model if sc.llm_provider == "openrouter" else "anthropic/claude-haiku-4-5"
+        openrouter_model = model if sc.llm_provider == "openrouter" else "google/gemini-2.5-flash"
 
         return cls(
             starting_capital=sc.starting_capital,
