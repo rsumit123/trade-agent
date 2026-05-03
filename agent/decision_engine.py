@@ -200,6 +200,7 @@ def _build_context(portfolio: Dict, watchlist: List[Dict], news: str,
     sym = config.currency_symbol if config else "₹"
 
     watchlist_lines = []
+    show_maxqty = any("max_qty" in s for s in watchlist)
     for s in watchlist:
         ticker = s.get('ticker', '?')
         price  = s.get('current_price', 0)
@@ -213,11 +214,21 @@ def _build_context(portfolio: Dict, watchlist: List[Dict], news: str,
         vr_str  = f"{vr:>4.1f}x"  if vr  is not None else " n/a"
         r2res_str = f"{r2res:>5.1f}%" if r2res is not None else "  n/a"
         r2sup_str = f"{r2sup:>5.1f}%" if r2sup is not None else "  n/a"
+        max_qty_str = f"  max_qty={int(s.get('max_qty') or 0):>5d}" if show_maxqty else ""
         watchlist_lines.append(
             f"{ticker:20s}  {sym}{price:>8.2f}  {chg:>+6.2f}%  "
-            f"RSI={rsi_str}  vol={vr_str}  res={r2res_str}  sup={r2sup_str}  sma={sma}"
+            f"RSI={rsi_str}  vol={vr_str}  res={r2res_str}  sup={r2sup_str}  sma={sma}{max_qty_str}"
         )
     watchlist_text = "\n".join(watchlist_lines) if watchlist_lines else "(no data)"
+
+    cash_now = portfolio.get('cash', 0) or 0
+    cash_banner = (
+        f"\n## Cash Constraint (HARD LIMIT)\n"
+        f"Available cash for new trades: **{sym}{cash_now:,.0f}**.\n"
+        f"For each watchlist row, `max_qty` is the LARGEST quantity you may pass to "
+        f"`place_trade` at the listed price. Proposing more will be rejected.\n"
+        if show_maxqty else ""
+    )
 
     asset_label = "assets" if (config and config._market_preset and config._market_preset.market_id == "crypto") else "stocks"
     goal_section = f"\n{day_goal_context}\n" if day_goal_context else ""
@@ -226,7 +237,7 @@ def _build_context(portfolio: Dict, watchlist: List[Dict], news: str,
 ```json
 {json.dumps(portfolio, indent=2)}
 ```
-
+{cash_banner}
 ## Risk Status
 ```json
 {json.dumps(risk, indent=2)}
