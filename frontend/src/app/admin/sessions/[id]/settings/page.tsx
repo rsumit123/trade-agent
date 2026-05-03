@@ -66,7 +66,7 @@ export default function SessionSettingsPage() {
         per_trade_loss_limit_pct: (cfg.per_trade_loss_limit_pct as number) || 0.01,
         max_trade_amount: (cfg.max_trade_amount as number) || 0,
         llm_provider: (cfg.llm_provider as string) || "openrouter",
-        llm_model: (cfg.llm_model as string) || "anthropic/claude-haiku-4-5",
+        llm_model: (cfg.llm_model as string) || "google/gemini-2.5-flash",
         api_key_env: "OPENROUTER_API_KEY",
         intraday_interval_min: (cfg.intraday_interval_min as number) || 15,
         personality: (cfg.personality as string) || "",
@@ -173,10 +173,14 @@ export default function SessionSettingsPage() {
               onChange={(e) => setForm({ ...form, llm_model: e.target.value })}
               className="w-full text-sm"
             >
-              <optgroup label="Anthropic">
-                <option value="anthropic/claude-haiku-4-5">Claude Haiku 4.5 ($0.80/M)</option>
+              <optgroup label="🆓 Free (zero cost)">
+                <option value="qwen/qwen3-next-80b-a3b-instruct:free">Qwen3 Next 80B</option>
+                <option value="z-ai/glm-4.5-air:free">GLM 4.5 Air</option>
+                <option value="meta-llama/llama-3.3-70b-instruct:free">Llama 3.3 70B</option>
+                <option value="openai/gpt-oss-120b:free">GPT-OSS 120B</option>
               </optgroup>
               <optgroup label="Google">
+                <option value="google/gemini-2.5-flash-lite">Gemini 2.5 Flash Lite ($0.075/M)</option>
                 <option value="google/gemini-2.5-flash">Gemini 2.5 Flash ($0.15/M)</option>
               </optgroup>
               <optgroup label="OpenAI">

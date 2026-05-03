@@ -5,10 +5,13 @@ import { useToast } from "./Toast";
 import type { ComparisonStatus, ComparisonChild, SessionConfig } from "@/lib/types";
 
 const AVAILABLE_MODELS: { id: string; label: string; tag?: string }[] = [
+  { id: "qwen/qwen3-next-80b-a3b-instruct:free", label: "Qwen3 Next 80B",      tag: "Free" },
+  { id: "z-ai/glm-4.5-air:free",                 label: "GLM 4.5 Air",         tag: "Free" },
+  { id: "meta-llama/llama-3.3-70b-instruct:free",label: "Llama 3.3 70B",       tag: "Free" },
+  { id: "openai/gpt-oss-120b:free",              label: "GPT-OSS 120B",        tag: "Free" },
   { id: "google/gemini-2.5-flash-lite",  label: "Gemini 2.5 Flash Lite", tag: "Cheapest" },
   { id: "google/gemini-2.5-flash",       label: "Gemini 2.5 Flash",  tag: "Cheap" },
   { id: "openai/gpt-4o-mini",            label: "GPT-4o Mini",       tag: "Cheap" },
-  { id: "anthropic/claude-haiku-4-5",    label: "Claude Haiku 4.5",  tag: "Fastest" },
   { id: "deepseek/deepseek-chat-v3-0324",label: "DeepSeek V3",       tag: "Cheap" },
   { id: "deepseek/deepseek-r1",          label: "DeepSeek R1",       tag: "Reasoning" },
   { id: "meta-llama/llama-4-maverick",   label: "Llama 4 Maverick",  tag: "Balanced" },
@@ -28,8 +31,8 @@ export function BacktestCompare({ baseSessionId, config, defaultStart, defaultEn
   const [status, setStatus] = useState<ComparisonStatus | null>(null);
   const [picker, setPicker] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set([
+    "qwen/qwen3-next-80b-a3b-instruct:free",
     "google/gemini-2.5-flash",
-    "anthropic/claude-haiku-4-5",
   ]));
   const [startDate, setStartDate] = useState(defaultStart || "");
   const [endDate, setEndDate] = useState(defaultEnd || "");

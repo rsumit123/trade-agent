@@ -186,6 +186,11 @@ FREE_TIER_MODELS = {
     "openai/gpt-4o-mini",
     "google/gemini-2.5-flash",
     "google/gemini-2.5-flash-lite",
+    # Zero-cost OpenRouter models (verified tool-use support)
+    "qwen/qwen3-next-80b-a3b-instruct:free",
+    "z-ai/glm-4.5-air:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "openai/gpt-oss-120b:free",
 }
 
 
@@ -458,7 +463,7 @@ class CreateSessionRequest(BaseModel):
     max_trade_amount: Optional[float] = None
     watchlist: Optional[List[str]] = None
     llm_provider: str = "openrouter"
-    llm_model: str = "anthropic/claude-haiku-4-5"
+    llm_model: str = "google/gemini-2.5-flash"
     api_key_env: str = "OPENROUTER_API_KEY"
     intraday_interval_min: int = 15
     personality: str = ""
@@ -1706,7 +1711,7 @@ def get_compare_status(base_session_id: str, user: dict = Depends(current_user))
                 p = json.loads(progress_path.read_text())
                 child["progress"] = {
                     "current_day": p.get("current_day"),
-                    "total_days": p.get("total_days"),
+                    "total_days": p.get("total_days") or p.get("trading_days"),
                     "current_phase": p.get("current_phase"),
                     "phase_progress": p.get("phase_progress"),
                     "phase_total": p.get("phase_total"),
@@ -1715,16 +1720,17 @@ def get_compare_status(base_session_id: str, user: dict = Depends(current_user))
                 }
                 # Final summary if completed
                 if p.get("status") == "completed":
-                    days = p.get("days", []) or []
+                    days = p.get("daily_results") or p.get("days") or []
                     total_pnl = sum((d.get("daily_pnl") or 0) for d in days)
                     total_trades = sum((d.get("trades") or 0) for d in days)
                     last = days[-1] if days else {}
+                    final_stats = p.get("final_stats") or {}
                     child["summary"] = {
                         "total_return_pct": last.get("total_return_pct"),
                         "total_value_end": last.get("total_value"),
-                        "total_pnl": round(total_pnl, 2),
-                        "total_trades": total_trades,
-                        "win_rate": last.get("win_rate"),
+                        "total_pnl": round(final_stats.get("total_pnl", total_pnl), 2),
+                        "total_trades": final_stats.get("total_trades", total_trades),
+                        "win_rate": final_stats.get("win_rate", last.get("win_rate")),
                         "days": [
                             {
                                 "date": d.get("date"),

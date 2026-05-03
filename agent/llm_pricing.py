@@ -6,16 +6,20 @@ Unknown models fall back to (in=1.0, out=4.0) — flagged in 'unknown'.
 
 # (input $/M, output $/M)
 MODEL_PRICES = {
-    # OpenRouter
-    "anthropic/claude-haiku-4-5":          (0.80, 4.00),
+    # OpenRouter — paid
     "google/gemini-2.5-flash":             (0.15, 0.60),
+    "google/gemini-2.5-flash-lite":        (0.075, 0.30),
     "openai/gpt-4o-mini":                  (0.15, 0.60),
     "meta-llama/llama-4-maverick":         (0.20, 0.80),
     "meta-llama/llama-4-scout":            (0.10, 0.40),
     "deepseek/deepseek-chat-v3-0324":      (0.14, 0.56),
     "deepseek/deepseek-r1":                (0.55, 2.20),
+    # OpenRouter — free
+    "qwen/qwen3-next-80b-a3b-instruct:free": (0.0, 0.0),
+    "z-ai/glm-4.5-air:free":                 (0.0, 0.0),
+    "meta-llama/llama-3.3-70b-instruct:free": (0.0, 0.0),
+    "openai/gpt-oss-120b:free":              (0.0, 0.0),
     # Anthropic direct
-    "claude-haiku-4-5-20250929":           (1.00, 5.00),
     "claude-sonnet-4-5-20250929":          (3.00, 15.00),
     "claude-opus-4-0-20250514":            (15.00, 75.00),
     # OpenAI direct

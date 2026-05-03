@@ -49,7 +49,7 @@ class SessionConfig:
 
     # ── LLM Configuration ───────────────────────────────────
     llm_provider: str = "openrouter"
-    llm_model: str = "anthropic/claude-haiku-4-5"
+    llm_model: str = "google/gemini-2.5-flash"
     api_key_env: str = "OPENROUTER_API_KEY"     # env var name OR literal key
     api_key_encrypted: str = ""                 # Fernet-encrypted user-provided key (preferred over api_key_env)
 
