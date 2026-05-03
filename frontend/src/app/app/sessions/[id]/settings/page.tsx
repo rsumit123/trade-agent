@@ -173,7 +173,7 @@ export default function SessionSettingsPage() {
               onChange={(e) => setForm({ ...form, llm_model: e.target.value })}
               className="w-full text-sm"
             >
-              <optgroup label="🆓 Free (zero cost)">
+              <optgroup label="Open Source">
                 <option value="qwen/qwen3-next-80b-a3b-instruct:free">Qwen3 Next 80B</option>
                 <option value="z-ai/glm-4.5-air:free">GLM 4.5 Air</option>
                 <option value="meta-llama/llama-3.3-70b-instruct:free">Llama 3.3 70B</option>

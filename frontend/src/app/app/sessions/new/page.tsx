@@ -545,9 +545,9 @@ function CreateSessionInner() {
         </Collapsible>
       </div>
 
-      {/* Free-tier banner — replaces BYOK */}
+      {/* Tier banner */}
       <div className="mb-4 animate-fade-in delay-3">
-        <FreeTierBanner />
+        {isFree ? <FreeTierBanner /> : <PaidTierBanner isAdmin={!!user?.is_admin} />}
       </div>
 
       {/* Sticky bottom action bar — sits ABOVE the global BottomNav (56px) */}
@@ -665,17 +665,17 @@ function ModelSelect({ provider, value, onChange, isFree = false }: { provider: 
       isFree && !FREE_TIER_MODELS.has(id) ? `🔒 ${label} (Paid)` : label;
     return (
       <select value={value} onChange={(e) => onChange(e.target.value)} className="w-full text-sm">
-        <optgroup label="🆓 Free OpenRouter models (zero cost)">
-          <option value="qwen/qwen3-next-80b-a3b-instruct:free">Qwen3 Next 80B (best free)</option>
+        <optgroup label="Open Source">
+          <option value="qwen/qwen3-next-80b-a3b-instruct:free">Qwen3 Next 80B</option>
           <option value="z-ai/glm-4.5-air:free">GLM 4.5 Air</option>
           <option value="meta-llama/llama-3.3-70b-instruct:free">Llama 3.3 70B</option>
           <option value="openai/gpt-oss-120b:free">GPT-OSS 120B</option>
         </optgroup>
         {isFree && (
-          <optgroup label="Cheap paid (free tier allowed)">
-            <option value="google/gemini-2.5-flash-lite">✓ Gemini 2.5 Flash Lite</option>
-            <option value="google/gemini-2.5-flash">✓ Gemini 2.5 Flash</option>
-            <option value="openai/gpt-4o-mini">✓ GPT-4o Mini</option>
+          <optgroup label="Available">
+            <option value="google/gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
+            <option value="google/gemini-2.5-flash">Gemini 2.5 Flash</option>
+            <option value="openai/gpt-4o-mini">GPT-4o Mini</option>
           </optgroup>
         )}
         {!isFree && (
@@ -878,6 +878,44 @@ function FreeTierBanner() {
               🔒 multi-session — paid soon
             </span>
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PaidTierBanner({ isAdmin }: { isAdmin: boolean }) {
+  const accent = isAdmin ? "#a78bfa" : "#60a5fa";
+  const tint = isAdmin ? "168,85,247" : "96,165,250";
+  return (
+    <div
+      className="rounded-2xl p-4 md:p-5"
+      style={{
+        background: `linear-gradient(180deg, rgba(${tint},0.08) 0%, #0c1424 100%)`,
+        border: `1px solid rgba(${tint},0.35)`,
+      }}
+    >
+      <div className="flex items-start gap-3">
+        <div
+          className="flex items-center justify-center rounded-lg shrink-0"
+          style={{
+            width: 36, height: 36,
+            background: `rgba(${tint},0.15)`,
+            border: `1px solid rgba(${tint},0.35)`,
+            fontSize: 18,
+          }}
+        >
+          {isAdmin ? "🛡" : "⭐"}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold mb-1" style={{ color: accent }}>
+            {isAdmin ? "Admin · Unlimited access" : "Paid tier · Thanks for supporting AlphaAgent"}
+          </div>
+          <p className="text-[12px] text-text-secondary leading-relaxed">
+            {isAdmin
+              ? "All models, all markets, all features. No quota."
+              : "All models unlocked, including Claude, Llama, DeepSeek, Gemini, and the open-source models. Backtests and model comparison enabled. Runtime deducted from your 5-day quota."}
+          </p>
         </div>
       </div>
     </div>

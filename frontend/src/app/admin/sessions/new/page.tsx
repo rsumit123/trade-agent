@@ -631,11 +631,11 @@ function ModelSelect({ provider, value, onChange }: { provider: string; value: s
   if (provider === "openrouter") {
     return (
       <select value={value} onChange={(e) => onChange(e.target.value)} className="w-full text-sm">
-        <optgroup label="🆓 Free (zero cost)">
-          <option value="qwen/qwen3-next-80b-a3b-instruct:free">Qwen3 Next 80B — FREE</option>
-          <option value="z-ai/glm-4.5-air:free">GLM 4.5 Air — FREE</option>
-          <option value="meta-llama/llama-3.3-70b-instruct:free">Llama 3.3 70B — FREE</option>
-          <option value="openai/gpt-oss-120b:free">GPT-OSS 120B — FREE</option>
+        <optgroup label="Open Source">
+          <option value="qwen/qwen3-next-80b-a3b-instruct:free">Qwen3 Next 80B</option>
+          <option value="z-ai/glm-4.5-air:free">GLM 4.5 Air</option>
+          <option value="meta-llama/llama-3.3-70b-instruct:free">Llama 3.3 70B</option>
+          <option value="openai/gpt-oss-120b:free">GPT-OSS 120B</option>
         </optgroup>
         <optgroup label="Google">
           <option value="google/gemini-2.5-flash-lite">Gemini 2.5 Flash Lite — $0.075/M</option>

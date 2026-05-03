@@ -93,6 +93,18 @@ export default function SessionDashboard() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [tab, setTab] = useState<Tab>("overview");
 
+  // Sync tab with URL hash so mobile bottom-nav deep links work
+  useEffect(() => {
+    const validTabs: Tab[] = ["overview", "decisions", "activity", "insights", "logs"];
+    const apply = () => {
+      const h = (typeof window !== "undefined" ? window.location.hash.replace("#", "") : "") as Tab;
+      if (validTabs.includes(h)) setTab(h);
+    };
+    apply();
+    window.addEventListener("hashchange", apply);
+    return () => window.removeEventListener("hashchange", apply);
+  }, []);
+
   const hasErrored = useRef(false);
 
   interface DashboardBundle {
@@ -206,7 +218,12 @@ export default function SessionDashboard() {
       <TabStrip
         tabs={tabs}
         active={tab}
-        onChange={(id) => setTab(id as Tab)}
+        onChange={(id) => {
+          setTab(id as Tab);
+          if (typeof window !== "undefined") {
+            history.replaceState(null, "", `#${id}`);
+          }
+        }}
       />
 
       {/* Tab content */}
