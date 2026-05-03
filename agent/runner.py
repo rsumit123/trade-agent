@@ -383,6 +383,42 @@ class TradingAgent:
 
     # ── Day Goal Context (for prompt) ────────────────────────
 
+    def _enrich_with_affordability(self, watchlist_data: list, portfolio_summary: dict) -> None:
+        """Mutate each watchlist row to include `max_qty` — the largest qty the
+        agent can buy at the current price without breaking cash, per-trade,
+        or per-position caps. Removes the ambiguity that led to LLM proposing
+        oversized trades and getting rejected post-hoc.
+        """
+        try:
+            cash = float(portfolio_summary.get("cash", 0) or 0)
+            equity = float(portfolio_summary.get("total_value", cash) or cash)
+        except Exception:
+            return
+
+        if cash <= 0 or not watchlist_data:
+            return
+
+        per_pos_cap_pct = float(getattr(self.config, "max_position_pct", 0.20) or 0.20)
+        per_trade_amt = getattr(self.config, "max_trade_amount", None)
+        try:
+            per_trade_amt = float(per_trade_amt) if per_trade_amt else None
+        except Exception:
+            per_trade_amt = None
+
+        per_pos_cap = equity * per_pos_cap_pct
+        budget = min(cash, per_pos_cap)
+        if per_trade_amt and per_trade_amt > 0:
+            budget = min(budget, per_trade_amt)
+
+        for row in watchlist_data:
+            try:
+                price = float(row.get("current_price") or 0)
+                if price <= 0:
+                    continue
+                row["max_qty"] = int(budget // price)
+            except Exception:
+                continue
+
     def _build_day_goal_context(self) -> str:
         """Build a 'Today's Performance' section so LLM has urgency framing.
         Computes elapsed/remaining time in the trading session, today's P&L,
@@ -534,6 +570,9 @@ class TradingAgent:
         logger.info("🧠 Running decision engine...")
         portfolio_summary = self.portfolio.get_portfolio_summary(prices)
         learnings = self.learner.get_learnings(max_chars=6000)
+
+        # Inject per-ticker affordability so the LLM cannot propose oversized trades.
+        self._enrich_with_affordability(watchlist_data, portfolio_summary)
 
         # Load live directives from operator and prepend to learnings
         directives_text = self._load_directives()
