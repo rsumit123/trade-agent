@@ -79,6 +79,14 @@ def _get_components(session_id: str = None) -> Dict:
             return _get_legacy_components()
 
     if sid and sid in _components:
+        # SessionConfig is small + cheap to read; always re-load from disk so
+        # mutations (Go-Live flip, settings save) are immediately visible to
+        # the dashboard without an explicit cache eviction.
+        try:
+            from agent.session import load_session
+            _components[sid]["session"] = load_session(sid)
+        except Exception:
+            pass
         return _components[sid]
 
     # Legacy fallback
@@ -1800,6 +1808,11 @@ def backtest_go_live(session_id: str, user: dict = Depends(current_user)):
     sc.backtest_mode = False
     sc.backtest_status = ""
     save_session(sc)
+
+    # Evict the cached components so /api/dashboard re-loads the fresh
+    # SessionConfig from disk; otherwise the stale in-memory sc keeps
+    # backtest_mode=True and the UI keeps rendering the backtest panel.
+    _components.pop(session_id, None)
 
     # Start the live agent
     try:
