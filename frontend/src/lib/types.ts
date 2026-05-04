@@ -294,6 +294,7 @@ export interface SessionConfig {
   backtest_status?: string;
   backtest_start_date?: string;
   backtest_end_date?: string;
+  live_started_at?: string;
 }
 
 export interface AgentStatus {
