@@ -20,6 +20,7 @@ import { EquityCharts } from "@/components/EquityCharts";
 import { ThinkingLog } from "@/components/ThinkingLog";
 import { CostLedger } from "@/components/CostLedger";
 import { BacktestSection } from "@/components/BacktestSection";
+import { BacktestHistoryPanel } from "@/components/BacktestHistoryPanel";
 import { DecisionFeed } from "@/components/DecisionFeed";
 import type {
   PortfolioSummary, ClosedTrade, RiskStatus, Performance,
@@ -160,6 +161,18 @@ export default function SessionDashboard() {
 
   const isBacktest = config?.backtest_mode === true;
 
+  // After Go-Live, split closed-trade history at the live cutoff so the
+  // main tabs only reflect live activity. Trades before the cutoff are
+  // surfaced in a collapsible "Backtest history" panel above the tabs.
+  const liveStartedAt = config?.live_started_at || "";
+  const hasLiveCutoff = !isBacktest && !!liveStartedAt;
+  const backtestTrades = hasLiveCutoff
+    ? trades.filter((t) => (t.entry_time || "") < liveStartedAt)
+    : [];
+  const liveTrades = hasLiveCutoff
+    ? trades.filter((t) => (t.entry_time || "") >= liveStartedAt)
+    : trades;
+
   if (initialLoading) {
     return (
       <div className="px-4 md:px-6 py-4 md:py-6 max-w-7xl mx-auto">
@@ -179,7 +192,7 @@ export default function SessionDashboard() {
 
   const tabs: { id: Tab; label: string; badge?: string | number }[] = [
     { id: "overview", label: "Overview" },
-    { id: "decisions", label: "Decisions", badge: trades.length || undefined },
+    { id: "decisions", label: "Decisions", badge: liveTrades.length || undefined },
     { id: "activity", label: "Activity" },
     { id: "insights", label: "Insights" },
     { id: "logs", label: "Logs" },
@@ -210,6 +223,21 @@ export default function SessionDashboard() {
             defaultStart={config?.backtest_start_date || ""}
             defaultEnd={config?.backtest_end_date || ""}
             onComplete={loadAll}
+          />
+        </div>
+      )}
+
+      {/* Backtest history (collapsed by default) — only after Go-Live */}
+      {hasLiveCutoff && backtestTrades.length > 0 && (
+        <div className="animate-fade-in delay-1">
+          <BacktestHistoryPanel
+            trades={backtestTrades}
+            config={config}
+            windowLabel={
+              config?.backtest_start_date && config?.backtest_end_date
+                ? `${config.backtest_start_date} → ${config.backtest_end_date}`
+                : undefined
+            }
           />
         </div>
       )}
@@ -265,14 +293,14 @@ export default function SessionDashboard() {
 
       {tab === "decisions" && (
         <div className="animate-fade-in">
-          <DecisionFeed trades={trades} config={config} />
+          <DecisionFeed trades={liveTrades} config={config} />
         </div>
       )}
 
       {tab === "activity" && (
         <div className="space-y-4 md:space-y-5 animate-fade-in">
           <ThinkingLog sessionId={sessionId} config={config} />
-          <TradesTable trades={trades} config={config} />
+          <TradesTable trades={liveTrades} config={config} />
           <DailyTracker sessionId={sessionId} config={config} />
         </div>
       )}

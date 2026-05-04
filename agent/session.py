@@ -67,6 +67,7 @@ class SessionConfig:
     backtest_start_date: Optional[str] = None    # "YYYY-MM-DD"
     backtest_end_date: Optional[str] = None      # "YYYY-MM-DD"
     backtest_status: str = ""                    # "running", "completed", "failed", ""
+    live_started_at: str = ""                    # ISO timestamp when Go-Live flipped backtest_mode off
 
     # ── Comparison ────────────────────────────────────────
     parent_session: str = ""                     # if non-empty, this is a child of parent_session
@@ -156,7 +157,7 @@ _YAML_FIELDS = {
     "watchlist", "llm_provider", "llm_model", "api_key_env",
     "intraday_interval_min", "personality", "created_at",
     "data_source",
-    "backtest_mode", "backtest_start_date", "backtest_end_date", "backtest_status",
+    "backtest_mode", "backtest_start_date", "backtest_end_date", "backtest_status", "live_started_at",
     "parent_session", "user_email", "api_key_encrypted",
     "tier", "started_at",
 }

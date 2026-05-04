@@ -1807,6 +1807,7 @@ def backtest_go_live(session_id: str, user: dict = Depends(current_user)):
     # Switch to live mode (keep learned rules, journal, trade history)
     sc.backtest_mode = False
     sc.backtest_status = ""
+    sc.live_started_at = datetime.utcnow().isoformat()
     save_session(sc)
 
     # Evict the cached components so /api/dashboard re-loads the fresh
@@ -1992,6 +1993,7 @@ def get_dashboard(session_id: str, user: dict = Depends(current_user)):
         "backtest_status": getattr(sc, "backtest_status", ""),
         "backtest_start_date": getattr(sc, "backtest_start_date", "") or "",
         "backtest_end_date": getattr(sc, "backtest_end_date", "") or "",
+        "live_started_at": getattr(sc, "live_started_at", "") or "",
     }
 
     return {
