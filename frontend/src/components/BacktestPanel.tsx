@@ -421,7 +421,8 @@ export function BacktestPanel({ sessionId, config, onComplete }: Props) {
             try {
               await api(`/api/backtest/go-live/${sessionId}`, { method: "POST" });
               toast.success("Switched to live trading!");
-              window.location.href = `${prefix}/sessions/${sessionId}`;
+              // Hard reload so SessionConfig is re-fetched and BacktestSection unmounts
+              window.location.assign(`${prefix}/sessions/${sessionId}?live=1`);
             } catch (err) {
               const msg = err instanceof Error ? err.message : "Failed to go live";
               toast.error(msg);

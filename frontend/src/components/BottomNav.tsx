@@ -60,6 +60,12 @@ function SessionBottomNav({ prefix, sessionId, isSettings, navStyle }: {
   return (
     <nav className="md:hidden fixed bottom-0 inset-x-0 bottom-nav flex items-start justify-around" style={navStyle}>
       <NavTab
+        href={prefix}
+        label="All"
+        active={false}
+        icon={<BackIcon />}
+      />
+      <NavTab
         href={`${prefix}/sessions/${sessionId}#overview`}
         label="Overview"
         active={isOverview}
@@ -84,6 +90,15 @@ function SessionBottomNav({ prefix, sessionId, isSettings, navStyle }: {
         icon={<SettingsIcon active={isSettings} />}
       />
     </nav>
+  );
+}
+
+function BackIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="15 18 9 12 15 6" />
+    </svg>
   );
 }
 
