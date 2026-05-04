@@ -161,13 +161,19 @@ class KiteAuth:
             return None
 
     def _is_expired(self, token: dict) -> bool:
-        """Check if cached token has expired."""
+        """Check if cached token has expired. Comparisons are done in UTC
+        with timezone-aware datetimes — earlier code stripped tz off the
+        stored '+05:30' expiry and compared against naive datetime.now()
+        (which is UTC inside the container), causing a 5h30m drift that
+        kept revoked tokens looking valid."""
+        from datetime import timezone
         expires_at = token.get("expires_at")
         if not expires_at:
             return True
         try:
             exp = datetime.fromisoformat(expires_at)
-            # Compare timezone-naive
-            return datetime.now() > exp.replace(tzinfo=None)
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            return datetime.now(timezone.utc) >= exp
         except Exception:
             return True
