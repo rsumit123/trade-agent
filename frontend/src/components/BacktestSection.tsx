@@ -29,7 +29,11 @@ export function BacktestSection({
   const [single, setSingle] = useState<RunStatus>("idle");
   const [compare, setCompare] = useState<RunStatus>("idle");
 
-  // Poll both sides so the wrapper knows what's in progress
+  // Poll both sides so the wrapper knows what's in progress. Only run the
+  // interval while at least one side is "running"; otherwise we just do a
+  // single fetch on mount and re-arm if the user starts a new run (the child
+  // panels call their own start endpoints which the next tick of this
+  // component picks up via the dependency).
   useEffect(() => {
     let cancelled = false;
     const tick = async () => {
@@ -47,12 +51,14 @@ export function BacktestSection({
       } catch {}
     };
     tick();
+    const isActive = single === "running" || compare === "running";
+    if (!isActive) return () => { cancelled = true; };
     const t = setInterval(tick, 5000);
     return () => {
       cancelled = true;
       clearInterval(t);
     };
-  }, [sessionId]);
+  }, [sessionId, single, compare]);
 
   // Auto-switch to whichever is running — user can always manually flip back
   useEffect(() => {

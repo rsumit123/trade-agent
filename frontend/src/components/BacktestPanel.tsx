@@ -59,9 +59,14 @@ export function BacktestPanel({ sessionId, config, onComplete }: Props) {
 
   useEffect(() => {
     fetchProgress();
+    // Only poll while a run is actually live; idle/terminal states don't change
+    // until the user kicks off a new run, at which point handleStart's
+    // fetchProgress() will refresh and the next tick re-arms polling if needed.
+    const isActive = progress?.status === "running";
+    if (!isActive) return;
     const interval = setInterval(fetchProgress, 3000);
     return () => clearInterval(interval);
-  }, [fetchProgress]);
+  }, [fetchProgress, progress?.status]);
 
   const handleStart = async () => {
     if (!startDate || !endDate) return;

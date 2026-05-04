@@ -155,6 +155,29 @@ class Portfolio:
     def _update_cash(self, conn, amount: float):
         conn.execute("UPDATE account SET cash = cash + ? WHERE id = 1", (amount,))
 
+    def reset_for_live(self, current_prices: Dict[str, float] = None) -> Dict[str, Any]:
+        """Force-close any open positions at last-known price (zero-impact
+        bookkeeping; the trades stay in history with exit_type='backtest_end')
+        and reset cash back to starting_capital. Closed-trade history is
+        preserved so the BacktestHistoryPanel + distilled rules still work.
+        Returns a small summary for logging.
+        """
+        prices = current_prices or {}
+        closed = 0
+        for pos in self.get_open_positions():
+            price = prices.get(pos.ticker, pos.entry_price)
+            try:
+                if pos.direction == "short":
+                    self.execute_cover(pos.id, price, reason="Reset on Go-Live", exit_type="backtest_end")
+                else:
+                    self.execute_sell(pos.id, price, reason="Reset on Go-Live", exit_type="backtest_end")
+                closed += 1
+            except Exception:
+                continue
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("UPDATE account SET cash = ? WHERE id = 1", (self.starting_capital,))
+        return {"closed_positions": closed, "cash_reset_to": self.starting_capital}
+
     # ── Trade Execution ──────────────────────────────────────
 
     def execute_buy(self, ticker: str, quantity: int, price: float,
