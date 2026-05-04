@@ -1810,6 +1810,20 @@ def backtest_go_live(session_id: str, user: dict = Depends(current_user)):
     sc.live_started_at = datetime.utcnow().isoformat()
     save_session(sc)
 
+    # Reset cash to starting_capital and close any leftover backtest positions
+    # so live trading starts with a clean slate. Distilled rules + journal +
+    # closed-trade history all stay (the latter feeds BacktestHistoryPanel).
+    try:
+        c = _get_components(session_id)
+        prices = {}
+        try:
+            prices = c["market_data"].get_current_prices()
+        except Exception:
+            pass
+        c["portfolio"].reset_for_live(prices)
+    except Exception as e:
+        logger.warning(f"Go-Live portfolio reset failed for {session_id}: {e}")
+
     # Evict the cached components so /api/dashboard re-loads the fresh
     # SessionConfig from disk; otherwise the stale in-memory sc keeps
     # backtest_mode=True and the UI keeps rendering the backtest panel.
@@ -2066,12 +2080,46 @@ def get_risk_status(session: str = None, user: dict = Depends(current_user)):
     return c["risk_manager"].get_risk_status(prices)
 
 
+def _filter_closed_after_live(c: Dict, closed_trades: list) -> list:
+    """Drop trades whose entry happened before the Go-Live cutoff so live
+    metrics don't get polluted by backtest replay history."""
+    sc = c.get("session")
+    cutoff = getattr(sc, "live_started_at", "") if sc else ""
+    if not cutoff:
+        return closed_trades
+    return [t for t in closed_trades if (t.entry_time or "") >= cutoff]
+
+
+def _stats_from_trades(closed: list) -> Dict:
+    if not closed:
+        return {"total_trades": 0, "message": "No closed trades yet"}
+    wins = [t for t in closed if (t.pnl or 0) > 0]
+    losses = [t for t in closed if (t.pnl or 0) < 0]
+    breakevens = [t for t in closed if (t.pnl or 0) == 0]
+    total_pnl = sum(t.pnl or 0 for t in closed)
+    decisive = len(wins) + len(losses)
+    return {
+        "total_trades": len(closed),
+        "wins": len(wins),
+        "losses": len(losses),
+        "breakevens": len(breakevens),
+        "win_rate": round(len(wins) / decisive * 100, 1) if decisive else 0,
+        "total_pnl": round(total_pnl, 2),
+        "avg_win": round(sum(t.pnl for t in wins) / len(wins), 2) if wins else 0,
+        "avg_loss": round(sum(t.pnl for t in losses) / len(losses), 2) if losses else 0,
+        "best_trade": max((t.pnl or 0 for t in closed), default=0),
+        "worst_trade": min((t.pnl or 0 for t in closed), default=0),
+    }
+
+
 @app.get("/api/performance")
 def get_performance(session: str = None, user: dict = Depends(current_user)):
     if session: _ensure_session_access(session, user)
-    """Get aggregate performance stats."""
+    """Get aggregate performance stats (live trades only after Go-Live)."""
     c = _get_components(session)
-    return c["learner"].get_performance_stats()
+    closed = c["portfolio"].get_closed_trades(limit=500)
+    closed = _filter_closed_after_live(c, closed)
+    return _stats_from_trades(closed)
 
 
 @app.get("/api/performance/detailed")
@@ -2080,10 +2128,12 @@ def get_detailed_performance(session: str = None, user: dict = Depends(current_u
     """Get detailed performance breakdown by category + distilled rules."""
     c = _get_components(session)
     learner = c["learner"]
-    stats = learner.get_performance_stats()
+    # Recompute stats from post-Go-Live trades only.
+    closed_for_stats = _filter_closed_after_live(c, c["portfolio"].get_closed_trades(limit=500))
+    stats = _stats_from_trades(closed_for_stats)
 
-    # Category breakdowns
-    closed = c["portfolio"].get_closed_trades(limit=200)
+    # Category breakdowns (also live-only)
+    closed = _filter_closed_after_live(c, c["portfolio"].get_closed_trades(limit=500))
     categories = {}
     for label, filter_fn in [
         ("long", lambda t: getattr(t, 'direction', 'long') == 'long'),
@@ -2268,22 +2318,39 @@ def get_daily_performance(limit: int = 30, session: str = None, user: dict = Dep
     c = _get_components(session)
     db_path = c["config"].db_path
     starting_capital = c["config"].starting_capital
+    sc = c.get("session")
+    cutoff_date = (getattr(sc, "live_started_at", "") or "")[:10]  # YYYY-MM-DD
 
     try:
         with sqlite3.connect(db_path) as conn:
-            snapshots = conn.execute(
-                "SELECT date, cash, portfolio_value, total_value, daily_pnl, trades_taken, wins, losses "
-                "FROM daily_snapshots ORDER BY date DESC LIMIT ?", (limit,)
-            ).fetchall()
-
-            trade_days = conn.execute(
-                """SELECT date(entry_time) as day,
-                          COUNT(*) as trades_entered,
-                          SUM(CASE WHEN status != 'open' AND pnl > 0 THEN 1 ELSE 0 END) as wins,
-                          SUM(CASE WHEN status != 'open' AND pnl <= 0 THEN 1 ELSE 0 END) as losses,
-                          ROUND(SUM(CASE WHEN status != 'open' THEN COALESCE(pnl, 0) ELSE 0 END), 2) as realized_pnl
-                   FROM trades GROUP BY day ORDER BY day DESC LIMIT ?""", (limit,)
-            ).fetchall()
+            if cutoff_date:
+                snapshots = conn.execute(
+                    "SELECT date, cash, portfolio_value, total_value, daily_pnl, trades_taken, wins, losses "
+                    "FROM daily_snapshots WHERE date >= ? ORDER BY date DESC LIMIT ?",
+                    (cutoff_date, limit),
+                ).fetchall()
+                trade_days = conn.execute(
+                    """SELECT date(entry_time) as day,
+                              COUNT(*) as trades_entered,
+                              SUM(CASE WHEN status != 'open' AND pnl > 0 THEN 1 ELSE 0 END) as wins,
+                              SUM(CASE WHEN status != 'open' AND pnl <= 0 THEN 1 ELSE 0 END) as losses,
+                              ROUND(SUM(CASE WHEN status != 'open' THEN COALESCE(pnl, 0) ELSE 0 END), 2) as realized_pnl
+                       FROM trades WHERE entry_time >= ? GROUP BY day ORDER BY day DESC LIMIT ?""",
+                    (cutoff_date, limit),
+                ).fetchall()
+            else:
+                snapshots = conn.execute(
+                    "SELECT date, cash, portfolio_value, total_value, daily_pnl, trades_taken, wins, losses "
+                    "FROM daily_snapshots ORDER BY date DESC LIMIT ?", (limit,)
+                ).fetchall()
+                trade_days = conn.execute(
+                    """SELECT date(entry_time) as day,
+                              COUNT(*) as trades_entered,
+                              SUM(CASE WHEN status != 'open' AND pnl > 0 THEN 1 ELSE 0 END) as wins,
+                              SUM(CASE WHEN status != 'open' AND pnl <= 0 THEN 1 ELSE 0 END) as losses,
+                              ROUND(SUM(CASE WHEN status != 'open' THEN COALESCE(pnl, 0) ELSE 0 END), 2) as realized_pnl
+                       FROM trades GROUP BY day ORDER BY day DESC LIMIT ?""", (limit,)
+                ).fetchall()
 
         days = {}
         for row in snapshots:

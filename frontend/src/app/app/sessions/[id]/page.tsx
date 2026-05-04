@@ -307,6 +307,25 @@ export default function SessionDashboard() {
 
       {tab === "insights" && (
         <div className="space-y-4 md:space-y-5 animate-fade-in">
+          {hasLiveCutoff && backtestTrades.length > 0 && (
+            <div
+              className="rounded-lg px-4 py-3 flex items-start gap-3"
+              style={{
+                background: "rgba(96,165,250,0.06)",
+                border: "1px solid rgba(96,165,250,0.25)",
+              }}
+            >
+              <span style={{ fontSize: 16, lineHeight: 1.2 }}>🧪</span>
+              <div className="text-[12px] leading-snug" style={{ color: "#cbd5e1" }}>
+                Distilled rules and journal below were{" "}
+                <strong style={{ color: "#e2e8f0" }}>bootstrapped from {backtestTrades.length} backtest trades</strong>
+                {config?.backtest_start_date && config?.backtest_end_date
+                  ? ` (${config.backtest_start_date} → ${config.backtest_end_date})`
+                  : ""}
+                . They will refine as live trades accumulate.
+              </div>
+            </div>
+          )}
           <PerformancePanel perf={perf} config={config} />
           <CostLedger sessionId={sessionId} />
           <LearningInsights sessionId={sessionId} currencySymbol={config?.currency_symbol || "$"} />
