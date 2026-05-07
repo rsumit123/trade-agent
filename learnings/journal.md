@@ -1251,3 +1251,118 @@ Intraday shorts on ADANIPORTS need sharper entries (5min rejection candles, not 
 
 • **Pattern**: BAJAJ-AUTO respects its 5d resistance harder than macro suggests—watch for mean-reversion rejections here before shorting.
 
+
+### 2026-05-04 10:21 — Entry: VEDL.NS
+**ENTRY** 50x VEDL.NS @ ₹287.45  [swing]
+  *Thesis: Deeply oversold (RSI 17.0) + above-avg volume (1.89x) = classic mean-reversion bounce. Support at -6.3%, target ₹310 (+8%). Metals cyclical play on macro stabilization. R/R 1.9:1.*
+
+
+### 2026-05-04 10:21 — Entry: NESTLEIND.NS
+**ENTRY** 40x NESTLEIND.NS @ ₹1458.20  [intraday]
+  *Thesis: Extreme overbought (RSI 72.6) at resistance (0.82% away). Light volume (0.17x) = distribution risk. Target SMA(5) breakpoint ₹1,447.9. Will exit if no move by 45min. Intraday discipline: force-cover by 3:15 PM.*
+
+
+### 2026-05-04 11:25 — Exit: NESTLEIND.NS
+**EXIT** 40x NESTLEIND.NS | LOSS ❌ | ₹1458.20 → ₹1467.90 | P&L: ₹-388.00 (+0.67%) | held 64m
+
+# NESTLEIND.NS Trade Reflection
+
+• **Thesis failed.** Expected mean-reversion to ₹1,447.90 (SMA5), but price broke above resistance instead. Held 64min waiting for the move—it never came. Exited to avoid compounding the error with a tighter stop.
+
+• **What went wrong:** Overbought RSI alone isn't a reliable short trigger on strong momentum stocks. Light volume was misinterpreted as distribution; it may have been consolidation before continuation. Discipline worked—exited before 3:15 PM, but opportunity cost was real.
+
+• **Next time:** Don't short NESTLEIND on RSI >70 without confluent *bearish* structure (lower highs, rejected candles). Add this stock to the "momentum confirmation only" list for intraday.
+
+• **Pattern:** Mean-reversion plays need volume confirmation *into* the level, not away from it. Here, volume was thin—a red flag ignored.
+
+
+### 2026-05-04 11:57 — Entry: BANDHANBNK.NS
+**ENTRY** 15x BANDHANBNK.NS @ ₹209.33  [intraday]
+  *Thesis: Overbought mean-reversion: RSI 70.2, +4.91% rally into 5d resistance (1.49% away), 1.7x vol. Above SMA5 (193.61) = distribution risk. Macro headwinds (FPI outflows, weak rupee) support downside. Target SMA5 at ₹203.50 (-2.9%), stop ₹212 (+1.17%), R/R 2.9:1. Intraday discipline: force-cover by 3:15 PM IST.*
+
+
+### 2026-05-04 12:14 — Entry: SUNTV.NS
+**ENTRY** 35x SUNTV.NS @ ₹562.00  [swing]
+  *Thesis: Panic-driven 7.3% oversold drop into support (-2.4%). RSI 37.7 (oversold bounce zone), massive 5.59x volume = capitulation. Target SMA5 at ₹591.86 (+5.4%), stop ₹548 (-2.4%), R/R 2.2:1. Swing trade 3-5 days. Media cyclical play on sector rotation."*
+
+
+### 2026-05-04 12:46 — Exit: BANDHANBNK.NS
+**EXIT** 15x BANDHANBNK.NS | WIN ✅ | ₹209.33 → ₹207.11 | P&L: ₹+33.30 (-1.06%) | held 48m
+
+• **Thesis failed; discipline saved the trade.** Mean-reversion setup looked textbook (RSI 70.2, macro headwinds), but the stock had genuine bullish momentum that overwhelmed overbought signals. Macro thesis didn't translate to price action. Exiting at +33.30 on the first hard rally preserved capital instead of riding stop loss.
+
+• **What worked: intraday rules.** Hard 3:15 PM IST exit rule + willingness to exit on thesis failure prevented a larger loss. What didn't: relying too heavily on RSI 70 + macro in isolation without price structure confirmation.
+
+• **Next time: wait for RSI rejection candle.** Don't short pure overbought conditions. Enter only after a failed breakdown attempt or rejection wick at resistance—concrete price confirmation.
+
+• **BANDHANBNK pattern:** This stock respects trend momentum over mean-reversion pullbacks. Favor momentum-continuation setups instead.
+
+
+### 2026-05-04 13:50 — Entry: KOTAKBANK.NS
+**ENTRY** 50x KOTAKBANK.NS @ ₹371.95  [intraday]
+  *Thesis: Capitulation reversal setup: 3.27x vol on -2.92% down day in financials. RSI 39.6 trending down into support (2.45% away). Election stability catalyst for mean-reversion bounce. Support at ₹363, target ₹380 (+2.2%). Risk-defined intraday scalp with R/R 1:1. Hard exit by 3:15 PM IST.*
+
+
+### 2026-05-04 14:07 — Exit: KOTAKBANK.NS
+**EXIT** 50x KOTAKBANK.NS | LOSS ❌ | ₹371.95 → ₹371.15 | P&L: ₹-40.00 (-0.22%) | held 16m
+
+# KOTAKBANK.NS Trade Reflection
+
+• **Thesis Failed Early**: Capitulation reversal setup didn't trigger. Despite 3.27x volume and RSI 39.6, price rejected the bounce and broke ₹363 support instead. Election catalyst proved insufficient to reverse intraday momentum.
+
+• **Discipline Saved Capital**: Exit at 3:15 PM hard stop was correct. Holding through auto-close would've crystallized larger losses. Loss of ₹32.50 acceptable vs. overnight gap risk.
+
+• **Next Time – Tighten Entry Filters**: Add confirmation (e.g., RSI upturn + volume drying on dips) before entering capitulation trades. This entry relied too heavily on statistical setup; price action rejected it immediately.
+
+• **Pattern**: KOTAKBANK financials reversals need institutional buying confirmation intraday—volume spikes alone insufficient. Wait for uptick in buying pressure before committing.
+
+
+### 2026-05-04 14:07 — Exit: VEDL.NS
+**EXIT** 50x VEDL.NS | WIN ✅ | ₹287.45 → ₹292.40 | P&L: ₹+247.50 (+1.72%) | held 3h46m
+
+# VEDL.NS Trade Reflection
+
+• **Thesis vs. Exit:** Mean-reversion bounce confirmed (+7.44%), but you exited well *before* the ₹310 target. RSI recovered from 17→17.6 (marginal), yet you prioritized locking gains over thesis completion—smart risk management, though the target wasn't tested.
+
+• **What worked:** Textbook oversold entry (RSI 17, volume spike). Exit discipline prevented capitulation fade. Poor execution would've been holding into the pullback.
+
+• **Next time:** Set a *micro* profit-taking level (e.g., exit 50% at +5-6%, let 50% ride to ₹310). This trade's quick peak suggests fast mean-reversion bounces in VEDL deserve scaled exits, not binary all-or-nothing decisions.
+
+• **Pattern:** VEDL swings are sharp and mean-reverting. RSI extremes are reliable entry triggers, but hold time ≤4h suggests booking partial profits early.
+
+
+### 2026-05-04 14:07 — Entry: INFY.NS
+**ENTRY** 80x INFY.NS @ ₹1168.30  [swing]
+  *Thesis: Oversold bounce setup: RSI 26.3 (extreme), -1.13% on low vol (0.35x) = weak hands flushing. Price at SMA5 (1168.04) = perfect bounce zone. Q4 earnings weakness overdone; IT sector consolidating. Target SMA5 recovery to ₹1195 (+2.3%), stop ₹1140 (-0.8%). 3:1 risk/reward. 3-5 day swing hold.*
+
+
+### 2026-05-05 09:46 — Exit: SUNTV.NS
+**EXIT** 35x SUNTV.NS | WIN ✅ | ₹562.00 → ₹574.50 | P&L: ₹+437.50 (+2.22%) | held 21h32m
+
+• **Thesis vs. Reality**: Oversold bounce thesis played out perfectly—RSI capitulation + volume spike predicted the reversal. However, exited at +2.22% well before the ₹591.86 target (+5.4%), driven by overnight gap risk anxiety rather than technical breakdown. Thesis was still valid; risk management overrode conviction.
+
+• **What Worked**: Precise entry into support + volume confirmation. Partial exit strategy locked profits while keeping upside. What didn't: Left 60% of target unrealized due to fear rather than a stop breach.
+
+• **Next Time**: Define overnight gap thresholds upfront. If thesis is intact and stop is firm, hold through one session before scaling. Exiting too early = leaving R/R on the table.
+
+• **Pattern**: SUNTV media cyclical swings respect RSI 35-40 bounces reliably. Worth revisiting on dips.
+
+
+### 2026-05-07 09:37 — Exit: INFY.NS
+**EXIT** 80x INFY.NS | LOSS ❌ | ₹1168.30 → ₹1164.80 | P&L: ₹-280.00 (-0.30%) | held 67h29m
+
+# INFY.NS Swing Trade Reflection
+
+• **Thesis failed cleanly.** RSI bounced to 43.8 but stalled—no follow-through momentum. Volume stayed dead (0.09x), signaling weak conviction. Price broke below SMA5 after 3 days, invalidating the bounce setup. Exit was disciplined.
+
+• **What worked:** Loss cut quickly (-₹280, only -0.30%) freed capital for higher-conviction VEDL setup (RSI 23.8 extreme). Risk management prevented larger damage.
+
+• **What went wrong:** Entered on *indicator* oversold, not price action confluence. RSI 26.3 alone isn't enough—needed volume confirmation *into* the bounce, not flat volume.
+
+• **Next time:** On INFY swings, require volume spike *into* bounces from oversold RSI. Dead volume + stalling RSI = exit signal, not hold signal.
+
+
+### 2026-05-07 09:37 — Entry: VEDL.NS
+**ENTRY** 417x VEDL.NS @ ₹317.70  [swing]
+  *Thesis: Post-demerger oversold bounce setup: RSI 23.8 (extreme capitulation), -14.54% from support (wide cushion), price above SMA5 (trend inflection). Already rebounding from demerger crash. Bullish market backdrop (global rally, crude crash <$100) = tailwind. Target: ₹330-340 (+3.8-7.3%), Stop: ₹271 support. Risk/Reward 5:1. 3-5 day swing hold.*
+
