@@ -18,10 +18,11 @@ logger = logging.getLogger(__name__)
 class KiteMarketData:
     """Market data provider using Zerodha Kite Connect API."""
 
-    def __init__(self, watchlist: List[str], market_preset=None, kite_client=None):
+    def __init__(self, watchlist: List[str], market_preset=None, kite_client=None, auth=None):
         self.watchlist = watchlist
         self.market_preset = market_preset
         self.kite = kite_client
+        self._auth = auth  # KiteAuth handle so we can re-issue a token if Kite revokes
         self._instrument_map: Dict[str, int] = {}  # tradingsymbol → instrument_token
         self._price_cache: Dict[str, float] = {}
         self._cache_time: Optional[datetime] = None
@@ -29,6 +30,43 @@ class KiteMarketData:
 
         if self.kite:
             self._load_instruments()
+
+    def _is_auth_error(self, exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return ("incorrect" in msg and ("api_key" in msg or "access_token" in msg)) \
+            or "tokenexception" in msg or "token expired" in msg
+
+    def _refresh_kite(self) -> bool:
+        """Force a re-auth and swap in the new client. Returns True on success."""
+        if not self._auth:
+            return False
+        try:
+            # Force a fresh token (delete the cached one — it's clearly stale)
+            try:
+                if hasattr(self._auth, "token_path") and self._auth.token_path.exists():
+                    self._auth.token_path.unlink()
+            except Exception:
+                pass
+            new_kite = self._auth.get_authenticated_client()
+            self.kite = new_kite
+            logger.info("🔑 Kite client re-authenticated after token rejection")
+            return True
+        except Exception as e:
+            logger.error(f"Kite re-auth failed: {e}")
+            return False
+
+    def _call_with_retry(self, label: str, fn):
+        """Run a Kite API call; if it fails with an auth error, re-auth and retry once."""
+        try:
+            return fn(self.kite)
+        except Exception as e:
+            if self._is_auth_error(e) and self._refresh_kite():
+                try:
+                    return fn(self.kite)
+                except Exception as e2:
+                    logger.error(f"Kite {label} failed after re-auth: {e2}")
+                    raise
+            raise
 
     def _load_instruments(self):
         """Cache instrument tokens for quick lookup."""
@@ -75,7 +113,7 @@ class KiteMarketData:
             prices = {}
             for i in range(0, len(kite_symbols), 500):
                 batch = kite_symbols[i:i+500]
-                quotes = self.kite.quote(batch)
+                quotes = self._call_with_retry("quote(prices)", lambda k, b=batch: k.quote(b))
                 for sym, data in quotes.items():
                     # Convert back: "NSE:RELIANCE" → "RELIANCE.NS"
                     ticker_ns = f"{sym.split(':')[1]}.NS"
@@ -97,7 +135,10 @@ class KiteMarketData:
             token = self._get_instrument_token(ticker)
 
             # Get live quote
-            quote = self.kite.quote([kite_sym]).get(kite_sym, {})
+            quote = self._call_with_retry(
+                "quote(stock_context)",
+                lambda k, s=kite_sym: k.quote([s]),
+            ).get(kite_sym, {})
             current_price = quote.get("last_price", 0)
             ohlc = quote.get("ohlc", {})
             prev_close = ohlc.get("close", current_price)
@@ -112,11 +153,11 @@ class KiteMarketData:
             if token:
                 from_date = (datetime.now() - timedelta(days=35)).strftime("%Y-%m-%d")
                 to_date = datetime.now().strftime("%Y-%m-%d")
-                candles = self.kite.historical_data(
-                    instrument_token=token,
-                    from_date=from_date,
-                    to_date=to_date,
-                    interval="day",
+                candles = self._call_with_retry(
+                    "historical_data(stock_context)",
+                    lambda k, t=token, fd=from_date, td=to_date: k.historical_data(
+                        instrument_token=t, from_date=fd, to_date=td, interval="day",
+                    ),
                 )
                 df = pd.DataFrame(candles)
             else:
@@ -258,7 +299,7 @@ class KiteMarketData:
             all_quotes = {}
             for i in range(0, len(kite_symbols), 500):
                 batch = kite_symbols[i:i+500]
-                quotes = self.kite.quote(batch)
+                quotes = self._call_with_retry("quote(watchlist)", lambda k, b=batch: k.quote(b))
                 all_quotes.update(quotes)
 
             summaries = []
@@ -314,11 +355,11 @@ class KiteMarketData:
             from_date = datetime.now().strftime("%Y-%m-%d")
             to_date = from_date
 
-            candles = self.kite.historical_data(
-                instrument_token=token,
-                from_date=from_date,
-                to_date=to_date,
-                interval=interval,
+            candles = self._call_with_retry(
+                "historical_data(intraday)",
+                lambda k, t=token, fd=from_date, td=to_date, iv=interval: k.historical_data(
+                    instrument_token=t, from_date=fd, to_date=td, interval=iv,
+                ),
             )
             return pd.DataFrame(candles)
         except Exception as e:

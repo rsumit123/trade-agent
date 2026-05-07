@@ -298,7 +298,7 @@ def create_market_data(config, market_preset=None):
             auth = KiteAuth()  # Reads from env vars
             kite = auth.get_authenticated_client()
             logger.info("📊 Using Kite Connect for market data (real-time)")
-            return KiteMarketData(config.watchlist, market_preset, kite)
+            return KiteMarketData(config.watchlist, market_preset, kite, auth=auth)
         except Exception as e:
             logger.warning(f"Kite Connect init failed, falling back to yfinance: {e}")
             return MarketData(config.watchlist, market_preset)
