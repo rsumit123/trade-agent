@@ -1366,3 +1366,125 @@ Intraday shorts on ADANIPORTS need sharper entries (5min rejection candles, not 
 **ENTRY** 417x VEDL.NS @ ₹317.70  [swing]
   *Thesis: Post-demerger oversold bounce setup: RSI 23.8 (extreme capitulation), -14.54% from support (wide cushion), price above SMA5 (trend inflection). Already rebounding from demerger crash. Bullish market backdrop (global rally, crude crash <$100) = tailwind. Target: ₹330-340 (+3.8-7.3%), Stop: ₹271 support. Risk/Reward 5:1. 3-5 day swing hold.*
 
+
+### 2026-05-07 10:43 — Entry: HCLTECH.NS
+**ENTRY** 127x HCLTECH.NS @ ₹1185.40  [swing]
+  *Thesis: Extreme oversold bounce: RSI 34 (capitulation zone), price ₹1185.30 at support ₹1181 (0.35% cushion), SMA5 resistance ₹1194.84 = 0.76% above, below-avg volume (0.16x) = weak selling pressure. IT sector oversold (Q4 earnings miss Apr 22), but Emkay added to portfolio (Feb 26 = institutional confidence). 3.25:1 risk/reward targeting ₹1210-1215 (+2.1-2.6%), stop ₹1160. Mean-reversion swing hold 2-3 days.*
+
+
+### 2026-05-07 13:29 — Exit: HCLTECH.NS
+**EXIT** 127x HCLTECH.NS | WIN ✅ | ₹1185.40 → ₹1188.60 | P&L: ₹+406.40 (+0.27%) | held 2h46m
+
+# HCLTECH.NS Reflection
+
+• **Thesis vs. Reality:** Oversold bounce setup was sound (RSI 34, support proximity), but execution failed—volume never expanded to confirm institutional accumulation. Price couldn't breach SMA5 resistance, invalidating the mean-reversion narrative within 2h46m.
+
+• **What Worked/Failed:** Entry timing was good (support zone), but exit discipline saved a deteriorating setup. Failed to wait for volume confirmation—a critical gap between setup quality and follow-through.
+
+• **Next Time:** Before entering oversold bounces, require *minimum volume confirmation rule*—price must hold above entry with volume ≥0.5x avg within first 30min, or exit immediately. Don't assume institutional interest; make it visible.
+
+• **Pattern:** HCLTECH IT sector weakness may persist through Q4. Avoid mean-reversion plays here until sector stabilizes post-earnings.
+
+
+### 2026-05-07 14:18 — Exit: VEDL.NS
+**EXIT** 417x VEDL.NS | LOSS ❌ | ₹317.70 → ₹307.15 | P&L: ₹-4399.35 (-3.32%) | held 4h41m
+
+• **Thesis Failed**: Expected post-demerger bounce didn't materialize despite extreme RSI and wide support cushion. FII selling overwhelmed the bullish setup—institutional flows trumped technicals here.
+
+• **What Went Wrong**: Entered on oversold conditions + market tailwind assumption, but ignored that demerger-driven selling often has structural follow-through. Held only 4h41m vs. planned 3-5 days, suggesting conviction weakened quickly when price broke SMA5.
+
+• **Next Time**: Don't assume bullish "backdrop" (crude <$100, global rally) overrides demerger liquidation flows. Add FII data confirmation *before* entry, not as exit justification.
+
+• **Pattern for VEDL**: Demerger dislocations require longer settlement periods. Swing plays near event-driven lows need 2-3 day minimum hold to distinguish noise from structural moves.
+
+
+### 2026-05-07 14:19 — Entry: HAL.NS
+**ENTRY** 35x HAL.NS @ ₹4780.40  [intraday]
+  *Thesis: Extreme overbought mean-reversion SHORT: RSI 85.4 (extreme), sitting ON 5d resistance (₹4795, 0.25% away), price above VWAP (₹4718) = peak distribution setup. FII selling backdrop + defense sector rally exhaustion = tailwind for reversion. Target: ₹4650-4680 (support 9.72% cushion). Stop: ₹4820 (above resistance). Risk/Reward 3:1. Intraday execution into profit-taking.*
+
+
+### 2026-05-07 15:26 — Exit: HAL.NS
+**EXIT** 35x HAL.NS | LOSS ❌ | ₹4780.40 → ₹4789.90 | P&L: ₹-332.50 (+0.20%) | held 67m
+
+# HAL.NS Trade Reflection
+
+• **Thesis vs. Reality**: Setup was textbook (RSI 85.4, resistance proximity, distribution signals), but momentum never reversed. Price closed *above* entry despite overbought conditions—mean reversion failed to trigger intraday. Forced EOD cover locked in minor loss before potential further gains.
+
+• **What Worked/Failed**: Entry logic was sound; poor execution timing didn't. Exited too early on a forced rule rather than letting the setup breathe or hitting stop. The 3:1 R:R was attractive but unrealistic for a 67m hold in a strong sector.
+
+• **Next Time**: Don't force EOD covers on intraday shorts in strong rallies. Either scale in earlier or skip the setup entirely. Defense rally momentum was too strong—thesis ignored market structure.
+
+• **Pattern**: HAL.NS respects sector flows heavily. Overbought RSI alone ≠ reversal without broader momentum breakdown.
+
+
+### 2026-05-07 15:27 — Entry: VEDL.NS
+**ENTRY** 250x VEDL.NS @ ₹304.55  [swing]
+  *Thesis: Extreme oversold bounce setup (RSI 23.1, lowest on list). Price near 10.9% support cushion (₹271.55). Volume 2.1x avg on decline = institutional selling exhaustion. Post-demerger dislocations require 2-3 day settlement period (learned from today's premature exit). Target: ₹320-325 (+5.0-6.6%). Stop: ₹298 (below SMA5). Risk/Reward 1:3.5. Swing hold to allow mean reversion.*
+
+
+### 2026-05-07 15:27 — Entry: HCLTECH.NS
+**ENTRY** 20x HCLTECH.NS @ ₹1181.30  [swing]
+  *Thesis: IT sector oversold bounce. RSI 33.4 (near 30 threshold), price exactly on 5d support (0.04% away). Low volume (0.63x) on decline = support buying, not panic selling. HCLTECH beaten down on Q4 guidance; washout creates bounce opportunity. Target: ₹1,210-1,225 (+2.4-3.7%). Stop: ₹1,170 (below support). Risk/Reward 1:2.5. Intraday/swing bounce candidate.*
+
+
+### 2026-05-08 11:54 — Entry: NESTLEIND.NS
+**ENTRY** 5x NESTLEIND.NS @ ₹1486.90  [intraday]
+  *Thesis: Extreme overbought mean-reversion SHORT: RSI 86.6 (extreme), sitting AT 5d resistance (₹1,500, 0.6% away). Price above VWAP = distribution. Volume 0.2x = exhaustion into overbought. Intraday peak-selling setup. Target: ₹1,470-1,480 (-1.1% to -1.5%). Stop: ₹1,510 (above resistance). Risk/Reward 1:1.5 acceptable for extreme overbought reversion.*
+
+
+### 2026-05-08 11:54 — Entry: DEEPAKNTR.NS
+**ENTRY** 3x DEEPAKNTR.NS @ ₹1850.00  [intraday]
+  *Thesis: Extreme overbought SHORT: RSI 88.4 (HIGHEST on watchlist), 2% from 5d resistance (₹1,888). Price above VWAP = distribution. Volume 0.5x = exhaustion. Highest RSI overbought = highest mean-reversion probability. Target: ₹1,830-1,840 (-0.9% to -1.1%). Stop: ₹1,900 (above resistance). Risk/Reward 1:1 acceptable for extreme setup.*
+
+
+### 2026-05-08 13:17 — Exit: NESTLEIND.NS
+**EXIT** 5x NESTLEIND.NS | WIN ✅ | ₹1486.90 → ₹1480.90 | P&L: ₹+30.00 (-0.40%) | held 83m
+
+## Trade Reflection: NESTLEIND.NS Short
+
+**Thesis vs. Reality:**
+Setup was textbook overbought (RSI 86.6, at resistance, low volume), but the bull rally overpowered mean-reversion expectations. You exited at +₹30 instead of targeting -₹15 to -₹22. The thesis didn't "fail"—it just didn't trigger decisively.
+
+**What Worked/Failed:**
+✓ Risk management: Took profit early rather than holding into stop-loss  
+✗ Conviction issue: Thesis was strong but you locked in 2% of target gain, suggesting doubt
+
+**Next Time:**
+**Wait for confirmation before entry.** Don't short just because RSI is extreme—add a lower-timeframe reversal candle or volume spike rejection. This filters false setups in trending markets.
+
+**NESTLEIND Pattern:**
+Luxury stock holds trends strongly. Overbought mean-reversion works better after confirmed rejection, not preemptively.
+
+
+### 2026-05-08 14:08 — Exit: HCLTECH.NS
+**EXIT** 20x HCLTECH.NS | WIN ✅ | ₹1181.30 → ₹1198.40 | P&L: ₹+342.00 (+1.45%) | held 22h41m
+
+# HCLTECH.NS Trade Reflection
+
+• **Thesis partially validated but exit timing off**: Bounce did occur (+1.45%), but target (₹1,210-1,225) wasn't reached. Exited at 1.23% away from resistance on thin volume (0.37x)—premature caution. RSI 35.1 isn't meaningfully different from entry RSI 33.4; this wasn't a signal, just risk aversion.
+
+• **What worked**: Support identification was precise (0.04% accuracy). Low-volume decline analysis correctly identified washout. Risk/reward framing kept position sized right.
+
+• **What failed**: Sold on resistance proximity + low volume without waiting for actual rejection. Volume contraction doesn't always mean "fragile"—it can precede breakouts.
+
+• **Concrete fix**: On thin-volume rallies near resistance, require *actual price rejection* (2-3 candle reversal) before exiting, not just proximity + volume metrics. You left ₹342+ on the table.
+
+
+### 2026-05-08 15:12 — Exit: DEEPAKNTR.NS
+**EXIT** 3x DEEPAKNTR.NS | LOSS ❌ | ₹1850.00 → ₹1877.10 | P&L: ₹-81.30 (+1.46%) | held 3h18m
+
+# Trade Reflection: DEEPAKNTR.NS Short
+
+**Thesis vs. Reality:**
+RSI 88.4 setup was valid, but the market ignored mean-reversion signals. Strong uptrend structure dominated overbought conditions—price never approached ₹1,830-1,840 target. You correctly identified continuation risk and exited before a potential gap-stop-hunt.
+
+**What Worked / Failed:**
+✓ Stop placement logic was sound in theory but dangerous in execution—placing it above resistance on a short is a gap-trap.
+✗ Low volume exhaustion didn't confirm reversal; you ignored conflicting trend structure.
+
+**Concrete Fix:**
+On extreme RSI setups, require *price rejection* (lower high/close) before entry. Don't short pure overbought without confirmation. RSI alone ≠ reversal.
+
+**Pattern:**
+DEEPAKNTR favors trending moves over mean-reversion. Avoid shorts unless you see structural breakdown.
+

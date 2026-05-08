@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
-import { api, fmt, pct } from "@/lib/api";
+import { api, fmt, pct, parseServerTs } from "@/lib/api";
 import { useAppPrefix } from "@/lib/paths";
 import { useToast } from "@/components/Toast";
 import { useUser } from "@/lib/auth";
@@ -869,7 +869,7 @@ function TradeRow({ trade, sym }: { trade: { ticker: string; action: string; dir
   const pnl = trade.pnl;
   const isProfit = pnl != null && pnl >= 0;
   const isShort = trade.direction === "short";
-  const time = trade.exit_time ? new Date(trade.exit_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+  const time = trade.exit_time ? (parseServerTs(trade.exit_time) || new Date(trade.exit_time)).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
 
   return (
     <div className="flex items-center gap-2" style={{ fontSize: 12 }}>

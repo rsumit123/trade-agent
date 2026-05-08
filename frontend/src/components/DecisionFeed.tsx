@@ -1,6 +1,6 @@
 "use client";
 import { useMemo, useState } from "react";
-import { fmt } from "@/lib/api";
+import { fmt, parseServerTs } from "@/lib/api";
 import type { ClosedTrade, SessionConfig } from "@/lib/types";
 
 interface Props {
@@ -183,7 +183,7 @@ function TradeCard({ t, sym }: { t: ClosedTrade; sym: string }) {
               className="text-sm font-bold tabular-nums"
               style={{ color: accent }}
             >
-              {pnl > 0 ? "+" : ""}{sym}{fmt(Math.abs(pnl))}
+              {pnl > 0 ? "+" : ""}{fmt(Math.abs(pnl), sym)}
             </div>
             {pnlPct != null && (
               <div className="text-[10px] tabular-nums" style={{ color: accent, opacity: 0.85 }}>
@@ -202,7 +202,7 @@ function TradeCard({ t, sym }: { t: ClosedTrade; sym: string }) {
             <span style={{ color: accent }}>
               {isLong ? "Bought" : "Shorted"}
             </span>{" "}
-            @ {sym}{fmt(t.entry_price)}
+            @ {fmt(t.entry_price, sym)}
           </div>
         </div>
         {t.reason && (
@@ -221,7 +221,7 @@ function TradeCard({ t, sym }: { t: ClosedTrade; sym: string }) {
             <span style={{ color: accent }}>
               {isLong ? "Sold" : "Covered"}
             </span>{" "}
-            @ {t.exit_price != null ? `${sym}${fmt(t.exit_price)}` : "—"}
+            @ {t.exit_price != null ? fmt(t.exit_price, sym) : "—"}
             {holdMin != null && (
               <span className="text-text-muted"> · held {holdMin}</span>
             )}
@@ -259,8 +259,8 @@ function TradeCard({ t, sym }: { t: ClosedTrade; sym: string }) {
 function formatTime(ts: string | null): string {
   if (!ts) return "—";
   try {
-    const d = new Date(ts);
-    if (isNaN(d.getTime())) return ts;
+    const d = parseServerTs(ts);
+    if (!d || isNaN(d.getTime())) return ts;
     return d.toLocaleString("en-IN", {
       month: "short",
       day: "numeric",
@@ -276,9 +276,9 @@ function formatTime(ts: string | null): string {
 function computeHoldMinutes(entry: string, exit: string | null): string | null {
   if (!entry || !exit) return null;
   try {
-    const a = new Date(entry).getTime();
-    const b = new Date(exit).getTime();
-    if (!isFinite(a) || !isFinite(b)) return null;
+    const a = parseServerTs(entry)?.getTime();
+    const b = parseServerTs(exit)?.getTime();
+    if (!a || !b || !isFinite(a) || !isFinite(b)) return null;
     const m = Math.round((b - a) / 60000);
     if (m < 60) return `${m}m`;
     const h = Math.floor(m / 60);
