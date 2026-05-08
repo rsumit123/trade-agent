@@ -5,7 +5,7 @@ All state persisted in SQLite.
 
 import sqlite3
 import json
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, asdict
 from enum import Enum
@@ -62,13 +62,18 @@ class Portfolio:
         self._init_db()
 
     def _now_iso(self) -> str:
-        """Return current timestamp as ISO string, respecting _clock override."""
+        """Return current timestamp as ISO string, respecting _clock override.
+        Uses UTC-aware ISO (e.g. '2026-05-08T05:30:15+00:00') so the browser
+        can localize trade times correctly. Naive timestamps were being
+        read as user-local time, which mismatched the agent's IST cycle clock."""
         if self._clock is not None:
+            # Backtest clock is naive simulated IST (Kite candle index) —
+            # leave as-is so BacktestHistoryPanel keeps its existing display.
             try:
                 return self._clock().isoformat()
             except Exception:
                 pass
-        return datetime.now().isoformat()
+        return datetime.now(timezone.utc).isoformat()
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:

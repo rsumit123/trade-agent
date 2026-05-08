@@ -638,11 +638,13 @@ class TradingAgent:
         except Exception:
             usd = 0.0
 
-        from datetime import datetime as _dt
+        from datetime import datetime as _dt, timezone as _tz
         if bt_date and bt_time:
             ts = f"{bt_date}T{bt_time}:00"
         else:
-            ts = _dt.now().isoformat(timespec="seconds")
+            # UTC-aware so the browser interprets correctly (naive ISO was
+            # being read as user-local time, mismatching the agent's IST clock)
+            ts = _dt.now(_tz.utc).isoformat(timespec="seconds")
 
         record = {
             "ts": ts,
@@ -685,11 +687,12 @@ class TradingAgent:
         else:
             phase = "observed"
 
-        from datetime import datetime as _dt
+        from datetime import datetime as _dt, timezone as _tz
         if bt_date and bt_time:
             ts = f"{bt_date}T{bt_time}:00"
         else:
-            ts = _dt.now().isoformat(timespec="seconds")
+            # UTC-aware ISO so the browser localizes correctly
+            ts = _dt.now(_tz.utc).isoformat(timespec="seconds")
 
         record = {
             "ts": ts,
