@@ -1,6 +1,6 @@
 "use client";
 import { useEffect } from "react";
-import { fmt, cn } from "@/lib/api";
+import { fmt, cn, parseServerTs } from "@/lib/api";
 import type { ClosedTrade, SessionConfig } from "@/lib/types";
 
 export function TradeDetailModal({
@@ -31,8 +31,8 @@ export function TradeDetailModal({
   const pnlPositive = pnl >= 0;
 
   // Compute hold time
-  const entry = new Date(trade.entry_time);
-  const exit = new Date(trade.exit_time);
+  const entry = parseServerTs(trade.entry_time) || new Date(trade.entry_time);
+  const exit = parseServerTs(trade.exit_time) || new Date(trade.exit_time);
   const holdMs = Math.max(0, exit.getTime() - entry.getTime());
   const holdLabel = formatDuration(holdMs);
 
@@ -228,8 +228,8 @@ function formatDuration(ms: number): string {
 function formatTs(ts: string): string {
   if (!ts) return "—";
   try {
-    const d = new Date(ts);
-    if (isNaN(d.getTime())) return ts;
+    const d = parseServerTs(ts);
+    if (!d || isNaN(d.getTime())) return ts;
     return d.toLocaleString([], {
       month: "short",
       day: "numeric",

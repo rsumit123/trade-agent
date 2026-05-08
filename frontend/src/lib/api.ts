@@ -74,3 +74,12 @@ export function pct(n: number | null | undefined): string {
 export function cn(...classes: (string | false | undefined | null)[]): string {
   return classes.filter(Boolean).join(" ");
 }
+
+/** Parse a server-emitted ISO timestamp. If it has no timezone (naive),
+ *  treat it as UTC — the backend was historically writing naive UTC, which
+ *  JS new Date() otherwise misinterprets as the user's local time. */
+export function parseServerTs(ts: string | null | undefined): Date | null {
+  if (!ts) return null;
+  const hasTz = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(ts);
+  return new Date(hasTz ? ts : ts + "Z");
+}

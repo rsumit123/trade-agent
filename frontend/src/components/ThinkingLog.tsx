@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { api, parseServerTs } from "@/lib/api";
 import type { ThinkingEntry, SessionConfig } from "@/lib/types";
 
 export function ThinkingLog({
@@ -230,10 +230,9 @@ function summarizeToolInput(input: Record<string, unknown>): string {
 
 function fmtTs(ts: string): string {
   if (!ts) return "";
-  // Backtest stamps are "YYYY-MM-DDTHH:MM:00" without TZ
   try {
-    const d = new Date(ts);
-    if (isNaN(d.getTime())) return ts;
+    const d = parseServerTs(ts);
+    if (!d || isNaN(d.getTime())) return ts;
     const today = new Date();
     const sameDay =
       d.getFullYear() === today.getFullYear() &&
