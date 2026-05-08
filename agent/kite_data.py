@@ -303,11 +303,13 @@ class KiteMarketData:
                 all_quotes.update(quotes)
 
             summaries = []
+            dropped = []
             for ticker in self.watchlist:
                 kite_sym = self._kite_symbol(ticker)
                 quote = all_quotes.get(kite_sym, {})
 
                 if not quote or not quote.get("last_price"):
+                    dropped.append(ticker)
                     continue
 
                 current_price = quote["last_price"]
@@ -339,6 +341,11 @@ class KiteMarketData:
 
             # Sort by absolute change (biggest movers first)
             summaries.sort(key=lambda x: abs(x.get("change_pct", 0)), reverse=True)
+            if dropped:
+                logger.warning(
+                    f"⚠️  Watchlist: {len(dropped)} of {len(self.watchlist)} tickers had no quote — "
+                    f"dropped: {', '.join(dropped[:8])}{'…' if len(dropped) > 8 else ''}"
+                )
             return summaries
 
         except Exception as e:
