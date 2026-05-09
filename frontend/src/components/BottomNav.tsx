@@ -103,6 +103,39 @@ function BackIcon() {
 }
 
 function NavTab({ href, label, active, icon }: { href: string; label: string; active: boolean; icon: React.ReactNode }) {
+  // Hash-bearing links (#overview / #decisions / #activity) on the same
+  // route don't navigate via Next's <Link> — App Router treats them as
+  // same-route and never updates the hash or fires hashchange. Handle
+  // those with a click handler that sets location.hash + dispatches the
+  // event so the session page's tab listener fires.
+  const hashIdx = href.indexOf("#");
+  if (hashIdx >= 0) {
+    const path = href.slice(0, hashIdx);
+    const hash = href.slice(hashIdx);
+    return (
+      <a
+        href={href}
+        onClick={(e) => {
+          if (typeof window === "undefined") return;
+          if (path && path !== window.location.pathname) return; // let <a> navigate normally
+          e.preventDefault();
+          if (window.location.hash !== hash) {
+            history.replaceState(null, "", hash);
+            window.dispatchEvent(new HashChangeEvent("hashchange"));
+          }
+        }}
+        className={cn(
+          "flex flex-col items-center justify-center gap-1 flex-1 pt-2",
+          active ? "text-accent-blue" : "text-text-muted"
+        )}
+        style={{ minHeight: 56, fontSize: 10, fontWeight: active ? 600 : 400 }}
+      >
+        {icon}
+        <span>{label}</span>
+      </a>
+    );
+  }
+
   return (
     <Link
       href={href}
