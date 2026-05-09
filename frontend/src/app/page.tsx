@@ -148,52 +148,6 @@ export default function MarketingPage() {
         </div>
       </section>
 
-      {/* How the free tier works */}
-      <section className="relative px-4 md:px-6 py-12 md:py-16">
-        <div className="max-w-5xl mx-auto">
-          <div className="text-center mb-8">
-            <div className="text-[11px] uppercase tracking-[0.18em] font-semibold text-text-muted mb-2">
-              The free plan
-            </div>
-            <h2 className="text-2xl md:text-3xl font-bold tracking-tight">
-              24 hours of runtime. No card.
-            </h2>
-            <p className="text-text-secondary text-sm md:text-base mt-3 max-w-xl mx-auto">
-              The clock only counts time the agent is actually running — pause it overnight, on weekends, whenever.
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-5">
-            <PerkCard
-              icon="✓"
-              accent="#22c55e"
-              title="One free agent"
-              body="Pick a market, set a personality, hit go. Open-source models on us — no API keys, no setup."
-            />
-            <PerkCard
-              icon="✓"
-              accent="#22c55e"
-              title="Pause-and-resume"
-              body="Stop the agent any time. Your 24 hours don't expire on the calendar — only while it's actually trading."
-            />
-            <PerkCard
-              icon="🔒"
-              accent="#f59e0b"
-              title="Paid: 5-day runtime"
-              body="More runtime, multiple sessions, and the full model lineup — Claude, GPT-4o, Llama, Gemini, DeepSeek. Join the waitlist after you sign in."
-              locked
-            />
-            <PerkCard
-              icon="🔒"
-              accent="#f59e0b"
-              title="Paid: backtests + model compare"
-              body="Replay months of history. Race two models on the same window and see who wins. Coming with the paid tier."
-              locked
-            />
-          </div>
-        </div>
-      </section>
-
       {/* Feature blocks */}
       <section id="features" className="relative px-4 md:px-6 py-16 md:py-24">
         <div className="max-w-5xl mx-auto">
@@ -306,59 +260,6 @@ function Logo({ small }: { small?: boolean }) {
       <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#0a0e17" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
         <polyline points="22 7 13.5 15.5 8.5 10.5 2 17" />
       </svg>
-    </div>
-  );
-}
-
-function PerkCard({
-  icon, title, body, accent, locked,
-}: { icon: string; title: string; body: string; accent: string; locked?: boolean }) {
-  return (
-    <div
-      className="rounded-2xl p-5 md:p-6"
-      style={{
-        background: locked
-          ? "linear-gradient(180deg, rgba(245,158,11,0.04) 0%, rgba(12,20,36,1) 100%)"
-          : "linear-gradient(180deg, #151d2e 0%, #0c1424 100%)",
-        border: `1px solid ${accent}33`,
-        opacity: locked ? 0.85 : 1,
-      }}
-    >
-      <div className="flex items-start gap-3">
-        <div
-          className="flex items-center justify-center rounded-lg shrink-0"
-          style={{
-            width: 32, height: 32,
-            background: `${accent}1a`,
-            border: `1px solid ${accent}33`,
-            color: accent,
-            fontSize: 16,
-            fontWeight: 700,
-          }}
-        >
-          {icon}
-        </div>
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <h3 className="text-base font-semibold" style={{ color: locked ? "#fcd34d" : "#e2e8f0" }}>
-              {title}
-            </h3>
-            {locked && (
-              <span
-                className="text-[10px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded"
-                style={{
-                  background: "rgba(245,158,11,0.15)",
-                  color: "#fcd34d",
-                  border: "1px solid rgba(245,158,11,0.3)",
-                }}
-              >
-                Coming soon
-              </span>
-            )}
-          </div>
-          <p className="text-sm text-text-secondary leading-relaxed">{body}</p>
-        </div>
-      </div>
     </div>
   );
 }
