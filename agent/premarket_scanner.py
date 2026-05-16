@@ -31,8 +31,42 @@ CACHE_MAX_AGE_DAYS = 7
 class PreMarketScanner:
     """Two-phase stock picker: quantitative filter + LLM intelligence."""
 
-    def __init__(self, kite_client):
+    def __init__(self, kite_client, auth=None):
         self.kite = kite_client
+        self._auth = auth  # KiteAuth handle for token-refresh-on-401
+
+    def _is_auth_error(self, exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return (
+            ("incorrect" in msg and ("api_key" in msg or "access_token" in msg))
+            or "tokenexception" in msg
+            or "token expired" in msg
+            or "just a moment" in msg  # Kite returning Cloudflare challenge on stale auth
+        )
+
+    def _refresh_kite(self) -> bool:
+        if not self._auth:
+            return False
+        try:
+            try:
+                if hasattr(self._auth, "token_path") and self._auth.token_path.exists():
+                    self._auth.token_path.unlink()
+            except Exception:
+                pass
+            self.kite = self._auth.get_authenticated_client()
+            logger.info("🔑 Scanner re-authenticated Kite client")
+            return True
+        except Exception as e:
+            logger.error(f"Scanner re-auth failed: {e}")
+            return False
+
+    def _call_with_retry(self, label: str, fn):
+        try:
+            return fn(self.kite)
+        except Exception as e:
+            if self._is_auth_error(e) and self._refresh_kite():
+                return fn(self.kite)
+            raise
 
     # ── Phase 0: Instrument Cache ─────────────────────────────
 
@@ -102,13 +136,19 @@ class PreMarketScanner:
         for i in range(0, len(kite_symbols), 500):
             batch = kite_symbols[i:i + 500]
             try:
-                data = self.kite.ohlc(batch)
+                data = self._call_with_retry(
+                    f"ohlc(batch{i // 500 + 1})",
+                    lambda k, b=batch: k.ohlc(b),
+                )
                 all_data.update(data)
             except Exception as e:
                 logger.warning(f"  Batch {i // 500 + 1} failed: {e}")
                 _time.sleep(3)
                 try:
-                    data = self.kite.ohlc(batch)
+                    data = self._call_with_retry(
+                        f"ohlc(batch{i // 500 + 1} retry)",
+                        lambda k, b=batch: k.ohlc(b),
+                    )
                     all_data.update(data)
                 except Exception:
                     pass

@@ -577,6 +577,21 @@ def _auto_restart_agents():
             if status["running"]:
                 continue  # Already alive, skip
 
+            # Skip resurrection if the owner is out of quota — otherwise the
+            # quota-sweep loop kills the agent every 5 min and we relaunch it,
+            # producing an endless kill/restart cycle (no trades, churn only).
+            try:
+                from agent.users import is_admin as _is_admin, get_runtime_remaining as _rem
+                from agent.session import load_session as _load
+                _sc = _load(session_id)
+                _owner = (_sc.user_email or "").lower()
+                if _owner and not _is_admin(_owner) and _rem(_owner) <= 0:
+                    logger.info(f"⏸  Skipping restart for '{session_id}' — owner quota exhausted")
+                    lock_path.unlink(missing_ok=True)
+                    continue
+            except Exception:
+                pass
+
             # Stale lock file — agent was running but died (container restart)
             logger.info(f"🔄 Auto-restarting agent for session '{session_id}' (stale lock detected)")
             lock_path.unlink(missing_ok=True)
