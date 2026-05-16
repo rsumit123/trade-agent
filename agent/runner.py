@@ -864,7 +864,10 @@ class TradingAgent:
 
         try:
             from .premarket_scanner import PreMarketScanner
-            scanner = PreMarketScanner(self.market_data.kite)
+            scanner = PreMarketScanner(
+                self.market_data.kite,
+                auth=getattr(self.market_data, "_auth", None),
+            )
 
             # Get learnings and news for LLM-powered Phase 2
             learnings = self.learner.get_learnings(max_chars=3000) if hasattr(self, 'learner') else ""

@@ -1488,3 +1488,238 @@ On extreme RSI setups, require *price rejection* (lower high/close) before entry
 **Pattern:**
 DEEPAKNTR favors trending moves over mean-reversion. Avoid shorts unless you see structural breakdown.
 
+
+### 2026-05-11 10:21 — Entry: ABB.NS
+**ENTRY** 15x ABB.NS @ ₹6415.50  [swing]
+  *Thesis: Extreme oversold bounce (RSI 30.3, -8.51% on 2.86x volume). Support at 1.42%, ATR room for bounce to 15% resistance. Risk/Reward 1:1.3-1:1.8. Mean-reversion setup with exhaustion confirmed by volume spike. Hold 2-3 days for mean-reversion trigger.*
+
+
+### 2026-05-11 11:57 — Entry: SBIN.NS
+**ENTRY** 85x SBIN.NS @ ₹979.90  [swing]
+  *Thesis: Extreme oversold bounce (RSI 24.1, only 0.45% from 5-day support ₹975). Volume 1.5x confirms exhaustion. Banking sector capitulation on broad selloff = reversal setup. Target ₹1,050-1,080 (+7-10%), Stop ₹970. Risk/Reward 1:5-1:7. Hold 2-3 days for mean-reversion mean-reversion recovery.*
+
+
+### 2026-05-11 12:14 — Entry: COROMANDEL.NS
+**ENTRY** 15x COROMANDEL.NS @ ₹1887.20  [swing]
+  *Thesis: Extreme oversold bounce: RSI 22.7 (lowest on watchlist), price ₹1,887.40 only 0.25% above 5-day support ₹1,882.70. Agricultural sector capitulation confirms institutional exhaustion. Target: ₹1,960 (+3.9%), Stop: ₹1,870. Risk/Reward 1:2.8. Hold 2-3 days for mean-reversion trigger. Defensive agriculture play amid market selloff.*
+
+
+### 2026-05-11 12:14 — Entry: BRITANNIA.NS
+**ENTRY** 20x BRITANNIA.NS @ ₹5421.00  [swing]
+  *Thesis: Oversold bounce with defensive tailwind: RSI 28.6, price ₹5,420 only 0.46% from 5-day support ₹5,395. Luxury FMCG defensive positioning during macro risk-off environment. Volume 0.52x confirms washout. Target: ₹5,600-5,700 (+3.3-5.2%), Stop: ₹5,350. Risk/Reward 1:3. Consumer defensives historically outperform in broad selloffs; hold 2-3 days for mean-reversion recovery.*
+
+
+### 2026-05-11 14:10 — Exit: VEDL.NS
+**EXIT** 250x VEDL.NS | LOSS ❌ | ₹304.55 → ₹298.95 | P&L: ₹-1400.00 (-1.84%) | held 94h43m
+
+# VEDL.NS Swing Trade Reflection
+
+• **Thesis vs. Reality**: RSI oversold setup was valid, but post-demerger dislocations proved more prolonged than expected. Rather than bouncing 5-6%, price consolidated sideways. Exited prematurely on volume fade—a rational risk management call, but it locked in a loss before the settlement period fully resolved.
+
+• **What Worked/Failed**: Good discipline on position sizing (partial exit preserved capital). Failed to trust the 2-3 day settlement window you'd identified—fear of thin volume triggered exit before thesis could develop. Stop placement was solid (below SMA5).
+
+• **Next Time**: On post-demerger plays, commit to a fixed 3-day hold *minimum* before volume-fade signals matter. Give structural dislocations time.
+
+• **Pattern**: VEDL swings need patience—index component with thin intraday liquidity requires longer conviction holds.
+
+
+### 2026-05-12 10:30 — Exit: ABB.NS
+**EXIT** 15x ABB.NS | LOSS ❌ | ₹6415.50 → ₹6222.00 | P&L: ₹-2902.50 (-3.02%) | held 24h9m
+
+# ABB.NS Trade Reflection
+
+• **Thesis vs. Reality**: Mean-reversion setup was sound (RSI 30.3, volume exhaustion), but macro deterioration overwhelmed technicals. Crude surge + FPI selling + Nifty support break negated the bounce potential within 24h. Exited correctly despite valid setup.
+
+• **What Worked/Failed**: Right to cut early and preserve capital during macro headwinds. Failed to weight macro catalyst risk—entered swing trade during vulnerable FPI conditions without position sizing adjustment.
+
+• **Next Time**: Before entering oversold bounces, check FPI flows + crude prices. If both negative, reduce position size by 50% or skip entirely. Technical setups don't override macro regime shifts.
+
+• **Pattern**: ABB showed weakest technicals (support proximity, low volume conviction) vs. other positions—should have prioritized higher-conviction alternatives.
+
+
+### 2026-05-12 13:18 — Entry: TCS.NS
+**ENTRY** 20x TCS.NS @ ₹2303.10  [swing]
+  *Thesis: Extreme oversold bounce (RSI 27.0, lowest among mega-caps). IT sector capitulation on temporary macro shock (FPI outflows, crude surge, OpenAI concerns). Price ₹2,303.40 only 0.9% above 5-day support. Volume 1.2x confirms institutional exhaustion. Target: ₹2,380-2,420 (+3.3-5.1%), Stop: ₹2,280 (below support). Risk/Reward 1:2.5-3. Hold 2-3 days for mean-reversion recovery on defensive quality mega-cap.*
+
+
+### 2026-05-12 14:24 — Exit: BRITANNIA.NS
+**EXIT** 20x BRITANNIA.NS | LOSS ❌ | ₹5421.00 → ₹5348.00 | P&L: ₹-1460.00 (-1.35%) | held 26h10m
+
+## Trade Reflection: BRITANNIA.NS
+
+**Thesis vs. Reality:**
+Oversold bounce setup was technically sound (RSI 28.6, near support), but macro headwinds overwhelmed mean-reversion logic. FPI outflows + crude spike invalidated the "defensive safe-haven" narrative faster than the 2-3 day hold allowed. Exited preemptively at support breakdown—correct decision, but entry timing was premature.
+
+**What Went Wrong:**
+Ignored deteriorating macro signals at entry. Relied too heavily on historical defensive rotation without weighing acute FPI stress. 1:3 R/R looked good on paper but assumed thesis stability.
+
+**Next Time:**
+Before entry, add a macro checklist: FPI flow direction (5-day trend), crude momentum, rupee weakness. Skip defensive plays when all three flash red simultaneously.
+
+**Pattern:**
+Luxury FMCG rallies *after* macro stabilizes, not during panic. Wait for stabilization signals.
+
+
+### 2026-05-12 14:42 — Exit: TCS.NS
+**EXIT** 20x TCS.NS | LOSS ❌ | ₹2303.10 → ₹2298.70 | P&L: ₹-88.00 (-0.19%) | held 84m
+
+# TCS.NS Trade Reflection
+
+**Thesis vs. Reality:**
+Oversold bounce thesis assumed temporary macro shock; instead, IT sector faced structural headwinds (AI disruption). RSI recovery didn't translate to price recovery—a critical mismatch between indicator and conviction.
+
+**What Went Wrong:**
+Entered on mean-reversion logic without validating sector health. Held only 84m despite 2-3 day thesis—exited prematurely on conviction shift, crystallizing small loss.
+
+**Key Lesson:**
+Before entering oversold mega-caps on RSI alone, cross-check sector momentum (IT ETF, peer charts). One stock bouncing while sector breaks support = trap, not opportunity.
+
+**Pattern to Remember:**
+TCS swings require sector tailwinds. Solo RSI plays on defensive names during structural shifts underperform. Wait for IT recovery confirmation next time.
+
+
+### 2026-05-12 14:42 — Entry: HCLTECH.NS
+**ENTRY** 25x HCLTECH.NS @ ₹1149.00  [swing]
+  *Thesis: Extreme oversold bounce (RSI 21.0, only 0.55% above 5-day support ₹1,142.6). HCL less exposed to offshore/AI disruption vs TCS/Infosys. Vol 0.54x = exhaustion (not panic). Resistance 16.7% away = 1:2.5+ R/R. Hold 2-3 days for mean-reversion recovery. Target: ₹1,180-1,200 (+2.7-4.4%).*
+
+
+### 2026-05-12 14:42 — Entry: ABB.NS
+**ENTRY** 5x ABB.NS @ ₹6325.00  [swing]
+  *Thesis: Oversold defensive industrial (RSI 27.5, 2.52% above 5-day support). Vol 1.56x breakout confirmed. Huge resistance gap (16.7%) = explosive upside if oversold reverses. Less exposed to US-Iran/geopolitical noise. Target: ₹7,000-7,200 (+10-13.7%), Stop: ₹6,150. Risk/Reward 1:4+.*
+
+
+### 2026-05-14 09:16 — Exit: HCLTECH.NS
+**EXIT** 25x HCLTECH.NS | LOSS ❌ | ₹1149.00 → ₹1133.60 | P&L: ₹-385.00 (-1.34%) | held 42h33m
+
+# HCLTECH.NS Trade Reflection
+
+• **Thesis vs. Reality:** Oversold bounce thesis was sound (RSI 21, vol exhaustion), but macro deterioration (FPI outflows ₹14K cr, rupee weakness) overwhelmed mean-reversion setup. Swing trade got caught in sector-wide IT selloff—individual stock technicals couldn't fight the macro tide.
+
+• **What Went Wrong:** Held despite RSI rising only to 42 (no confirmation of recovery). Didn't act fast enough when macro headwinds materialized within first 24h. Should've exited at -0.8% instead of riding to -1.34%.
+
+• **Next Time:** Screen macro calendars (FPI flows, INR levels) *before* entry on swing trades <3 days. If thesis breaks within 24h, exit immediately rather than hope for recovery.
+
+• **Pattern:** IT swings are macro-dependent. RSI oversold ≠ automatic bounce in sector downturns.
+
+
+### 2026-05-14 09:16 — Exit: SBIN.NS
+**EXIT** 85x SBIN.NS | LOSS ❌ | ₹979.90 → ₹975.00 | P&L: ₹-416.50 (-0.50%) | held 69h18m
+
+# SBIN.NS Trade Reflection
+
+• **Thesis vs. Reality:** Oversold bounce setup was technically sound (RSI 24, support proximity), but macro headwinds (FPI outflows, rupee stress) overwhelmed sector mean-reversion. Price went flat despite 69h hold—swing window closed without confirmation. Exit was prudent; waiting risked the 4% stop.
+
+• **What Went Wrong:** Underweighted macro regime shift. Banking sector capitulation wasn't temporary shock—it was structural. A 2-3 day swing window assumes stable macro; that assumption broke.
+
+• **Next Time:** Before entry, tag current FPI flows and rupee levels as real-time filters. If FPI negative *and* rupee weakening, skip pure technicals on defensives. Add macro checkpoint at 24h.
+
+• **Pattern:** Banking rebounds often fail in currency crisis. Avoid sector reversal plays during rupee stress.
+
+
+### 2026-05-14 09:16 — Exit: COROMANDEL.NS
+**EXIT** 15x COROMANDEL.NS | LOSS ❌ | ₹1887.20 → ₹1879.90 | P&L: ₹-109.50 (-0.39%) | held 69h2m
+
+# Trade Reflection: COROMANDEL.NS
+
+• **Thesis vs. Reality**: RSI extremes alone didn't trigger the bounce. FPI panic selling overwhelmed sector-specific mean reversion—macro regime shift invalidated the defensive play timing. Right thesis, wrong market conditions.
+
+• **What Worked/Failed**: Entry logic was sound (oversold + support), but failed to account for liquidity crisis severity. Early exit (after 69h) prevented deeper losses, but exit was reactive rather than planned—should have predefined macro kill-switches.
+
+• **Next Time**: Add a macro circuit-breaker rule *before* entry: if FPI outflows exceed ₹10K crore + rupee weakness, skip "defensive" plays entirely. Wait for stabilization signal first.
+
+• **Pattern**: Agricultural defensives don't work during *acute* panic phases—only after momentum shifts. COROMANDEL swings demand macro backdrop confirmation, not just RSI readings.
+
+
+### 2026-05-14 10:09 — Exit: ABB.NS
+**EXIT** 5x ABB.NS | LOSS ❌ | ₹6325.00 → ₹6245.00 | P&L: ₹-400.00 (-1.26%) | held 43h26m
+
+• **Thesis failed due to macro headwinds.** RSI oversold signal was valid technically, but ₹14K+ crore FPI outflows + rupee weakness created a bearish macro environment that overwhelmed the bounce setup. Entry was sound; timing was wrong.
+
+• **What went wrong:** Ignored broader market regime. A 1:4+ R/R setup means nothing if the market environment prevents mean reversion. Volume exhaustion (0.09x) was an early warning sign at 24h that wasn't acted on quickly enough.
+
+• **Next time:** Add a macro filter before swing entries—check FPI flows, rupee trend, and sector rotation. If macro is deteriorating, avoid mean reversion trades; favor momentum shorts instead (as you pivoted to).
+
+• **Pattern:** ABB.NS is defensive; watch if it decouples during FPI sell-offs before committing capital.
+
+
+### 2026-05-14 10:16 — Entry: ADANIENT.NS
+**ENTRY** 30x ADANIENT.NS @ ₹2645.70  [intraday]
+  *Thesis: Overbought dead-cat bounce: RSI 74.8 (extreme), resistance 0.7%, +5.28% rally in macro down regime (FPI panic). Target ₹2,500-2,550 (-1.5 to -2.5%), Stop ₹2,680 (+0.7% buffer above resistance). Volume 1.6x confirms institutional distribution. Risk/Reward 1:2.6. Force-cover at 3:15 PM IST.*
+
+
+### 2026-05-14 10:16 — Entry: CIPLA.NS
+**ENTRY** 50x CIPLA.NS @ ₹1415.40  [intraday]
+  *Thesis: Overbought reversal setup: RSI 71.3 (>70), resistance 1.1%, +6.66% pump on light fundamentals. In bearish macro (FPI ₹14K crore outflows, rupee at 95), healthcare sector rallies typically trap late buyers. Target ₹1,350-1,370 (-1.5 to -2.5%), Stop ₹1,440 (res buffer). Volume 1.95x = good liquidity for entry/exit. Risk/Reward 1:2. Intraday only.*
+
+
+### 2026-05-14 12:08 — Exit: CIPLA.NS
+**EXIT** 50x CIPLA.NS | LOSS ❌ | ₹1415.40 → ₹1416.80 | P&L: ₹-70.00 (+0.10%) | held 111m
+
+# Trade Reflection: CIPLA.NS Short
+
+**Thesis vs. Reality:**
+Overbought RSI (71.3) + macro headwinds suggested reversal, but price held above VWAP despite signal. Market relief bounce countered the bearish setup—thesis failed within 2 hours.
+
+**What Worked/Failed:**
+✓ Quick loss-cut preserved capital (₹70 vs. potential ₹40+ stop hit)
+✗ RSI alone insufficient in relief rallies; ignored price structure holding VWAP
+
+**Next Time:**
+Add confirmation: only short when *both* RSI >70 *and* price breaks below VWAP. Relief bounces in overbought sectors need structural breakdown, not just momentum divergence.
+
+**Pattern for CIPLA Intraday:**
+Healthcare sector responds strongly to FPI flows—don't short on momentum alone without price confirmation. Macro headwinds ≠ guaranteed reversal.
+
+
+### 2026-05-14 12:08 — Exit: ADANIENT.NS
+**EXIT** 30x ADANIENT.NS | LOSS ❌ | ₹2645.70 → ₹2666.10 | P&L: ₹-612.00 (+0.77%) | held 111m
+
+## Trade Reflection: ADANIENT.NS Short
+
+- **Thesis vs. Reality**: Expected mean reversion from overbought RSI 74.8, but institutional buying reversed FPI panic into a rally (+6.81%). Exited early to avoid -₹3,700 stop loss—correct risk management, but the setup itself was flawed in a macro support environment.
+
+- **What Went Wrong**: Relied too heavily on RSI extremes without confirming institutional *selling* (volume distribution). The 1.6x volume was ambiguous—turned out to be accumulation, not distribution.
+
+- **Concrete Fix**: Before shorting on overbought RSI during intraday volatility, require *two* confirmations: (1) bearish divergence on price/RSI, AND (2) declining volume on rallies. Single overbought signals aren't enough in choppy markets.
+
+- **Pattern**: ADANIENT moves on macro sentiment swings. Skip intraday shorts during FPI reversals; wait for structural breakdown instead.
+
+
+### 2026-05-14 13:14 — Entry: COROMANDEL.NS
+**ENTRY** 100x COROMANDEL.NS @ ₹1856.00  [swing]
+  *Thesis: Deeply oversold (RSI 25.0), price bouncing at 5d support (2.18% below at ₹1,815), no negative catalyst, tight risk/reward (stop ₹1,814 → target ₹1,950–₹1,984). Classic mean reversion setup. Volume modest but consistent with oversold recovery.*
+
+
+### 2026-05-14 13:30 — Entry: VOLTAS.NS
+**ENTRY** 70x VOLTAS.NS @ ₹1286.30  [swing]
+  *Thesis: Support-driven bounce from oversold (RSI 36.7, safe recovery zone). Price 3.4% above support at ₹1,245.6; low vol (0.7x) suggests genuine accumulation. Stop ₹1,245 (3.4% risk) → Target ₹1,350–1,365 (4.7–5.8% upside). Swing hold 2–3 days. Avoids single-signal trap seen with CIPLA overbought pattern.*
+
+
+### 2026-05-14 14:53 — Entry: POWERGRID.NS
+**ENTRY** 155x POWERGRID.NS @ ₹301.75  [swing]
+  *Thesis: Oversold recovery setup: RSI 30.6 (safe mean-reversion zone), price ₹302 just 2.1% above 5d support ₹295.65, vol 1.2x accumulation, power sector tailwinds (NTPC 9.8 GW expansion), Q4 FY26 results catalyst. Tight risk/reward: stop ₹295 (2.3% risk) → target ₹315–318 (4.3–5.3% upside). Swing 2–3 days. Avoids overbought shorts in rally environment.*
+
+
+### 2026-05-15 09:17 — Entry: HCLTECH.NS
+**ENTRY** 90x HCLTECH.NS @ ₹1137.80  [swing]
+  *Thesis: Extreme oversold mean-reversion: RSI 25.5 (deepest oversold level), price ₹1138.9 already bouncing +1.33% today (confirms accumulation). Stop ₹1103.4 (3.12% risk) → Target ₹1180–1206 (3.6–5.9% upside). IT sector recovering post-crash. Q4 results positive (HCL +7% post-earnings). Swing hold 2–3 days.*
+
+
+### 2026-05-15 09:17 — Entry: RELIANCE.NS
+**ENTRY** 140x RELIANCE.NS @ ₹1353.00  [swing]
+  *Thesis: Oversold mean-reversion: RSI 30.5 (deep oversold zone), price ₹1354 just 0.4% ABOVE support at ₹1348.6 – textbook tight-support bounce. Risk/reward: 0.4% stop → 5.47% target = 13.7:1 (exceptional). Defensive mega-cap. Hold 2–3 days for recovery to ₹1400–1415 (+3.4–4.5% target).*
+
+
+### 2026-05-15 11:43 — Exit: POWERGRID.NS
+**EXIT** 155x POWERGRID.NS | WIN ✅ | ₹301.75 → ₹305.20 | P&L: ₹+534.75 (+1.14%) | held 20h50m
+
+# Trade Reflection: POWERGRID.NS
+
+• **Thesis vs. Reality:** Mean-reversion setup worked—RSI bounce + sector tailwinds triggered the move. Exited at +1.14% on volume drying up (0.4x), not hitting the ₹315–318 target. Conservative partial exit locked profits early rather than riding full swing potential.
+
+• **What Worked:** Tight risk management (2.3% stop) and early profit-taking in an FPI-selling environment showed discipline. Quick 20h exit minimized overnight gap risk.
+
+• **What Went Wrong:** Left 78 shares hoping for trend continuation, but the remaining position underperformed. Partial holds often dilute conviction—either hold 100% or close fully.
+
+• **Next Time:** Define exit % beforehand (e.g., 50% at +1%, close remaining at target or stop). Avoid ambiguous "retain for trend" decisions mid-trade.
+
