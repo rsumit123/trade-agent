@@ -234,11 +234,13 @@ Start with `## {date.today().strftime("%Y-%m-%d")} — Daily Review`
         stats = self.get_performance_stats()
         stats_by_type = self._get_stats_by_category()
 
+        total_trades = stats.get('total_trades', 0)
+
         prompt = f"""You are a trading journal assistant. Read ALL the trade entries, reflections, AND quantitative stats below. Extract the most important, actionable trading rules.
 
 ## Quantitative Performance
 ```
-Overall:  {stats.get('total_trades', 0)} trades | Win rate: {stats.get('win_rate', 0)}% | Avg win: {self._sym}{stats.get('avg_win', 0)} | Avg loss: {self._sym}{stats.get('avg_loss', 0)}
+Overall:  {total_trades} trades | Win rate: {stats.get('win_rate', 0)}% | Avg win: {self._sym}{stats.get('avg_win', 0)} | Avg loss: {self._sym}{stats.get('avg_loss', 0)}
 {stats_by_type}
 ```
 
@@ -247,15 +249,26 @@ Overall:  {stats.get('total_trades', 0)} trades | Win rate: {stats.get('win_rate
 
 ---
 
-Write a "## 📌 Distilled Rules" section (max 20 bullet points) that captures:
-- Setups that WORK — cite the win rate or avg P&L that proves it
-- Setups that FAIL — cite the loss rate or avg loss
-- Position sizing / stop-loss lessons — are stops too tight? targets too ambitious?
-- Long vs Short performance — which direction is more profitable?
-- Intraday vs Swing — which holding period works better?
-- Ticker/sector-specific patterns observed
+Write a "## 📌 Distilled Rules" section (max 20 bullet points). It MUST follow these statistical-discipline guardrails, because we have only {total_trades} closed trades total and small samples lie:
 
-Rules must be SPECIFIC and DATA-BACKED (e.g. "Long RSI<30 bounces: 8/11 wins (73% WR), avg +1.2%. Reliable setup.") not generic platitudes.
+**Sample-size rules (NON-NEGOTIABLE):**
+- **N < 10 in a category → no verdict at all.** Do not call any setup "WORKS", "FAILS", "discontinue", or "avoid". Categories include: long, short, intraday, swing, any specific ticker/sector, any specific signal pattern.
+- **10 ≤ N < 30 in a category → tentative observation only.** Use language like "early signal", "needs more data", "tentatively avoid until we have more samples". Never write absolute bans.
+- **N ≥ 30 in a category → you may write a confident rule** ("Setup X: 22/30 wins, reliable").
+- **A 0-win streak under 10 trades is noise, not evidence.** A losing streak is not a setup type — it's randomness until proven otherwise.
+
+**Exploration mandate (ALWAYS include this rule verbatim):**
+- "Exploration budget: even when a setup looks dominant, allocate at least 1 in every 4 trade ideas to alternative setups (different direction, different signal type, different ticker class) until each category has reached 30 closed trades. Confident bans require N≥30."
+
+**What to write:**
+- Statistically supported wins (N≥10): cite the win rate
+- Statistically supported losses (N≥30): cite the loss rate
+- Position sizing / stop / target observations (these can apply across categories with smaller N)
+- The exploration mandate above
+- "Categories under N=30: <list>. Keep sampling these — verdict premature."
+
+Rules must be SPECIFIC and DATA-BACKED (e.g. "Long RSI<30 bounces: 8/11 wins (73% WR), avg +1.2%. Tentative — needs N≥30."). No "always avoid X" or "discontinue Y" from samples under 30.
+
 Format as a bullet list under `## 📌 Distilled Rules`. No preamble, just the section."""
 
         try:

@@ -60,7 +60,12 @@ You have access to these tools:
 ## Past Learnings (YOUR OWN TRADE HISTORY — READ CAREFULLY)
 {learnings}
 
-**IMPORTANT**: The Distilled Rules above are extracted from YOUR OWN past trades. They represent patterns that have been proven by your actual results. Follow them unless you have a compelling, specific reason not to.
+**IMPORTANT — How to read the rules above:**
+- The Distilled Rules are extracted from YOUR OWN past trades. Treat them as evidence, not law.
+- **Sample sizes matter.** A "rule" derived from fewer than 30 trades in a category is a hypothesis, not a verdict. A 0-win streak under 10 trades is noise — do NOT extrapolate it to "never trade this setup again".
+- **Exploration is required while sparse.** If categories like short, swing, or specific signal patterns have fewer than 30 closed trades, you MUST allocate roughly 1 in every 4 trade ideas to under-sampled setups — even if the current distilled rules favor a different pattern. Otherwise the data never grows and the rules calcify around tiny early samples.
+- **Sitting in cash for many cycles is a failure mode, not a virtue.** "When in doubt, do nothing" applies when there's no actionable signal — not when you're refusing to test setups under-explored. A modest-conviction trade on an under-sampled category beats no trade at all when sample sizes are below 30.
+- Override a tentative rule whenever the current setup is qualitatively strong, even if it doesn't match the dominant historical pattern.
 
 ## Current Context
 - Date/Time: {current_time}
