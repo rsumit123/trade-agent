@@ -33,24 +33,34 @@ Key consequences:
 
 ## Data Model
 
-### Backend: canonical sector map
+### Backend: sector map from official NSE sectoral indices
 
-Formalize the comment groups already present in `agent/market_presets.py` into a structured, authoritative map:
+Sector membership is sourced from **NSE sectoral index constituents** (NIFTY Metal, Auto, IT, Bank, Pharma, FMCG, Energy, Realty, Media, FinServices, Oil & Gas, Healthcare, Consumer Durables, PSU Bank, Private Bank, etc.). These are official, NSE-maintained baskets of liquid names — exactly the "real NSE sectors" a user pictures, already filtered to tradeable stocks (no illiquid small-caps).
 
-```python
-# agent/market_presets.py
-NSE_SECTORS: Dict[str, List[str]] = {
-    "IT & Technology":  ["TCS.NS", "INFY.NS", "WIPRO.NS", "HCLTECH.NS", ...],
-    "Banking":          ["HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", ...],
-    "Metals & Mining":  ["TATASTEEL.NS", "JSWSTEEL.NS", "HINDALCO.NS", "VEDL.NS", "COALINDIA.NS"],
-    "Auto":             ["MARUTI.NS", "M&M.NS", "BAJAJ-AUTO.NS", ...],
-    # ... the ~25 groups that currently exist only as comments
-}
-```
+**Fetcher + cache** (`agent/sector_data.py`, new):
 
-The existing `NSE_PRESET.default_watchlist` becomes **derived** from this map (`[t for tickers in NSE_SECTORS.values() for t in tickers]`), so nothing changes when no selection is made. One source of truth; no duplicate ticker lists.
+- For each tracked index, download its constituent CSV from niftyindices.com (e.g. `ind_niftymetallist.csv`, `ind_niftyautolist.csv`, …). Each CSV has a `Symbol` column (e.g. `TATASTEEL`); we append the `.NS` suffix from the preset.
+- Build the canonical map and cache it to `sessions/_nse_sectors.json`:
 
-> **Note on `frontend/src/lib/sectors.ts`:** This is a separate, broader (~304-entry) map used **only to group the displayed watchlist into sections**. It is not authoritative for *what is tradeable per category* and may use slightly different names ("IT" vs "IT & Technology"). It stays as-is for display grouping. The category picker must NOT source from it — see API below.
+  ```json
+  {
+    "fetched_at": "2026-05-23T...",
+    "sectors": {
+      "Metals":  ["TATASTEEL.NS", "JSWSTEEL.NS", "HINDALCO.NS", "VEDL.NS", "JINDALSTEL.NS", ...],
+      "Auto":    ["MARUTI.NS", "M&M.NS", "TATAMOTORS.NS", "BAJAJ-AUTO.NS", ...],
+      "IT":      ["TCS.NS", "INFY.NS", "WIPRO.NS", "HCLTECH.NS", ...]
+    }
+  }
+  ```
+
+- **Refresh monthly** (constituents rarely change), same caching pattern as the existing weekly instrument cache. A stale cache is always preferred over a failed fetch.
+- The list of tracked indices → display names lives in a small constant in `agent/sector_data.py` (`NSE_SECTOR_INDICES = {"Metals": "ind_niftymetallist", ...}`).
+
+The runtime accessor is `get_nse_sectors() -> Dict[str, List[str]]`, reading the cache (fetching/refreshing if stale or missing).
+
+`NSE_PRESET.default_watchlist` stays as its current curated list (it defines the *Discovery-mode* universe seed and is independent of categories). The sector map is only consulted when the user opens the category picker or selects sectors.
+
+> **Note on `frontend/src/lib/sectors.ts`:** A separate, broader (~304-entry) map used **only to group the displayed watchlist into sections**. Not authoritative for tradeable category membership and may use different names. It stays as-is for display grouping. The category picker must NOT source from it — it consumes the backend `/api/categories` endpoint, which is backed by the NSE-indices cache.
 
 ### Session config
 
@@ -99,9 +109,13 @@ New read-only endpoint to feed the picker from the authoritative backend map:
 
 ```
 GET /api/categories?market=nse
-→ { "categories": [ { "name": "Metals & Mining", "count": 5,
+→ { "source": "nse_sectoral_indices",
+    "fetched_at": "2026-05-23T...",
+    "categories": [ { "name": "Metals", "count": 15,
                       "tickers": ["TATASTEEL.NS", ...] }, ... ] }
 ```
+
+Backed by `get_nse_sectors()` (the cached NSE-indices map). Counts reflect actual index constituents.
 
 The universe itself is saved through the **existing** `update_session` endpoint (`PATCH`/`POST` per current implementation) by adding `universe` to `UpdateSessionRequest`. No new write endpoint.
 
@@ -174,12 +188,14 @@ A compact banner so the user sees the mode without opening settings:
 - **Empty selection in "Choose specific" mode:** the Save button is disabled with a hint ("Add at least one sector or stock, or switch to All sectors").
 - **Invalid / unknown ticker in search:** validated against the cached NSE instrument list (`sessions/_nse_instruments.json`); rejected with a message if not found.
 - **A picked ticker has no quote on a given day** (delisted/halted): it is shown in the watchlist with a "no data" state and simply skipped for trading that cycle; it is not silently removed from the user's saved universe.
-- **Category membership changes later** (a ticker added/removed from `NSE_SECTORS`): existing sessions are unaffected because the resolved ticker list is stored, not the category name.
+- **Category membership changes later** (NSE rebalances an index): existing sessions are unaffected because the resolved ticker list is stored, not the category name.
+- **NSE sector fetch fails** (network/format change): fall back to the last good `_nse_sectors.json` cache. If no cache has ever been written, `/api/categories` returns an empty list and the UI shows "Sector list temporarily unavailable — pick individual stocks or use All sectors." The agent's Discovery default is unaffected (it does not depend on the sector map).
 
 ## Testing
 
-- **Unit:** `resolve_universe()` returns `("discovery", None)` for empty/None and `("fixed", [...])` for a non-empty list; `NSE_SECTORS`-derived `default_watchlist` equals the previous hardcoded list (regression guard).
-- **Unit:** `/api/categories` returns all sectors with correct counts; every ticker in every category exists in the instrument cache.
+- **Unit:** `resolve_universe()` returns `("discovery", None)` for empty/None and `("fixed", [...])` for a non-empty list.
+- **Unit:** `sector_data` parses an NSE constituent CSV into `{symbol → .NS ticker}` correctly; a fetch failure with an existing cache returns the cached map (no exception); no cache returns an empty map.
+- **Unit:** `/api/categories` returns sectors with correct counts; every ticker maps to a valid `.NS` symbol present in the instrument cache.
 - **Integration:** a Fixed-mode session skips `_maybe_run_premarket_scan()` and sets the watchlist to exactly the saved universe; a Discovery-mode session still runs the scanner.
 - **Integration:** editing the universe and advancing to the next simulated open changes the watchlist; mid-day edits do not.
 - **Frontend:** category chips correctly add/remove tickers; single-stock selection produces a one-ticker universe; mode badge reflects discovery vs fixed.
@@ -187,6 +203,6 @@ A compact banner so the user sees the mode without opening settings:
 ## Out of Scope (v1)
 
 - Crypto / non-NSE categories.
-- Full-sector universes built by classifying *all* ~3000 NSE stocks (v1 uses the curated ~100-name category lists already in the preset).
+- Full NSE industry classification of *all* ~3000 stocks (v1 uses official NSE sectoral-index constituents — liquid names only).
 - Per-stock weighting or capital allocation across the universe.
 - Scheduling different universes for different days of the week.
