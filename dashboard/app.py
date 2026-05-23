@@ -512,6 +512,7 @@ class UpdateSessionRequest(BaseModel):
     per_trade_loss_limit_pct: Optional[float] = None
     max_trade_amount: Optional[float] = None
     watchlist: Optional[List[str]] = None
+    universe: Optional[List[str]] = None
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
     api_key_env: Optional[str] = None
