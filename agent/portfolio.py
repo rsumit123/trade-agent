@@ -227,6 +227,13 @@ class Portfolio:
                 raise ValueError(f"No open trade with id {trade_id}")
 
             trade = self._row_to_trade(row)
+            # Guard: a SHORT must be closed via execute_cover. Selling it through
+            # the long path credits +proceeds instead of debiting cost, which
+            # double-credits cash (open already credited proceeds) and inverts P&L.
+            if (trade.direction or "").lower() == "short" or trade.action == "SHORT":
+                raise ValueError(
+                    f"Trade {trade_id} is a SHORT — use execute_cover/COVER, not SELL"
+                )
             pnl = round((price - trade.entry_price) * trade.quantity, 2)
             proceeds = trade.quantity * price
 

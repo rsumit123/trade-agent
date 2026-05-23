@@ -50,6 +50,22 @@ export async function api<T = unknown>(
   return res.json();
 }
 
+export async function getCategories(
+  market = "nse"
+): Promise<{ source: string; categories: import("./types").Category[] }> {
+  return api(`/api/categories?market=${encodeURIComponent(market)}`);
+}
+
+export async function updateUniverse(
+  sessionId: string,
+  universe: string[]
+): Promise<void> {
+  await api(`/api/sessions/${sessionId}`, {
+    method: "PUT",
+    body: JSON.stringify({ universe }),
+  });
+}
+
 export function fmt(
   n: number | null | undefined,
   symbol: string = "$",
