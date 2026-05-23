@@ -6,7 +6,19 @@ import type { WatchlistItem, SessionConfig } from "@/lib/types";
 
 type View = "sector" | "flat";
 
-export function WatchlistPanel({ items, config }: { items: WatchlistItem[]; config: SessionConfig | null }) {
+export function WatchlistPanel({
+  items,
+  config,
+  mode,
+  count,
+  onChangeUniverse,
+}: {
+  items: WatchlistItem[];
+  config: SessionConfig | null;
+  mode?: "discovery" | "fixed";
+  count?: number | null;
+  onChangeUniverse?: () => void;
+}) {
   const sym = config?.currency_symbol || "$";
   const suffix = config?.ticker_suffix || ".NS";
   const [view, setView] = useState<View>("sector");
@@ -45,14 +57,26 @@ export function WatchlistPanel({ items, config }: { items: WatchlistItem[]; conf
 
   return (
     <div className="bg-bg-card border border-border rounded-xl overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border gap-2">
-        <h3 className="text-xs uppercase tracking-wider font-semibold text-text-secondary">Watchlist</h3>
-        <div className="flex items-center gap-2">
-          <div className="flex items-center gap-0.5 rounded-lg p-0.5" style={{ background: "#0a0e17", border: "1px solid #1e293b" }}>
-            <ToggleBtn active={view === "sector"} onClick={() => setView("sector")}>Sector</ToggleBtn>
-            <ToggleBtn active={view === "flat"} onClick={() => setView("flat")}>Flat</ToggleBtn>
+      <div className="px-4 py-3 border-b border-border">
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-xs uppercase tracking-wider font-semibold text-text-secondary">Watchlist</h3>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-0.5 rounded-lg p-0.5" style={{ background: "#0a0e17", border: "1px solid #1e293b" }}>
+              <ToggleBtn active={view === "sector"} onClick={() => setView("sector")}>Sector</ToggleBtn>
+              <ToggleBtn active={view === "flat"} onClick={() => setView("flat")}>Flat</ToggleBtn>
+            </div>
+            <span className="text-xs font-mono text-text-muted bg-bg-secondary px-2 py-0.5 rounded">{items.length}</span>
           </div>
-          <span className="text-xs font-mono text-text-muted bg-bg-secondary px-2 py-0.5 rounded">{items.length}</span>
+        </div>
+        <div className="flex items-center justify-between gap-2 mt-2">
+          <span className="text-[11px]" style={{ color: mode === "fixed" ? "#60a5fa" : "#22c55e" }}>
+            {mode === "fixed"
+              ? `📌 Fixed — your picks${count ? ` · ${count} stocks` : ""}`
+              : "📡 Discovery — scanner picks today's movers, refreshes each open"}
+          </span>
+          {onChangeUniverse && (
+            <button onClick={onChangeUniverse} className="text-[11px] underline text-text-muted hover:text-text-primary" style={{ minHeight: 28 }}>⚙ Change</button>
+          )}
         </div>
       </div>
 
@@ -156,6 +180,11 @@ function TickerRow({ item: s, sym, suffix }: { item: WatchlistItem; sym: string;
         <div className="flex items-center justify-between text-[11px] font-mono">
           <span className="text-text-secondary">{fmt(s.current_price, sym, undefined, 2)}</span>
           <div className="flex items-center gap-2">
+            {s.source && (
+              <span className="text-[10px]" style={{ color: s.source === "pick" ? "#60a5fa" : "#94a3b8" }}>
+                {s.source === "pick" ? "📌" : "📡"}
+              </span>
+            )}
             {s.rsi_14 != null && <RSIChip value={s.rsi_14} />}
             {s.price_vs_sma && (
               <span className={cn(
@@ -182,6 +211,11 @@ function TickerRow({ item: s, sym, suffix }: { item: WatchlistItem; sym: string;
           </span>
         </div>
         <div className="flex items-center gap-3">
+          {s.source && (
+            <span className="text-[10px]" style={{ color: s.source === "pick" ? "#60a5fa" : "#94a3b8" }}>
+              {s.source === "pick" ? "📌 your pick" : "📡 scanner"}
+            </span>
+          )}
           {s.rsi_14 != null && <RSIChip value={s.rsi_14} />}
           <span className={cn(
             "font-mono text-xs font-medium min-w-[64px] text-right tabular-nums",
