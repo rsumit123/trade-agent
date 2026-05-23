@@ -43,6 +43,7 @@ from agent.portfolio import Portfolio
 from agent.market_data import MarketData, create_market_data
 from agent.learner import Learner
 from agent.risk_manager import RiskManager
+from agent.sector_data import get_nse_sectors
 
 # ── Session-aware component cache ────────────────────────────
 
@@ -511,6 +512,7 @@ class UpdateSessionRequest(BaseModel):
     per_trade_loss_limit_pct: Optional[float] = None
     max_trade_amount: Optional[float] = None
     watchlist: Optional[List[str]] = None
+    universe: Optional[List[str]] = None
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
     api_key_env: Optional[str] = None
@@ -681,6 +683,26 @@ def _start_health_checker():
 
 
 _start_health_checker()
+
+
+def _categories_payload(market: str) -> dict:
+    """Category list for the universe picker. Sectors apply to NSE only."""
+    if market != "nse":
+        return {"source": "nse_sectoral_indices", "categories": []}
+    sectors = get_nse_sectors()
+    return {
+        "source": "nse_sectoral_indices",
+        "categories": [
+            {"name": name, "count": len(tickers), "tickers": tickers}
+            for name, tickers in sectors.items()
+        ],
+    }
+
+
+@app.get("/api/categories")
+def get_categories(market: str = "nse"):
+    """Sector categories for building a trading universe."""
+    return _categories_payload(market)
 
 
 @app.get("/api/sessions")
@@ -1994,6 +2016,12 @@ def get_dashboard(session_id: str, user: dict = Depends(current_user)):
     # Config — use AgentConfig (ac) for runtime fields, SessionConfig (sc) for session metadata
     ac = c["config"]
     preset = c["preset"]
+    _u_mode, _u_tickers = sc.resolve_universe()
+    _picked = set(_u_tickers or [])
+    if isinstance(watchlist_data, list):
+        for _it in watchlist_data:
+            if isinstance(_it, dict):
+                _it["source"] = "pick" if _it.get("ticker") in _picked else "scanner"
     config_data = {
         "starting_capital": ac.starting_capital,
         "currency": preset.currency,
@@ -2004,6 +2032,9 @@ def get_dashboard(session_id: str, user: dict = Depends(current_user)):
         "per_trade_loss_limit_pct": ac.per_trade_loss_limit_pct,
         "max_trade_amount": ac.max_trade_amount,
         "watchlist_count": len(ac.watchlist),
+        "universe": list(getattr(sc, "universe", None) or []),
+        "universe_mode": _u_mode,
+        "universe_count": (len(_u_tickers) if _u_tickers else None),
         "llm_provider": ac.llm_provider,
         "llm_model": sc.llm_model,
         "intraday_interval_min": ac.intraday_interval_min,

@@ -282,6 +282,21 @@ class TradingAgent:
             prices = self.market_data.get_current_prices([pos.ticker])
             price = prices.get(pos.ticker, pos.entry_price)
 
+            # A SHORT must be closed by covering, not selling. If the LLM issues
+            # SELL on a short, route it to cover so cash/P&L stay correct.
+            if (pos.direction or "").lower() == "short":
+                logger.warning(f"↩️  SELL on SHORT {pos.ticker} (id {trade_id}) — routing to COVER")
+                trade = self.portfolio.execute_cover(trade_id, price, reason)
+                self.learner.write_trade_log(trade, llm_client=self.engine.client)
+                return {
+                    "success": True,
+                    "trade_id": trade_id,
+                    "action": "COVER",
+                    "ticker": trade.ticker,
+                    "exit_price": price,
+                    "pnl": round(trade.pnl, 2),
+                }
+
             trade = self.portfolio.execute_sell(trade_id, price, reason)
             self.learner.write_trade_log(trade, llm_client=self.engine.client)
             return {
@@ -850,6 +865,30 @@ class TradingAgent:
         today = date.today().isoformat()
         if self._scan_date == today and self._scan_done_today:
             return  # Already scanned today
+
+        # New trading day: reload session config from disk so overnight
+        # universe edits take effect at the next open without a restart.
+        if self.session is not None:
+            try:
+                from .session import load_session
+                fresh = load_session(self.session.session_id)
+                self.session.universe = fresh.universe
+            except Exception as e:
+                logger.warning(f"Universe reload failed, keeping in-memory value: {e}")
+
+            # Fixed universe → use the user's exact picks; never run the scanner.
+            mode, tickers = self.session.resolve_universe()
+            if mode == "fixed":
+                self.config.watchlist = list(tickers)
+                self.market_data.watchlist = list(tickers)
+                self._premarket_summary = (
+                    f"## Trading Universe — {len(tickers)} stocks chosen by the user\n"
+                    + "\n".join(f"  - {t}" for t in tickers)
+                )
+                self._scan_done_today = True
+                self._scan_date = today
+                logger.info(f"📌 Fixed universe: trading {len(tickers)} user-selected stocks (scanner skipped)")
+                return
 
         # Check if preset enables scanner
         use_scanner = (

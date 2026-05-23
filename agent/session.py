@@ -46,6 +46,7 @@ class SessionConfig:
 
     # ── Watchlist ───────────────────────────────────────────
     watchlist: Optional[List[str]] = None       # None → use preset default
+    universe: Optional[List[str]] = None         # None/[] → Discovery; non-empty → Fixed watchlist
 
     # ── LLM Configuration ───────────────────────────────────
     llm_provider: str = "openrouter"
@@ -137,6 +138,12 @@ class SessionConfig:
         if self.max_trade_amount is None:
             self.max_trade_amount = self.starting_capital * 0.20
 
+    def resolve_universe(self):
+        """Return ('discovery', None) when no explicit picks, else ('fixed', [tickers])."""
+        if self.universe:
+            return ("fixed", list(self.universe))
+        return ("discovery", None)
+
 
 # ── Session Operations ─────────────────────────────────────────────────
 
@@ -154,7 +161,7 @@ _YAML_FIELDS = {
     "session_id", "display_name", "market",
     "starting_capital", "max_position_pct", "max_open_positions",
     "daily_loss_limit_pct", "per_trade_loss_limit_pct", "max_trade_amount",
-    "watchlist", "llm_provider", "llm_model", "api_key_env",
+    "watchlist", "universe", "llm_provider", "llm_model", "api_key_env",
     "intraday_interval_min", "personality", "created_at",
     "data_source",
     "backtest_mode", "backtest_start_date", "backtest_end_date", "backtest_status", "live_started_at",
