@@ -272,7 +272,14 @@ export default function SessionDashboard() {
           </div>
 
           {/* Watchlist — hidden during backtest (picks rotate daily, prices are simulated) */}
-          {!isBacktest && <WatchlistPanel items={watchlist} config={config} />}
+          {!isBacktest && (
+            <WatchlistPanel
+              items={watchlist}
+              config={config}
+              mode={config?.universe_mode}
+              count={config?.universe_count}
+            />
+          )}
 
           {/* Directives (accordion, collapsed by default) */}
           {!isBacktest && (

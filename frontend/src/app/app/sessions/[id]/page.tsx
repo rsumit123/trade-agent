@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState, useCallback, useRef } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { DashboardHero } from "@/components/DashboardHero";
@@ -78,6 +78,7 @@ function HeroSkeleton() {
 
 export default function SessionDashboard() {
   const params = useParams();
+  const router = useRouter();
   const sessionId = params.id as string;
   const toast = useToast();
 
@@ -276,7 +277,15 @@ export default function SessionDashboard() {
           </div>
 
           {/* Watchlist — hidden during backtest (picks rotate daily, prices are simulated) */}
-          {!isBacktest && <WatchlistPanel items={watchlist} config={config} />}
+          {!isBacktest && (
+            <WatchlistPanel
+              items={watchlist}
+              config={config}
+              mode={config?.universe_mode}
+              count={config?.universe_count}
+              onChangeUniverse={() => router.push(`/app/sessions/${sessionId}/settings`)}
+            />
+          )}
 
           {/* Directives (accordion, collapsed by default) */}
           {!isBacktest && (
