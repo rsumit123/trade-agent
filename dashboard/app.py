@@ -2016,6 +2016,12 @@ def get_dashboard(session_id: str, user: dict = Depends(current_user)):
     # Config — use AgentConfig (ac) for runtime fields, SessionConfig (sc) for session metadata
     ac = c["config"]
     preset = c["preset"]
+    _u_mode, _u_tickers = sc.resolve_universe()
+    _picked = set(_u_tickers or [])
+    if isinstance(watchlist_data, list):
+        for _it in watchlist_data:
+            if isinstance(_it, dict):
+                _it["source"] = "pick" if _it.get("ticker") in _picked else "scanner"
     config_data = {
         "starting_capital": ac.starting_capital,
         "currency": preset.currency,
@@ -2026,6 +2032,8 @@ def get_dashboard(session_id: str, user: dict = Depends(current_user)):
         "per_trade_loss_limit_pct": ac.per_trade_loss_limit_pct,
         "max_trade_amount": ac.max_trade_amount,
         "watchlist_count": len(ac.watchlist),
+        "universe_mode": _u_mode,
+        "universe_count": (len(_u_tickers) if _u_tickers else None),
         "llm_provider": ac.llm_provider,
         "llm_model": sc.llm_model,
         "intraday_interval_min": ac.intraday_interval_min,
