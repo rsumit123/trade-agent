@@ -43,6 +43,7 @@ from agent.portfolio import Portfolio
 from agent.market_data import MarketData, create_market_data
 from agent.learner import Learner
 from agent.risk_manager import RiskManager
+from agent.sector_data import get_nse_sectors
 
 # ── Session-aware component cache ────────────────────────────
 
@@ -681,6 +682,26 @@ def _start_health_checker():
 
 
 _start_health_checker()
+
+
+def _categories_payload(market: str) -> dict:
+    """Category list for the universe picker. Sectors apply to NSE only."""
+    if market != "nse":
+        return {"source": "nse_sectoral_indices", "categories": []}
+    sectors = get_nse_sectors()
+    return {
+        "source": "nse_sectoral_indices",
+        "categories": [
+            {"name": name, "count": len(tickers), "tickers": tickers}
+            for name, tickers in sectors.items()
+        ],
+    }
+
+
+@app.get("/api/categories")
+def get_categories(market: str = "nse"):
+    """Sector categories for building a trading universe."""
+    return _categories_payload(market)
 
 
 @app.get("/api/sessions")
