@@ -5,7 +5,8 @@ import Link from "next/link";
 import { api, cn } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { Collapsible } from "@/components/Collapsible";
-import type { AgentStatus, Performance, PortfolioSummary } from "@/lib/types";
+import { TradingUniverseCard } from "@/components/TradingUniverseCard";
+import type { AgentStatus, Performance, PortfolioSummary, SessionConfig } from "@/lib/types";
 
 interface SettingsForm {
   display_name: string;
@@ -50,6 +51,7 @@ export default function SessionSettingsPage() {
   const [deleting, setDeleting] = useState(false);
 
   // Context for danger modal + status pill
+  const [sessionConfig, setSessionConfig] = useState<SessionConfig | null>(null);
   const [agentStatus, setAgentStatus] = useState<AgentStatus>({ running: false, pid: null });
   const [perf, setPerf] = useState<Performance | null>(null);
   const [portfolio, setPortfolio] = useState<PortfolioSummary | null>(null);
@@ -73,6 +75,7 @@ export default function SessionSettingsPage() {
       };
       setForm(loaded);
       setInitial(loaded);
+      setSessionConfig(cfg as unknown as SessionConfig);
     });
     api<AgentStatus>(`/api/agent/status/${sessionId}`).then(setAgentStatus).catch(() => {});
     api<Performance>(`/api/performance?session=${sessionId}`).then(setPerf).catch(() => {});
@@ -269,6 +272,9 @@ export default function SessionSettingsPage() {
           </div>
         </Collapsible>
       </div>
+
+      {/* Trading Universe */}
+      <TradingUniverseCard sessionId={sessionId} config={sessionConfig} />
 
       {/* Danger Zone */}
       <div className="mt-6 mb-4 rounded-2xl border border-accent-red/30 bg-accent-red/5 overflow-hidden">
