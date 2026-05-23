@@ -682,7 +682,23 @@ def _start_health_checker():
     t.start()
 
 
+def _prewarm_sector_cache():
+    """Warm the NSE sector cache on boot so no user ever hits the cold
+    ~20s synchronous fetch of all index CSVs on the first /api/categories call."""
+    import threading
+
+    def _warm():
+        try:
+            n = len(get_nse_sectors())
+            logger.info(f"🔥 Pre-warmed NSE sector cache: {n} sectors")
+        except Exception as e:
+            logger.warning(f"Sector cache pre-warm failed (will fetch lazily): {e}")
+
+    threading.Thread(target=_warm, daemon=True).start()
+
+
 _start_health_checker()
+_prewarm_sector_cache()
 
 
 def _categories_payload(market: str) -> dict:
