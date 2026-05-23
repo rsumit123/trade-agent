@@ -688,11 +688,12 @@ def _prewarm_sector_cache():
     import threading
 
     def _warm():
+        _log = logging.getLogger("dashboard")
         try:
             n = len(get_nse_sectors())
-            logger.info(f"🔥 Pre-warmed NSE sector cache: {n} sectors")
+            _log.info(f"🔥 Pre-warmed NSE sector cache: {n} sectors")
         except Exception as e:
-            logger.warning(f"Sector cache pre-warm failed (will fetch lazily): {e}")
+            _log.warning(f"Sector cache pre-warm failed (will fetch lazily): {e}")
 
     threading.Thread(target=_warm, daemon=True).start()
 
