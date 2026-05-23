@@ -688,6 +688,7 @@ def _prewarm_sector_cache():
     import threading
 
     def _warm():
+        import logging
         _log = logging.getLogger("dashboard")
         try:
             n = len(get_nse_sectors())
