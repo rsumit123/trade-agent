@@ -2032,6 +2032,7 @@ def get_dashboard(session_id: str, user: dict = Depends(current_user)):
         "per_trade_loss_limit_pct": ac.per_trade_loss_limit_pct,
         "max_trade_amount": ac.max_trade_amount,
         "watchlist_count": len(ac.watchlist),
+        "universe": list(getattr(sc, "universe", None) or []),
         "universe_mode": _u_mode,
         "universe_count": (len(_u_tickers) if _u_tickers else None),
         "llm_provider": ac.llm_provider,
