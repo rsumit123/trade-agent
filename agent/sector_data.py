@@ -32,12 +32,12 @@ NSE_SECTOR_INDICES = {
     "Energy":             "ind_niftyenergylist",
     "Realty":             "ind_niftyrealtylist",
     "Media":              "ind_niftymedialist",
-    "Financial Services": "ind_niftyfinservicelist",
+    "Financial Services": "ind_niftyfinancelist",
     "Oil & Gas":          "ind_niftyoilgaslist",
     "Healthcare":         "ind_niftyhealthcarelist",
     "Consumer Durables":  "ind_niftyconsumerdurableslist",
     "PSU Bank":           "ind_niftypsubanklist",
-    "Private Bank":       "ind_niftyprivatebanklist",
+    "Private Bank":       "ind_nifty_privatebanklist",
 }
 
 _CSV_BASE = "https://niftyindices.com/IndexConstituent/{slug}.csv"
@@ -49,8 +49,10 @@ def parse_constituents_csv(text: str) -> List[str]:
     out: List[str] = []
     reader = _csv.DictReader(io.StringIO(text))
     for row in reader:
-        sym = (row.get("Symbol") or "").strip()
-        if sym:
+        sym = (row.get("Symbol") or "").strip().upper()
+        # Skip NSE placeholder symbols (e.g. DUMMYVEDL1) used for corporate
+        # actions — they are not tradeable instruments.
+        if sym and not sym.startswith("DUMMY"):
             out.append(f"{sym}.NS")
     return out
 

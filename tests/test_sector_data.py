@@ -19,6 +19,11 @@ def test_parse_csv_ignores_blank_and_malformed_rows():
     assert sd.parse_constituents_csv(csv) == ["TATASTEEL.NS", "JSWSTEEL.NS"]
 
 
+def test_parse_csv_skips_dummy_placeholder_symbols():
+    csv = SAMPLE_CSV + "Vedanta Dummy,Metals,DUMMYVEDL1,EQ,INE000000000\n"
+    assert sd.parse_constituents_csv(csv) == ["TATASTEEL.NS", "JSWSTEEL.NS"]
+
+
 def test_load_cache_returns_sectors_when_fresh(tmp_path, monkeypatch):
     cache = tmp_path / "_nse_sectors.json"
     cache.write_text(json.dumps({
