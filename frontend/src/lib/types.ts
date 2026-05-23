@@ -265,7 +265,10 @@ export interface WatchlistItem {
   dist_to_support_pct: number | null;
   sma_5: number | null;
   price_vs_sma: string;
+  source?: "scanner" | "pick";
 }
+
+export type Category = { name: string; count: number; tickers: string[] };
 
 export interface SessionConfig {
   starting_capital: number;
@@ -277,6 +280,9 @@ export interface SessionConfig {
   per_trade_loss_limit_pct: number;
   max_trade_amount: number;
   watchlist_count: number;
+  universe?: string[] | null;
+  universe_mode?: "discovery" | "fixed";
+  universe_count?: number | null;
   llm_provider: string;
   llm_model?: string;
   intraday_interval_min: number;
