@@ -18,3 +18,9 @@ def test_categories_payload_non_nse_is_empty(monkeypatch):
     monkeypatch.setattr(app, "get_nse_sectors", lambda: {"Metals": ["TATASTEEL.NS"]})
     payload = app._categories_payload("crypto")
     assert payload["categories"] == []
+
+
+def test_categories_payload_nse_intraday_gets_sectors(monkeypatch):
+    monkeypatch.setattr(app, "get_nse_sectors", lambda: {"Metals": ["TATASTEEL.NS"]})
+    payload = app._categories_payload("nse-intraday")
+    assert [c["name"] for c in payload["categories"]] == ["Metals"]
