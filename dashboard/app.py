@@ -704,8 +704,9 @@ _prewarm_sector_cache()
 
 
 def _categories_payload(market: str) -> dict:
-    """Category list for the universe picker. Sectors apply to NSE only."""
-    if market != "nse":
+    """Category list for the universe picker. Sectors apply to the NSE family
+    (plain `nse` and `nse-intraday`) — both trade .NS equities."""
+    if not (market or "").startswith("nse"):
         return {"source": "nse_sectoral_indices", "categories": []}
     sectors = get_nse_sectors()
     return {
