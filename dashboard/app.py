@@ -754,41 +754,46 @@ def get_sessions(user: dict = Depends(current_user)):
 
             try:
                 conn = sqlite3.connect(str(db_path))
-                # Win rate
+                starting_capital = s["starting_capital"]
+
+                # Scope stats to the live phase (post Go-Live) so the list card
+                # matches the in-session performance view. Sessions that never
+                # went live fall back to all closed trades.
+                cutoff = s.get("live_started_at") or ""
+                if cutoff:
+                    closed_where = "status = 'closed' AND entry_time >= ?"
+                    params = (cutoff,)
+                else:
+                    closed_where = "status = 'closed'"
+                    params = ()
+
                 row = conn.execute(
-                    "SELECT COUNT(*) as total, SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins "
-                    "FROM trades WHERE status = 'closed'"
+                    f"SELECT COUNT(*), SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END), "
+                    f"COALESCE(SUM(pnl), 0) FROM trades WHERE {closed_where}",
+                    params,
                 ).fetchone()
-                total, wins = row[0] or 0, row[1] or 0
+                total = row[0] or 0
+                wins = row[1] or 0
+                realized_pnl = row[2] or 0
                 s["total_trades"] = total
                 s["win_rate"] = round((wins / total) * 100, 1) if total > 0 else None
 
-                # Portfolio summary (from DB, no live prices needed for list view)
-                starting_capital = s["starting_capital"]
-                cash_row = conn.execute(
-                    "SELECT cash FROM account WHERE id = 1"
-                ).fetchone()
-                cash = cash_row[0] if cash_row else starting_capital
+                open_count = conn.execute(
+                    "SELECT COUNT(*) FROM trades WHERE status = 'open'"
+                ).fetchone()[0] or 0
 
-                open_positions = conn.execute(
-                    "SELECT COUNT(*), COALESCE(SUM(entry_price * quantity), 0) "
-                    "FROM trades WHERE status = 'open'"
-                ).fetchone()
-                open_count = open_positions[0] or 0
-                invested_value = open_positions[1] or 0
-
-                # Realized P&L from closed trades
-                realized_row = conn.execute(
-                    "SELECT COALESCE(SUM(pnl), 0) FROM trades WHERE status = 'closed'"
-                ).fetchone()
-                realized_pnl = realized_row[0] or 0
-
-                total_value = cash + invested_value
-                total_return = total_value - starting_capital
+                # Net P&L = realized P&L of the (live-phase) closed trades.
+                # We deliberately do NOT add raw account cash or open-position
+                # entry value: raw cash includes open-short proceeds (a liability)
+                # and adding entry value on top double-counts shorts, which used
+                # to fabricate a phantom positive return. Open positions have no
+                # live price here, so they contribute ~0 unrealized.
+                total_return = realized_pnl
+                total_value = starting_capital + realized_pnl
                 total_return_pct = (total_return / starting_capital * 100) if starting_capital else 0
 
                 s["portfolio"] = {
-                    "cash": round(cash, 2),
+                    "cash": round(total_value, 2),
                     "total_value": round(total_value, 2),
                     "total_return": round(total_return, 2),
                     "total_return_pct": round(total_return_pct, 2),

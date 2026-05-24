@@ -123,7 +123,7 @@ export function EquityCharts({ sessionId, config, daily }: Props) {
           />
           <Stat label="Days" value={String(stats.sorted.length)} muted />
           <Stat
-            label="W / L"
+            label="Up / Down Days"
             value={
               <>
                 <span className="text-accent-green">{stats.wins}</span>
