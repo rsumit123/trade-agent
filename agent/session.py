@@ -219,6 +219,7 @@ def list_sessions() -> List[Dict]:
                 "user_email": data.get("user_email", ""),
                 "tier": data.get("tier", "free"),
                 "started_at": data.get("started_at", ""),
+                "live_started_at": data.get("live_started_at", ""),
             })
         except Exception:
             # Skip broken sessions
