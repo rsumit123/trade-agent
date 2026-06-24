@@ -49,6 +49,12 @@ Per `CLAUDE.md`:
 > **Never** commit any of these. The deploy script (`./deploy-prod.sh backend`)
 > uses an explicit `--include` rsync and excludes `.env.local` — see
 > `CLAUDE.md` for the full rules.
+>
+> **The actual API key/secret are NOT in this doc by design.** They live in
+> the VM's `.env` only. To retrieve them: SSH to the VM (`ssh ssh-social`) and
+> `cat /home/rsumit123/alphaagent/.env`, or look them up in the Kite developer
+> console at <https://developers.kite.trade/apps/>. Agents running on the VM
+> already have them in `os.environ` — just read them from there.
 
 The Python deps you need: `kiteconnect`, `pyotp`, `requests`. Already in our
 `requirements.txt`.
@@ -56,6 +62,52 @@ The Python deps you need: `kiteconnect`, `pyotp`, `requests`. Already in our
 ---
 
 ## 3. Authentication flow (`agent/kite_auth.py`)
+
+### 3.0 First-time setup (one-time, manual)
+
+Before any code runs, the Kite app and the Zerodha account both need to be
+prepared. Do this once per Kite Connect app:
+
+1. **Active Zerodha trading account** with the user_id + password you'll script
+   against (e.g. `LV6119`). The Kite Connect API also requires an **active
+   Kite Connect subscription** (₹500/month, billed monthly from the developer
+   console — when it lapses, the symptom is the `Invalid api_key` error
+   described in the Status section).
+
+2. **Create a Kite Connect app** at <https://developers.kite.trade/apps/>:
+   - Type: **Connect**.
+   - **Redirect URL: `http://127.0.0.1`** (or any URL whose host contains
+     `127.0.0.1` or `localhost`). This is **load-bearing** — our auto-login
+     watches the redirect chain for a Location whose URL contains one of
+     those hosts and plucks `request_token` from its query string. If you
+     register a different host (e.g. your production domain), `_auto_login`
+     will silently fail with `Failed to extract request_token from Kite
+     redirect`.
+   - **Postback URL**: leave blank.
+   - After creating, the app page shows the **API Key** → `KITE_API_KEY` and,
+     under "View API secret", the **API Secret** → `KITE_API_SECRET`.
+
+3. **Enable TOTP 2FA on the Zerodha account** (not the developer console):
+   - Log into <https://kite.zerodha.com>, open *Account → Settings → Password
+     & Security → External 2FA TOTP*.
+   - Scan the QR with any TOTP app (Authy, 1Password, Google Authenticator).
+   - On the same screen, click **"Can't scan? Use secret key"** (wording
+     varies). The string it reveals is the **base32 seed** — that is the
+     value that goes into `KITE_TOTP_SECRET`. The 6-digit code your authenticator
+     shows is *derived* from this seed; we re-derive it every login via
+     `pyotp.TOTP(seed).now()`. Do **not** put the 6-digit code into the env.
+   - Once TOTP is enabled, Zerodha will require it for every login — including
+     your own. Keep the seed safe.
+
+4. **Populate the VM `.env`** with the five vars from Section 2 and restart
+   the container. `KiteAuth().get_authenticated_client()` should now succeed
+   on the next call.
+
+Re-do step 2 if you regenerate the API key/secret. Re-do step 3 only if you
+reset TOTP on the Zerodha account (rare). Otherwise the setup is permanent
+until billing lapses.
+
+### 3.1 Runtime flow
 
 Zerodha's official flow is interactive (browser login → callback URL receives
 a `request_token`). We automate it by impersonating the browser:
@@ -139,6 +191,135 @@ calls the same way — see commit `a79cbbf` for why missing this in *one* site
 broke a session silently for two weeks.
 
 **If you write new Kite-using code, wrap every call.**
+
+### 3.4 End-to-end example for an agent
+
+A complete, runnable script. Read env vars → authenticate → fetch live data
+for three stocks → print structured output. Copy-paste into the container
+and run as-is (`docker exec alphaagent-backend python3 /tmp/snippet.py`):
+
+```python
+#!/usr/bin/env python3
+"""Bare-minimum Kite live-data agent. No wrappers, no caching, no retry —
+just the raw auth flow + a few data calls so you can see every step."""
+
+import os, datetime as dt
+import pyotp, requests
+from urllib.parse import urlparse, parse_qs
+from kiteconnect import KiteConnect
+
+# ── 1. Read credentials from env (never hardcode) ────────────────────────
+API_KEY      = os.environ["KITE_API_KEY"]
+API_SECRET   = os.environ["KITE_API_SECRET"]
+USER_ID      = os.environ["KITE_USER_ID"]
+PASSWORD     = os.environ["KITE_PASSWORD"]
+TOTP_SECRET  = os.environ["KITE_TOTP_SECRET"]   # base32 seed, not the 6-digit code
+
+# ── 2. Auto-login: password → TOTP → request_token → access_token ────────
+s = requests.Session()
+
+# Step A: password login
+r = s.post("https://kite.zerodha.com/api/login",
+           data={"user_id": USER_ID, "password": PASSWORD})
+request_id = r.json()["data"]["request_id"]
+
+# Step B: TOTP 2FA (re-derive 6-digit code from base32 seed)
+s.post("https://kite.zerodha.com/api/twofa", data={
+    "user_id":    USER_ID,
+    "request_id": request_id,
+    "twofa_value": pyotp.TOTP(TOTP_SECRET).now(),
+    "twofa_type": "totp",
+})
+
+# Step C: hit /connect/login on the authenticated session and follow the
+# redirect chain. The Location header of the *last* redirect contains
+# ?request_token=... — that's what we exchange for an access_token.
+# (The redirect URI registered on the Kite app must contain 127.0.0.1
+# or localhost — see Section 3.0.)
+resp = s.get(f"https://kite.zerodha.com/connect/login?api_key={API_KEY}&v=3",
+             allow_redirects=False)
+request_token = None
+for _ in range(10):
+    if resp.status_code not in (301, 302): break
+    loc = resp.headers.get("Location", "")
+    if "127.0.0.1" in loc or "localhost" in loc:
+        request_token = parse_qs(urlparse(loc).query).get("request_token", [None])[0]
+        break
+    resp = s.get(loc, allow_redirects=False)
+assert request_token, "Could not extract request_token — check redirect URI on the Kite app"
+
+# Step D: exchange request_token for access_token
+kite = KiteConnect(api_key=API_KEY)
+access_token = kite.generate_session(request_token, api_secret=API_SECRET)["access_token"]
+kite.set_access_token(access_token)
+
+# (In production: cache `access_token` to a file with an expires_at of
+# tomorrow 06:00 IST and reuse it until then — see agent/kite_auth.py.
+# Tokens are invalidated daily by Zerodha regardless of issue time.)
+
+# ── 3. Fetch live data ───────────────────────────────────────────────────
+print("PROFILE:", kite.profile()["user_id"], kite.profile()["broker"])
+
+# Live quotes (LTP + OHLC + market depth) for a batch of symbols.
+# Symbol format for Kite: 'EXCHANGE:TRADINGSYMBOL' — NOT yfinance-style '.NS'.
+symbols = ["NSE:RELIANCE", "NSE:TCS", "NSE:INFY"]
+quote = kite.quote(symbols)
+for sym in symbols:
+    q = quote[sym]
+    print(f"{sym}: last={q['last_price']}  "
+          f"ohlc={q['ohlc']}  vol={q['volume_traded']}")
+
+# Lightweight LTP-only (cheaper if you only need the last price)
+print("LTP:", kite.ltp(symbols))
+
+# Today's OHLC (for the pre-market scanner pattern)
+print("OHLC:", kite.ohlc(symbols))
+
+# Historical candles. instrument_token comes from kite.quote()/kite.instruments();
+# interval is one of: minute, 3minute, 5minute, 15minute, 30minute, 60minute, day.
+inst_token = quote["NSE:RELIANCE"]["instrument_token"]
+candles = kite.historical_data(
+    inst_token,
+    from_date = dt.datetime.now() - dt.timedelta(days=5),
+    to_date   = dt.datetime.now(),
+    interval  = "day",
+)
+print(f"RELIANCE daily candles (last 3 of {len(candles)}):")
+for c in candles[-3:]:
+    print("  ", c)
+```
+
+Expected output (during market hours; values change):
+
+```
+PROFILE: LV6119 ZERODHA
+NSE:RELIANCE: last=1300.5  ohlc={'open': 1295.0, 'high': 1308.4, 'low': 1290.1, 'close': 1298.7}  vol=4_523_119
+NSE:TCS:      last=2080    ohlc={'open': 2075.6, 'high': 2092.3, 'low': 2070.4, 'close': 2079.2}  vol=987_410
+NSE:INFY:     last=1047.5  ohlc={...}  vol=...
+LTP: {'NSE:RELIANCE': {'instrument_token': 738561, 'last_price': 1300.5}, ...}
+OHLC: {...}
+RELIANCE daily candles (last 3 of 4):
+   {'date': datetime.datetime(2026, 6, 20, 0, 0, tzinfo=<...IST>), 'open': 1291.0, 'high': 1303.5, 'low': 1288.0, 'close': 1298.7, 'volume': 4_120_445}
+   ...
+```
+
+**This script intentionally skips production niceties** (token caching, mid-
+process re-auth, batch sleeps). For real agent code, use the wrappers:
+
+```python
+from agent.kite_auth import KiteAuth
+from agent.kite_data import KiteMarketData
+
+auth = KiteAuth()                                 # handles cache + tz-aware expiry
+kite = auth.get_authenticated_client()            # auto-logs in if cache stale
+md   = KiteMarketData(kite, auth=auth, watchlist=["RELIANCE.NS", "TCS.NS"])
+
+prices = md.get_current_prices(["RELIANCE.NS", "TCS.NS"])
+ctx    = md.get_stock_context("RELIANCE.NS", include_vwap=True)
+```
+
+`KiteMarketData` wraps every call in `_call_with_retry` (mid-process re-auth
+on token rotation) and translates ticker formats — see Section 5.
 
 ---
 
