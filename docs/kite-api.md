@@ -6,21 +6,18 @@ other agents/developers who need to consume the same live feed.
 
 ---
 
-## ⚠️ Current status (as of 2026-06-24)
+## Status
 
-The integration is **OUT** — Zerodha is returning `Invalid api_key` on the
-`/connect/login` step (Step 3 of the auto-login flow below). Login + 2FA still
-succeed; the key itself is rejected at exchange time. Most likely cause: the
-**₹500/month Kite Connect API subscription lapsed**. Fix:
+Last verified live on **2026-06-24** — full auto-login + `kite.quote(...)` against
+RELIANCE/TCS/INFY returned current LTPs. The integration is healthy.
 
-1. Log into <https://developers.kite.trade/apps/>.
-2. Open the AlphaAgent app (key prefix `bfta…`).
-3. Renew the subscription / reactivate the app.
-4. No code change required — the next agent cycle (or `auth.get_authenticated_client()`)
-   will succeed automatically once the key is reactivated.
-
-This doc otherwise describes the **working** integration; everything below
-applies as soon as the key is live again.
+> History: between roughly **2026-05-24 and 2026-06-24** the integration was
+> down — Zerodha returned `Invalid api_key` from `/connect/login` (login + 2FA
+> succeeded; the key itself was rejected) because the ₹500/month Kite Connect
+> subscription had lapsed. Reactivating the app at
+> <https://developers.kite.trade/apps/> restored it with no code change. If you
+> see the same symptom in the future, check the subscription first — it is the
+> overwhelmingly likely cause.
 
 ---
 
