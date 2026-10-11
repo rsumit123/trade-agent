@@ -542,10 +542,18 @@ class TradingAgent:
         logger.info("👁️  Observing market...")
         prices = self.market_data.get_current_prices()
         watchlist_data = self.market_data.get_watchlist_summary()
-        news = self.researcher.build_research_context(self.config.watchlist[:5])
+
+        # News fetch is per-session opt-out (experiment: does news improve
+        # or hurt decisions?). Default behaviour (include_news=True) is unchanged.
+        include_news = getattr(self.session, "include_news", True) if self.session else True
+        if include_news:
+            news = self.researcher.build_research_context(self.config.watchlist[:5])
+        else:
+            news = "News disabled for this session — rely on price action, technicals, and distilled rules only."
+            logger.info("📰 News: DISABLED for this session")
 
         # Log a brief news summary so it's visible in the dashboard log panel
-        if news and news != "No market news available at this time.":
+        if include_news and news and news != "No market news available at this time.":
             # Extract numbered headline lines: "  1. [source] title"
             import re
             headlines = [

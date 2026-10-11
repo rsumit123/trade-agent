@@ -48,6 +48,10 @@ class SessionConfig:
     watchlist: Optional[List[str]] = None       # None → use preset default
     universe: Optional[List[str]] = None         # None/[] → Discovery; non-empty → Fixed watchlist
 
+    # ── Experiment levers (per-session overrides) ──────────
+    include_news: bool = True                   # False → skip web research entirely for this session
+    extra_system_prompt: str = ""               # Appended to the system prompt; use for per-session rule overrides
+
     # ── LLM Configuration ───────────────────────────────────
     llm_provider: str = "openrouter"
     llm_model: str = "google/gemini-2.5-flash"
@@ -161,7 +165,8 @@ _YAML_FIELDS = {
     "session_id", "display_name", "market",
     "starting_capital", "max_position_pct", "max_open_positions",
     "daily_loss_limit_pct", "per_trade_loss_limit_pct", "max_trade_amount",
-    "watchlist", "universe", "llm_provider", "llm_model", "api_key_env",
+    "watchlist", "universe", "include_news", "extra_system_prompt",
+    "llm_provider", "llm_model", "api_key_env",
     "intraday_interval_min", "personality", "created_at",
     "data_source",
     "backtest_mode", "backtest_start_date", "backtest_end_date", "backtest_status", "live_started_at",

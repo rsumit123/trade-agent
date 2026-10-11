@@ -15,7 +15,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, List, Any
 
-from fastapi import FastAPI, HTTPException, Query, Depends, Response
+from fastapi import FastAPI, HTTPException, Query, Depends, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -142,6 +142,7 @@ async def auth_middleware(request, call_next):
         "/api/market-presets",
         "/api/waitlist",
         "/health",
+        "/api/digest",  # protected by its own Bearer <DIGEST_SECRET> check
     )
     if (
         method == "OPTIONS"
@@ -186,7 +187,7 @@ app.add_middleware(
 
 # ── Pydantic models for request bodies ───────────────────────
 
-MAX_RUNNING_AGENTS = 4  # Safety limit for VM memory (global)
+MAX_RUNNING_AGENTS = 8  # Safety limit for VM memory (global)
 MAX_RUNNING_AGENTS_PER_USER = 2  # Per-user limit for non-admins
 
 # Models a free-tier user is allowed to pick. Cheap = won't blow up our
@@ -722,6 +723,105 @@ def _categories_payload(market: str) -> dict:
 def get_categories(market: str = "nse"):
     """Sector categories for building a trading universe."""
     return _categories_payload(market)
+
+
+@app.get("/api/digest")
+def get_digest(request: Request):
+    """One-call snapshot of every active session's state + today's metrics.
+    Intended for the scheduled daily-review cloud routine. Protected by a
+    shared secret in the Authorization header (Bearer <DIGEST_SECRET>)
+    rather than the user-JWT middleware — cloud routines can't do OAuth."""
+    import os as _os, sqlite3
+    secret = _os.environ.get("DIGEST_SECRET", "")
+    auth = request.headers.get("authorization", "")
+    if not secret or auth != f"Bearer {secret}":
+        raise HTTPException(401, "Invalid or missing digest secret")
+
+    from agent.session import list_sessions, SESSIONS_DIR
+    out = {"generated_at": datetime.utcnow().isoformat() + "Z", "sessions": []}
+    today = datetime.utcnow().date().isoformat()
+
+    for s in list_sessions():
+        sid = s["session_id"]
+        if s.get("parent_session"):
+            continue  # skip compare children
+        agent_status = _is_agent_running(sid)
+        sc_rec = {
+            "session_id": sid,
+            "display_name": s.get("display_name", sid),
+            "market": s.get("market"),
+            "llm_provider": s.get("llm_provider"),
+            "llm_model": s.get("llm_model"),
+            "starting_capital": s.get("starting_capital"),
+            "owner": s.get("user_email"),
+            "running": agent_status["running"],
+            "pid": agent_status["pid"],
+        }
+        db_path = SESSIONS_DIR / sid / "trades.db"
+        if not db_path.exists():
+            sc_rec["db"] = None
+            out["sessions"].append(sc_rec); continue
+        try:
+            c = sqlite3.connect(str(db_path)); c.row_factory = sqlite3.Row
+            cutoff = s.get("live_started_at") or ""
+            live_where = "status='closed' AND entry_time >= ?" if cutoff else "status='closed'"
+            live_params = (cutoff,) if cutoff else ()
+            # Overall live-phase metrics
+            row = c.execute(
+                f"SELECT COUNT(*), SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END), COALESCE(SUM(pnl),0) FROM trades WHERE {live_where}",
+                live_params,
+            ).fetchone()
+            total, wins, pnl = row[0] or 0, row[1] or 0, row[2] or 0
+            # Today-only metrics (entries today)
+            trow = c.execute(
+                "SELECT COUNT(*), SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END), COALESCE(SUM(pnl),0) FROM trades "
+                "WHERE status='closed' AND substr(entry_time,1,10)=?", (today,)
+            ).fetchone()
+            # Exit-type mix (live phase)
+            exit_rows = c.execute(
+                f"SELECT COALESCE(exit_type,'manual'), COUNT(*), COALESCE(SUM(pnl),0) "
+                f"FROM trades WHERE {live_where} GROUP BY exit_type",
+                live_params,
+            ).fetchall()
+            # Open positions
+            open_rows = c.execute(
+                "SELECT ticker, direction, quantity, entry_price, entry_time FROM trades WHERE status='open'"
+            ).fetchall()
+            # Repeated-ticker losses (potential overtrading pattern)
+            repeat = c.execute(
+                f"SELECT ticker, COUNT(*) n, COALESCE(SUM(pnl),0) p FROM trades WHERE {live_where} "
+                f"GROUP BY ticker HAVING n >= 3 ORDER BY n DESC LIMIT 5", live_params,
+            ).fetchall()
+            c.close()
+
+            sc_rec["metrics"] = {
+                "live_phase": {
+                    "trades": total, "wins": wins, "losses": total - wins - 0,
+                    "win_rate": round(wins*100/total, 1) if total else None,
+                    "pnl": round(pnl, 2),
+                    "return_pct": round(pnl/s["starting_capital"]*100, 2) if s.get("starting_capital") else None,
+                },
+                "today": {
+                    "trades": trow[0] or 0, "wins": trow[1] or 0,
+                    "pnl": round(trow[2] or 0, 2),
+                },
+                "exit_type_mix": [
+                    {"type": r[0], "count": r[1], "pnl": round(r[2], 2)} for r in exit_rows
+                ],
+                "open_positions": [
+                    {"ticker": r["ticker"], "direction": r["direction"],
+                     "qty": r["quantity"], "entry": r["entry_price"],
+                     "entry_time": r["entry_time"]}
+                    for r in open_rows
+                ],
+                "repeated_tickers": [
+                    {"ticker": r[0], "count": r[1], "pnl": round(r[2], 2)} for r in repeat
+                ],
+            }
+        except Exception as e:
+            sc_rec["db_error"] = str(e)
+        out["sessions"].append(sc_rec)
+    return out
 
 
 @app.get("/api/sessions")

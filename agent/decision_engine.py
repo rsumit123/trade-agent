@@ -179,6 +179,15 @@ def _format_system_prompt(config, learnings, is_market_open, force_intraday=Fals
         market_status="OPEN" if is_market_open else "CLOSED",
     )
 
+    # Per-session prompt addendum (experiment lever). Appended last so it can
+    # override earlier guidance (e.g. a stricter exit-discipline variant).
+    extra = ""
+    sc = getattr(config, "_session_config", None)
+    if sc is not None:
+        extra = (getattr(sc, "extra_system_prompt", "") or "").strip()
+    if extra:
+        system += "\n\n## Session-specific Override (highest priority)\n" + extra
+
     # Backtest mode addendum: tell the LLM to skip news + rely on price action
     if is_backtest:
         system += (
