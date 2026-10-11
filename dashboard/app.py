@@ -780,7 +780,7 @@ def get_digest(request: Request):
             # Exit-type mix (live phase)
             exit_rows = c.execute(
                 f"SELECT COALESCE(exit_type,'manual'), COUNT(*), COALESCE(SUM(pnl),0) "
-                f"FROM trades WHERE {live_where} GROUP BY exit_type",
+                f"FROM trades WHERE {live_where} GROUP BY COALESCE(exit_type,'manual')",
                 live_params,
             ).fetchall()
             # Open positions
