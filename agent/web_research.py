@@ -5,10 +5,41 @@ Uses the LLM's web search capability or falls back to RSS/scraping.
 
 import json
 import logging
+import re
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
+
+
+# Titles that look like site homepages / aggregator listings / live-ticker pages
+# rather than actual dated articles. These convey zero signal to the LLM.
+_HOMEPAGE_TITLE_PAT = re.compile(
+    r"(?:"
+    r"news\s+today\s*(?:[|–\-]|$)"            # "Bitcoin News Today", "BTC News Today | ..."
+    r"|live\s+price(?:s|\s|,|$)"              # "Live Prices, Data...", "Live Price Charts"
+    r"|live\s+updates?\s*$"
+    r"|latest\s+(?:updates|news|btc)"
+    r"|price\s+today[\s,:]"                   # "Bitcoin price today, BTC to USD live price"
+    r"|\|\s*live\b"                           # "... | LIVE"
+    r"|\|\s*news\s*$"                         # "... | News"
+    r"|\|\s*live\s+prices?"
+    r"|charts?,?\s+news\s+and"                # "...Charts, News and..."
+    r"|market\s+(?:cap|headlines)"
+    r"|news\s+and\s+(?:price|chart|data)"     # "...News and Price Data"
+    r"|\bnse[\s/]*live\b|\bbse[\s/]*live\b"   # "BSE/NSELIVE"
+    r"|stock\s+market\s+news\s*[,|]"          # "Indian Stock Market News,..."
+    r"|market\s*news\s*:"                     # "MarketNews:..."
+    r"|sharemarkettoday|marketnewstoday"      # concatenated homepage slugs
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_homepage(title: str) -> bool:
+    if not title or len(title.strip()) < 15:
+        return True
+    return bool(_HOMEPAGE_TITLE_PAT.search(title))
 
 
 class WebResearcher:
@@ -25,6 +56,12 @@ class WebResearcher:
     # 90-minute TTL — news doesn't change every 15 minutes
     _news_cache: Dict[str, Tuple[datetime, List]] = {}
     _CACHE_TTL = timedelta(minutes=90)
+
+    # Process-wide set of URLs already surfaced to the LLM, so the same article
+    # is never served twice (previously, 5 consecutive cycles were fed the same
+    # 3 headlines, which trained the LLM to react to nothing). Bounded.
+    _seen_urls: set = set()
+    _SEEN_URL_LIMIT = 2000
 
     def __init__(self, news_sources: List[str] = None, market_preset=None):
         self.market_preset = market_preset
@@ -80,25 +117,43 @@ class WebResearcher:
                     raw.append(r)
 
             results = []
+            dropped_dup = dropped_homepage = 0
             for r in raw:
                 url = r.get("href", "")
                 domain = url.split("/")[2] if url else ""
                 snippet = r.get("body", "")
+                title = r.get("title", "")
                 # Skip junk domains and results with no real snippet content
                 if any(j in domain for j in self._JUNK_DOMAINS):
                     continue
                 if len(snippet) < 60:
                     continue
+                # Skip titles that look like homepages / live-ticker pages / aggregators
+                if _looks_like_homepage(title):
+                    dropped_homepage += 1
+                    continue
+                # Dedupe across the whole process lifetime — never serve the same URL twice
+                if url in self._seen_urls:
+                    dropped_dup += 1
+                    continue
                 results.append({
-                    "title": r.get("title", ""),
+                    "title": title,
                     "url": url,
                     "snippet": snippet,
                     "source": domain,
                 })
+                self._seen_urls.add(url)
                 if len(results) >= max_results:
                     break
 
-            logger.info(f"DDG search '{query[:60]}' → {len(results)} results (filtered from {len(raw)})")
+            # Bound the dedupe set so it doesn't grow forever
+            if len(self._seen_urls) > self._SEEN_URL_LIMIT:
+                self._seen_urls = set(list(self._seen_urls)[-self._SEEN_URL_LIMIT // 2:])
+
+            logger.info(
+                f"DDG search '{query[:60]}' → {len(results)} results "
+                f"(raw={len(raw)}, dropped_homepage={dropped_homepage}, dropped_seen={dropped_dup})"
+            )
             # Store in cache before returning
             self._news_cache[query] = (now, results)
             return results
