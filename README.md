@@ -1,5 +1,7 @@
 # AlphaAgent: autonomous LLM trading agents that learn from their own trades
 
+[![CI](https://github.com/rsumit123/trade-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/rsumit123/trade-agent/actions/workflows/ci.yml)
+
 AlphaAgent runs a fleet of autonomous paper-trading agents on Indian equities (NSE, via Zerodha Kite Connect) and crypto. Each agent observes the market, reasons with an LLM using tools, places trades through hard risk limits, and reflects on every closed trade. Its distilled rules feed back into the next decision.
 
 **Live:** [alphaagent.skdev.one](https://alphaagent.skdev.one). It's multi-user: sign in with Google, create a session, pick a market, a model and a watchlist, and watch it trade.
@@ -19,7 +21,7 @@ AlphaAgent runs a fleet of autonomous paper-trading agents on Indian equities (N
 | **API** | FastAPI, Google OAuth + JWT auth, Fernet-encrypted per-user API keys, per-user runtime quotas |
 | **Frontend** | Next.js 16, React 19, TypeScript, Tailwind CSS v4 |
 | **Infra** | Docker, nginx + Let's Encrypt, GCP Spot VM with a Cloud Function watchdog, Vercel |
-| **Quality** | pytest, a Claude Code skill (`SKILL.md`) for the daily fleet review |
+| **Quality** | pytest, GitHub Actions CI (backend tests, frontend typecheck and build on every push), a Claude Code skill (`SKILL.md`) for the daily fleet review |
 
 ---
 
