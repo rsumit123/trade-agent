@@ -1,0 +1,31 @@
+{
+  "decision": {
+    "active": "v4",
+    "versions": {
+      "v1": {
+        "sha256": "e5704453116b37dd3cb3f1d72ac986d9026214686e7844cf51c0e7a247d71e6d",
+        "source_commit": "9cd4e59",
+        "date": "2026-04-02",
+        "summary": "Baseline multi-session prompt: mandate, decision framework, risk awareness."
+      },
+      "v2": {
+        "sha256": "879ed6282db2339bee1d33b6e5ee2d8d1649bd8b2e7a93e14fcc227a55ffacbc",
+        "source_commit": "e639b2f",
+        "date": "2026-04-03",
+        "summary": "Rules-driven: read and apply Distilled Rules before each trade; require conviction 4-5."
+      },
+      "v3": {
+        "sha256": "cc22090b9d481e1eccaa3f62305381c865bc985f717df03c5ae121d44035dabb",
+        "source_commit": "3a6e98f",
+        "date": "2026-05-16",
+        "summary": "Sample-size caution: rules under 30 trades are hypotheses; mandatory exploration of under-sampled setups."
+      },
+      "v4": {
+        "sha256": "b6f90a2a98fb90dc0a5d7ec5526aa5107511fc60609d6b23c19e1fc6f5102040",
+        "source_commit": "2db9eca",
+        "date": "2026-10-11",
+        "summary": "Exit discipline (no manual closes of winners; respect stops) and news treated as a weak signal."
+      }
+    }
+  }
+}

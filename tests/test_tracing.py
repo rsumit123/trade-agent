@@ -128,6 +128,9 @@ def test_span_tree_when_tracing_on(tracing_on):
 
     assert root.attributes["session.id"] == "t_sess"
     assert "crypto" in root.attributes["langfuse.trace.tags"]
+    # Every trace is stamped with the prompt version it ran on.
+    assert any(t.startswith("prompt:decision_v") for t in root.attributes["langfuse.trace.tags"])
+    assert str(root.attributes.get("langfuse.version", "")).startswith("decision_v")
     gen = by_name["llm_call_0"]
     assert gen.attributes["langfuse.observation.type"] == "generation"
     assert json.loads(gen.attributes["langfuse.observation.usage_details"]) == {"input": 100, "output": 20}

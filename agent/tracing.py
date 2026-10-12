@@ -100,14 +100,22 @@ def _observe(name: str, as_type: str, propagate: Optional[Dict] = None, **kwargs
             raise
 
 
-def decision_cycle(config, input: Any = None, metadata: Optional[Dict] = None):
-    """Root observation for one decision loop, grouped by session_id in Langfuse."""
+def decision_cycle(config, input: Any = None, metadata: Optional[Dict] = None,
+                   prompt: Optional[Dict] = None):
+    """Root observation for one decision loop, grouped by session_id in Langfuse.
+
+    `prompt` (from _format_system_prompt) sets the trace version to the prompt
+    id, e.g. "decision_v4", so traces can be filtered and compared by version.
+    """
     sc = getattr(config, "_session_config", None)
     session_id = getattr(sc, "session_id", "") or "default"
     market = getattr(sc, "market", "") or ""
     provider = getattr(config, "llm_provider", "")
     model = getattr(sc, "llm_model", "") or ""
+    prompt_id = (prompt or {}).get("id", "")
     tags: List[str] = [t for t in (market, provider, model) if t]
+    if prompt_id:
+        tags.append(f"prompt:{prompt_id}")
     return _observe(
         "decision_cycle",
         "agent",
@@ -116,6 +124,7 @@ def decision_cycle(config, input: Any = None, metadata: Optional[Dict] = None):
             "user_id": getattr(sc, "user_email", "") or None,
             "tags": tags,
             "trace_name": f"decision_cycle:{session_id}",
+            "version": prompt_id or None,
             "metadata": {"market": market, "provider": provider},
         },
         input=input,

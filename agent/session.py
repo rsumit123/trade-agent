@@ -51,6 +51,7 @@ class SessionConfig:
     # ── Experiment levers (per-session overrides) ──────────
     include_news: bool = True                   # False → skip web research entirely for this session
     extra_system_prompt: str = ""               # Appended to the system prompt; use for per-session rule overrides
+    prompt_version: str = ""                    # "" → registry's active version; e.g. "v3" to pin/A-B a template
 
     # ── LLM Configuration ───────────────────────────────────
     llm_provider: str = "openrouter"
@@ -165,7 +166,7 @@ _YAML_FIELDS = {
     "session_id", "display_name", "market",
     "starting_capital", "max_position_pct", "max_open_positions",
     "daily_loss_limit_pct", "per_trade_loss_limit_pct", "max_trade_amount",
-    "watchlist", "universe", "include_news", "extra_system_prompt",
+    "watchlist", "universe", "include_news", "extra_system_prompt", "prompt_version",
     "llm_provider", "llm_model", "api_key_env",
     "intraday_interval_min", "personality", "created_at",
     "data_source",

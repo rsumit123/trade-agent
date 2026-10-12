@@ -70,6 +70,24 @@ decision_cycle (agent)          input: system prompt + market context
 
 Tracing is optional. Without keys it does nothing, and a tracing failure can never break trading. Both properties are covered by tests (`agent/tracing.py`, `tests/test_tracing.py`).
 
+## Prompt versioning
+
+The decision prompt's base template is versioned in [`agent/prompts/decision/`](agent/prompts/decision). [`registry.json`](agent/prompts/registry.json) records each version's sha256, the commit it came from and what it changed. v1 to v4 were reconstructed from git history:
+
+| Version | Change |
+|---|---|
+| v1 | Baseline: mandate, decision framework, risk awareness |
+| v2 | Apply the agent's own distilled rules before every trade; conviction 4–5 only |
+| v3 | Rules with fewer than 30 trades are hypotheses; mandatory exploration of under-sampled setups |
+| v4 | Exit discipline (no manual closes of winners, respect stops); news treated as a weak signal |
+
+How it's used:
+
+- **Rollback:** change `"active"` in the registry. That's a one-line change, and agents pick it up on their next cycle.
+- **A/B testing:** pin a session to a version with `prompt_version: v3`.
+- **Tracing:** every Langfuse trace carries the version (`decision_v4`) plus a fingerprint of any per-session overrides, so two runs on the same version but with different prompts are told apart.
+- **Immutability:** released versions can't be edited. A test fails if a file's hash drifts from the registry, so every change becomes a new version.
+
 ## Automated fleet review (Claude Code skill)
 
 [`.claude/skills/alphaagent-review/SKILL.md`](.claude/skills/alphaagent-review/SKILL.md) defines a recurring task that runs on a schedule:
@@ -102,6 +120,7 @@ agent/
   web_research.py      News search with junk filtering + cross-cycle dedup
   sector_data.py       NIFTY sectoral index constituents (cached)
   tracing.py           Optional Langfuse tracing
+  prompt_registry.py   Versioned prompt templates (prompts/decision/vN.md)
   session.py           Per-session YAML config + isolated storage
 dashboard/app.py       FastAPI: sessions, agents, auth, quotas, digest API
 frontend/              Next.js dashboard (Vercel)

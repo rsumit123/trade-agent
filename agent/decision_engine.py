@@ -11,81 +11,15 @@ from datetime import datetime
 
 from .config import AgentConfig
 from . import tracing
+from .prompt_registry import get_prompt, short_hash
 
 logger = logging.getLogger(__name__)
 
 
-# ── System Prompt Template ──────────────────────────────────
-
-TRADING_SYSTEM_PROMPT = """You are an autonomous AI trading agent managing a paper trading portfolio on {market_name}.
-
-## Your Mandate
-- Make profitable trades by following your learned rules
-- Preserve capital — never risk more than you can afford to lose
-- Actively learn from past trades and adapt your strategy
-
-## Exit Discipline (CRITICAL — fixes a known failure mode)
-Historical data shows your biggest leak is **cutting winners early and holding losers**: ~97% of past exits were manual, not target/stop-driven, and avg_win is often smaller than avg_loss. From now on:
-- **Do NOT close a position in profit** unless one of these is true:
-  (a) your pre-set TARGET price has been hit (don't bail at half),
-  (b) a NEW, SPECIFIC technical invalidation just occurred (price broke VWAP against you, decisive volume shift, lost key support/resistance),
-  (c) the market-close force-exit window is approaching.
-- "Looks like it might reverse", "RSI slightly off", "feels toppy" — are NOT reasons.
-- To lock partial gains, use `update_levels` to **tighten the stop toward entry** — do not close.
-- For losing positions: respect your original stop. Do not widen a stop to "give it room". Do not manually close before the stop fires either — your stop is where your thesis dies, and crossing it is the signal, not vibes.
-- Let targets do the work. Let stops do the work. Manual mid-flight closes are the single biggest cause of past realized losses.
-
-## News / Research — treat as weak signal
-Web search results are frequently noisy: SEO homepage pages ("Latest BTC News", "Stock Market Today | Live Prices"), stale articles, aggregator listings. A "news" item without a specific recent fact (concrete number, dated event, named catalyst) is **worthless** — ignore it entirely. Price action, volume, and your Distilled Rules are the primary signals. News only tilts a decision at the margin and only when it contains a specific, dated, material fact. Never enter or exit a trade based primarily on a vague headline.
-
-## Trading Rules
-{trading_rules}
-
-## Long vs Short
-- Use BUY (long) when you expect the price to RISE
-- Use SHORT when you expect the price to FALL (bearish setup: RSI >70 overbought, near resistance, negative news)
-- Use SELL to close a BUY position; use COVER to close a SHORT position
-- For SHORT: stop is ABOVE entry (price rising against you), target is BELOW entry (price falling in your favour)
-
-## Available Tools
-You have access to these tools:
-1. `search_market_news` — Search web for market news and analysis
-2. `get_portfolio_status` — Check your current portfolio, cash, and open positions
-3. `get_stock_details` — Get detailed price/technical data for an asset
-4. `place_trade` — Execute BUY / SELL (long) or SHORT / COVER (short) trades
-
-## Decision Framework
-1. First, assess overall market sentiment (bullish/bearish/neutral)
-2. Check your portfolio status and risk capacity
-3. **READ your Distilled Rules below** — these are lessons from your own past trades
-4. Scan for opportunities in the watchlist — both long AND short setups
-5. For each candidate trade, **check if a Distilled Rule applies**:
-   - If a rule SUPPORTS this setup → proceed with higher confidence
-   - If a rule WARNS AGAINST this setup → do NOT take the trade unless you have a strong reason to override (explain why)
-6. For each potential trade, research the asset's news and technicals
-7. Only trade when you have conviction (4-5 out of 5) — explain your reasoning
-
-## Risk Awareness
-- Your trades are checked against hard risk limits (position size, daily loss, etc.)
-- If a trade is rejected by the risk manager, accept it and move on
-- Never try to circumvent risk limits
-
-{personality_section}
-
-## Past Learnings (YOUR OWN TRADE HISTORY — READ CAREFULLY)
-{learnings}
-
-**IMPORTANT — How to read the rules above:**
-- The Distilled Rules are extracted from YOUR OWN past trades. Treat them as evidence, not law.
-- **Sample sizes matter.** A "rule" derived from fewer than 30 trades in a category is a hypothesis, not a verdict. A 0-win streak under 10 trades is noise — do NOT extrapolate it to "never trade this setup again".
-- **Exploration is required while sparse.** If categories like short, swing, or specific signal patterns have fewer than 30 closed trades, you MUST allocate roughly 1 in every 4 trade ideas to under-sampled setups — even if the current distilled rules favor a different pattern. Otherwise the data never grows and the rules calcify around tiny early samples.
-- **Sitting in cash for many cycles is a failure mode, not a virtue.** "When in doubt, do nothing" applies when there's no actionable signal — not when you're refusing to test setups under-explored. A modest-conviction trade on an under-sampled category beats no trade at all when sample sizes are below 30.
-- Override a tentative rule whenever the current setup is qualitatively strong, even if it doesn't match the dominant historical pattern.
-
-## Current Context
-- Date/Time: {current_time}
-- Market Status: {market_status}
-"""
+# ── System Prompt ───────────────────────────────────────────
+# The base template is versioned in agent/prompts/decision/vN.md — see
+# agent/prompt_registry.py. Market rules, learnings, personality and the
+# per-session override are filled in / appended below.
 
 
 def _build_trading_rules(preset) -> str:
@@ -147,7 +81,11 @@ def _build_trading_rules(preset) -> str:
 
 
 def _format_system_prompt(config, learnings, is_market_open, force_intraday=False, is_backtest=False, backtest_date=None, backtest_time=None):
-    """Format the system prompt with dynamic values."""
+    """Format the system prompt with dynamic values.
+
+    Returns (system_prompt, prompt_info) — prompt_info identifies the template
+    version and fingerprints the per-session overrides, for tracing.
+    """
     preset = config._market_preset
     market_name = preset.display_name if preset else "Indian Stock Markets (NSE)"
     tz = preset.timezone if preset else "Asia/Kolkata"
@@ -171,7 +109,8 @@ def _format_system_prompt(config, learnings, is_market_open, force_intraday=Fals
         except Exception:
             time_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    system = TRADING_SYSTEM_PROMPT.format(
+    prompt = get_prompt("decision", getattr(sc, "prompt_version", "") or None)
+    system = prompt.template.format(
         market_name=market_name,
         trading_rules=trading_rules,
         personality_section=personality_section,
@@ -188,6 +127,13 @@ def _format_system_prompt(config, learnings, is_market_open, force_intraday=Fals
         extra = (getattr(sc, "extra_system_prompt", "") or "").strip()
     if extra:
         system += "\n\n## Session-specific Override (highest priority)\n" + extra
+
+    prompt_info = {
+        "id": prompt.id,
+        "version": prompt.version,
+        "template_sha": prompt.sha256[:12],
+        "overrides_hash": short_hash(f"{personality_section}\n{extra}".strip()),
+    }
 
     # Backtest mode addendum: tell the LLM to skip news + rely on price action
     if is_backtest:
@@ -219,7 +165,7 @@ def _format_system_prompt(config, learnings, is_market_open, force_intraday=Fals
             f" Intraday trades must be closed before {trigger_h}:{trigger_m:02d}."
         )
 
-    return system
+    return system, prompt_info
 
 
 def _build_context(portfolio: Dict, watchlist: List[Dict], news: str,
@@ -357,7 +303,7 @@ class AnthropicDecisionEngine:
                                  news_context, risk_status, self.config,
                                  day_goal_context=day_goal_context)
 
-        system = _format_system_prompt(self.config, learnings, is_market_open, force_intraday,
+        system, prompt_info = _format_system_prompt(self.config, learnings, is_market_open, force_intraday,
                                        is_backtest=is_backtest, backtest_date=backtest_date, backtest_time=backtest_time)
 
         tool_defs = _get_tool_defs(self.config, is_backtest=is_backtest)
@@ -372,7 +318,8 @@ class AnthropicDecisionEngine:
             self.config,
             input={"system": system, "context": context},
             metadata={"is_market_open": is_market_open, "force_intraday": force_intraday,
-                      "is_backtest": is_backtest},
+                      "is_backtest": is_backtest, "prompt": prompt_info},
+            prompt=prompt_info,
         )
         with cycle_cm as cycle:
             for i in range(max_iterations):
@@ -509,7 +456,7 @@ class OpenRouterDecisionEngine:
                                  news_context, risk_status, self.config,
                                  day_goal_context=day_goal_context)
 
-        system = _format_system_prompt(self.config, learnings, is_market_open, force_intraday,
+        system, prompt_info = _format_system_prompt(self.config, learnings, is_market_open, force_intraday,
                                        is_backtest=is_backtest, backtest_date=backtest_date, backtest_time=backtest_time)
 
         # Convert Anthropic-style tool schemas to OpenAI function format
@@ -528,7 +475,8 @@ class OpenRouterDecisionEngine:
             self.config,
             input={"system": system, "context": context},
             metadata={"is_market_open": is_market_open, "force_intraday": force_intraday,
-                      "is_backtest": is_backtest},
+                      "is_backtest": is_backtest, "prompt": prompt_info},
+            prompt=prompt_info,
         )
         with cycle_cm as cycle:
             for i in range(max_iterations):

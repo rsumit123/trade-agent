@@ -27,6 +27,8 @@ def test_valid_actions():
     assert _ok({"session": "nse_default", "action": "set_universe", "value": ["TATASTEEL.NS"]}, "nse") == ["TATASTEEL.NS"]
     assert _ok({"session": "btc_haiku", "action": "set_extra_system_prompt", "value": "Hold winners."}) == "Hold winners."
     assert _ok({"session": "btc_haiku", "action": "restart"}) is None
+    assert _ok({"session": "btc_haiku", "action": "set_prompt_version", "value": "v3"}) == "v3"
+    assert _ok({"session": "btc_haiku", "action": "set_prompt_version", "value": ""}) == ""
 
 
 @pytest.mark.parametrize("action", [
@@ -40,6 +42,8 @@ def test_valid_actions():
     {"session": "btc_haiku", "action": "set_extra_system_prompt", "value": "x" * 5000},
     {"session": "btc_haiku", "action": "restart", "value": "now"},
     {"session": "btc_haiku", "action": "stop", "extra": "rm -rf"},
+    {"session": "btc_haiku", "action": "set_prompt_version", "value": "v99"},
+    {"session": "btc_haiku", "action": "set_prompt_version", "value": "../../etc/passwd"},
 ])
 def test_rejects_out_of_allowlist(action):
     _rejected(action)

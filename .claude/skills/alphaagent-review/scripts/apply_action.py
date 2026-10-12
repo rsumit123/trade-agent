@@ -19,6 +19,7 @@ Action JSON (exactly one of):
     {"session": "btc_haiku", "action": "set_include_news", "value": false}
     {"session": "btc_haiku", "action": "set_extra_system_prompt", "value": "..."}  # "" clears
     {"session": "btc_haiku", "action": "set_interval", "value": 30}
+    {"session": "btc_haiku", "action": "set_prompt_version", "value": "v3"}     # "" → registry active
     {"session": "btc_haiku", "action": "stop"}
     {"session": "btc_haiku", "action": "restart"}
 
@@ -39,9 +40,10 @@ ALLOWED_SESSIONS = {
 }
 ALLOWED_ACTIONS = {
     "set_universe", "set_include_news", "set_extra_system_prompt",
-    "set_interval", "stop", "restart",
+    "set_interval", "set_prompt_version", "stop", "restart",
 }
-CONFIG_ACTIONS = {"set_universe", "set_include_news", "set_extra_system_prompt", "set_interval"}
+CONFIG_ACTIONS = {"set_universe", "set_include_news", "set_extra_system_prompt",
+                  "set_interval", "set_prompt_version"}
 
 INTERVAL_RANGE = (5, 240)          # minutes
 MAX_PROMPT_CHARS = 2000
@@ -97,6 +99,13 @@ def validate(action: dict, market: str):
         if len(value) > MAX_PROMPT_CHARS:
             _fail(f"prompt override too long ({len(value)} > {MAX_PROMPT_CHARS} chars)")
         return value.strip()
+
+    if kind == "set_prompt_version":
+        from agent.prompt_registry import load_registry
+        released = set(load_registry()["decision"]["versions"])
+        if value != "" and value not in released:
+            _fail(f"prompt version must be one of {sorted(released)} or \"\" for the active one")
+        return value
 
     if kind == "set_interval":
         if not isinstance(value, int) or isinstance(value, bool):
@@ -173,7 +182,8 @@ def main():
     if kind in CONFIG_ACTIONS:
         field = {"set_universe": "universe", "set_include_news": "include_news",
                  "set_extra_system_prompt": "extra_system_prompt",
-                 "set_interval": "intraday_interval_min"}[kind]
+                 "set_interval": "intraday_interval_min",
+                 "set_prompt_version": "prompt_version"}[kind]
         before = getattr(sc, field)
         setattr(sc, field, value if value != [] else None)
         save_session(sc)
