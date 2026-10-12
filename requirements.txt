@@ -6,6 +6,9 @@ pandas>=2.0.0
 anthropic>=0.40.0
 openai>=1.30.0   # also used for OpenRouter (OpenAI-compatible API)
 
+# LLM tracing (optional — no-op unless LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY are set)
+langfuse>=4.0.0
+
 # Scheduling (for production loop)
 apscheduler>=3.10.0
 

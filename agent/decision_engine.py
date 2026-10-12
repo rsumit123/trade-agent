@@ -10,6 +10,7 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime
 
 from .config import AgentConfig
+from . import tracing
 
 logger = logging.getLogger(__name__)
 
@@ -367,65 +368,94 @@ class AnthropicDecisionEngine:
         usage_acc = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
         max_iterations = 10
 
-        for i in range(max_iterations):
-            try:
-                response = self.client.messages.create(
-                    model=self.config.anthropic_model,
-                    max_tokens=4096,
-                    system=system,
-                    tools=tool_defs,
-                    messages=messages,
-                )
-            except Exception as e:
-                logger.error(f"LLM API error: {e}")
-                break
+        cycle_cm = tracing.decision_cycle(
+            self.config,
+            input={"system": system, "context": context},
+            metadata={"is_market_open": is_market_open, "force_intraday": force_intraday,
+                      "is_backtest": is_backtest},
+        )
+        with cycle_cm as cycle:
+            for i in range(max_iterations):
+                try:
+                    with tracing.generation(
+                        f"llm_call_{i}", model=self.config.anthropic_model,
+                        input=[{"role": "system", "content": system}] + messages,
+                        model_parameters={"max_tokens": 4096},
+                    ) as gen:
+                        response = self.client.messages.create(
+                            model=self.config.anthropic_model,
+                            max_tokens=4096,
+                            system=system,
+                            tools=tool_defs,
+                            messages=messages,
+                        )
+                        u = getattr(response, "usage", None)
+                        gen.update(
+                            output=response.content,
+                            usage_details={
+                                "input": int(getattr(u, "input_tokens", 0) or 0),
+                                "output": int(getattr(u, "output_tokens", 0) or 0),
+                            } if u is not None else None,
+                            metadata={"stop_reason": getattr(response, "stop_reason", None)},
+                        )
+                except Exception as e:
+                    logger.error(f"LLM API error: {e}")
+                    break
 
-            try:
-                u = getattr(response, "usage", None)
-                if u is not None:
-                    usage_acc["input_tokens"] += int(getattr(u, "input_tokens", 0) or 0)
-                    usage_acc["output_tokens"] += int(getattr(u, "output_tokens", 0) or 0)
-                    usage_acc["calls"] += 1
-            except Exception:
-                pass
+                try:
+                    u = getattr(response, "usage", None)
+                    if u is not None:
+                        usage_acc["input_tokens"] += int(getattr(u, "input_tokens", 0) or 0)
+                        usage_acc["output_tokens"] += int(getattr(u, "output_tokens", 0) or 0)
+                        usage_acc["calls"] += 1
+                except Exception:
+                    pass
 
-            assistant_content = response.content
-            messages.append({"role": "assistant", "content": assistant_content})
+                assistant_content = response.content
+                messages.append({"role": "assistant", "content": assistant_content})
 
-            tool_uses = [b for b in assistant_content if b.type == "tool_use"]
-            text_blocks = [b.text for b in assistant_content if b.type == "text"]
-            iter_text = " ".join(text_blocks).strip()
-            iter_tools = [{"name": t.name, "input": t.input} for t in tool_uses]
-            if iter_text or iter_tools:
-                reasoning_trail.append({
-                    "iter": i,
-                    "text": iter_text[:2000],
-                    "tool_calls": iter_tools,
-                })
-
-            if not tool_uses:
-                if iter_text:
-                    logger.info(f"Agent reasoning: {iter_text[:500]}")
-                break
-
-            tool_results = []
-            for tool_use in tool_uses:
-                result = tool_handler(tool_use.name, tool_use.input)
-
-                if tool_use.name == "place_trade":
-                    actions_taken.append({
-                        "tool": tool_use.name,
-                        "input": tool_use.input,
-                        "result": result,
+                tool_uses = [b for b in assistant_content if b.type == "tool_use"]
+                text_blocks = [b.text for b in assistant_content if b.type == "text"]
+                iter_text = " ".join(text_blocks).strip()
+                iter_tools = [{"name": t.name, "input": t.input} for t in tool_uses]
+                if iter_text or iter_tools:
+                    reasoning_trail.append({
+                        "iter": i,
+                        "text": iter_text[:2000],
+                        "tool_calls": iter_tools,
                     })
 
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tool_use.id,
-                    "content": json.dumps(result) if isinstance(result, dict) else str(result),
-                })
+                if not tool_uses:
+                    if iter_text:
+                        logger.info(f"Agent reasoning: {iter_text[:500]}")
+                    break
 
-            messages.append({"role": "user", "content": tool_results})
+                tool_results = []
+                for tool_use in tool_uses:
+                    with tracing.tool(tool_use.name, input=tool_use.input) as tspan:
+                        result = tool_handler(tool_use.name, tool_use.input)
+                        tspan.update(output=result)
+
+                    if tool_use.name == "place_trade":
+                        actions_taken.append({
+                            "tool": tool_use.name,
+                            "input": tool_use.input,
+                            "result": result,
+                        })
+
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tool_use.id,
+                        "content": json.dumps(result) if isinstance(result, dict) else str(result),
+                    })
+
+                messages.append({"role": "user", "content": tool_results})
+
+            cycle.update(
+                output={"actions": actions_taken, "final_text": reasoning_trail[-1]["text"] if reasoning_trail else ""},
+                metadata={"llm_calls": usage_acc["calls"], "input_tokens": usage_acc["input_tokens"],
+                          "output_tokens": usage_acc["output_tokens"]},
+            )
 
         self.last_reasoning = reasoning_trail
         self.last_usage = usage_acc
@@ -494,72 +524,99 @@ class OpenRouterDecisionEngine:
         usage_acc = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
         max_iterations = 10
 
-        for i in range(max_iterations):
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    max_tokens=4096,
-                    tools=tool_defs,
-                    tool_choice="auto",
-                    messages=messages,
-                )
-            except Exception as e:
-                logger.error(f"LLM API error: {e}")
-                break
-
-            try:
-                u = getattr(response, "usage", None)
-                if u is not None:
-                    usage_acc["input_tokens"] += int(getattr(u, "prompt_tokens", 0) or 0)
-                    usage_acc["output_tokens"] += int(getattr(u, "completion_tokens", 0) or 0)
-                    usage_acc["calls"] += 1
-            except Exception:
-                pass
-
-            msg = response.choices[0].message
-            messages.append(msg)
-
-            iter_text = (msg.content or "").strip()
-            iter_tools = []
-            if msg.tool_calls:
-                for tc in msg.tool_calls:
-                    try:
-                        ti = json.loads(tc.function.arguments)
-                    except json.JSONDecodeError:
-                        ti = {}
-                    iter_tools.append({"name": tc.function.name, "input": ti})
-            if iter_text or iter_tools:
-                reasoning_trail.append({
-                    "iter": i,
-                    "text": iter_text[:2000],
-                    "tool_calls": iter_tools,
-                })
-
-            if not msg.tool_calls:
-                if iter_text:
-                    logger.info(f"Agent reasoning: {iter_text[:500]}")
-                break
-
-            for tc in msg.tool_calls:
+        cycle_cm = tracing.decision_cycle(
+            self.config,
+            input={"system": system, "context": context},
+            metadata={"is_market_open": is_market_open, "force_intraday": force_intraday,
+                      "is_backtest": is_backtest},
+        )
+        with cycle_cm as cycle:
+            for i in range(max_iterations):
                 try:
-                    tool_input = json.loads(tc.function.arguments)
-                except json.JSONDecodeError:
-                    tool_input = {}
+                    with tracing.generation(
+                        f"llm_call_{i}", model=self.model, input=messages,
+                        model_parameters={"max_tokens": 4096},
+                    ) as gen:
+                        response = self.client.chat.completions.create(
+                            model=self.model,
+                            max_tokens=4096,
+                            tools=tool_defs,
+                            tool_choice="auto",
+                            messages=messages,
+                        )
+                        u = getattr(response, "usage", None)
+                        gen.update(
+                            output=response.choices[0].message if response.choices else None,
+                            usage_details={
+                                "input": int(getattr(u, "prompt_tokens", 0) or 0),
+                                "output": int(getattr(u, "completion_tokens", 0) or 0),
+                            } if u is not None else None,
+                        )
+                except Exception as e:
+                    logger.error(f"LLM API error: {e}")
+                    break
 
-                result = tool_handler(tc.function.name, tool_input)
+                try:
+                    u = getattr(response, "usage", None)
+                    if u is not None:
+                        usage_acc["input_tokens"] += int(getattr(u, "prompt_tokens", 0) or 0)
+                        usage_acc["output_tokens"] += int(getattr(u, "completion_tokens", 0) or 0)
+                        usage_acc["calls"] += 1
+                except Exception:
+                    pass
 
-                if tc.function.name == "place_trade":
-                    actions_taken.append({
-                        "tool": tc.function.name,
-                        "input": tool_input,
-                        "result": result,
+                msg = response.choices[0].message
+                messages.append(msg)
+
+                iter_text = (msg.content or "").strip()
+                iter_tools = []
+                if msg.tool_calls:
+                    for tc in msg.tool_calls:
+                        try:
+                            ti = json.loads(tc.function.arguments)
+                        except json.JSONDecodeError:
+                            ti = {}
+                        iter_tools.append({"name": tc.function.name, "input": ti})
+                if iter_text or iter_tools:
+                    reasoning_trail.append({
+                        "iter": i,
+                        "text": iter_text[:2000],
+                        "tool_calls": iter_tools,
                     })
 
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": json.dumps(result) if isinstance(result, dict) else str(result),
-                })
+                if not msg.tool_calls:
+                    if iter_text:
+                        logger.info(f"Agent reasoning: {iter_text[:500]}")
+                    break
+
+                for tc in msg.tool_calls:
+                    try:
+                        tool_input = json.loads(tc.function.arguments)
+                    except json.JSONDecodeError:
+                        tool_input = {}
+
+                    with tracing.tool(tc.function.name, input=tool_input) as tspan:
+                        result = tool_handler(tc.function.name, tool_input)
+                        tspan.update(output=result)
+
+                    if tc.function.name == "place_trade":
+                        actions_taken.append({
+                            "tool": tc.function.name,
+                            "input": tool_input,
+                            "result": result,
+                        })
+
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps(result) if isinstance(result, dict) else str(result),
+                    })
+
+            cycle.update(
+                output={"actions": actions_taken, "final_text": reasoning_trail[-1]["text"] if reasoning_trail else ""},
+                metadata={"llm_calls": usage_acc["calls"], "input_tokens": usage_acc["input_tokens"],
+                          "output_tokens": usage_acc["output_tokens"]},
+            )
 
         self.last_reasoning = reasoning_trail
         self.last_usage = usage_acc
