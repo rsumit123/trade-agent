@@ -46,3 +46,6 @@ sessions/*/agent.lock
 !sessions/*/config.yaml
 !sessions/*/journal.md
 .zerodha-api-tokens
+
+# Legacy lock file
+data/agent.lock
