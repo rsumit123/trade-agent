@@ -72,6 +72,28 @@ decision_cycle (agent)          input: system prompt + market context
 
 Tracing is optional. Without keys it does nothing, and a tracing failure can never break trading. Both properties are covered by tests (`agent/tracing.py`, `tests/test_tracing.py`).
 
+## Cost per decision
+
+Cost is measured from the per-cycle token ledger each agent writes (`sessions/<id>/cost.jsonl`, also shown in the app), priced at current list prices.
+
+| Model | Role | LLM calls / decision | Tokens in / out per decision | **$ / decision** | Decisions / day | **$ / agent-day** |
+|---|---|---|---|---|---|---|
+| Claude Haiku 5.5 | crypto experiments (×5) | 2.0 | 10.5k / 0.8k | **$0.0015** | 96 (24/7, 15-min) | **$0.14** |
+| Claude Sonnet 5.5 | NSE intraday | 2.0 | 20.7k / 0.7k | **$0.048** | ~36 (market hours) | **$1.73** |
+| Gemini 2.5 Flash | NSE (earlier comparison run) | 5.6 | 44.4k / 1.6k | **$0.017** | ~23 | **$0.40** |
+| Gemini 2.5 Flash-Lite | NSE | 3.4 | 43.1k / 0.9k | **$0.0047** | ~33 | **$0.16** |
+| gpt-oss-120b | NSE | 3.9 | 37.4k / 0.8k | free tier* | ~20 | $0 |
+
+The production fleet (5 Haiku agents on crypto, plus Sonnet and Gemini Flash on NSE) costs about **$2.75 per trading day** and **$0.62 on weekends**, when only crypto runs. That's about **$66 a month**, and Sonnet is most of it.
+
+What the numbers show:
+
+- **Tool-loop length matters as much as price per token.** Gemini 2.5 Flash costs more per token than Haiku, but it also makes 5.6 LLM calls per decision against Haiku's 2. Each call re-sends the whole context, so it ends up costing about 12× more per decision.
+- **Input dominates.** About 85% of Sonnet's cost is input tokens: the system prompt, market context and learned rules, re-sent on every call. Prompt caching is the next cost lever.
+- **Sample sizes vary.** The Haiku numbers come from 440 decisions, Sonnet from 36 (one trading day), and Gemini Flash from a 6-day comparison run.
+
+\* OpenRouter has since delisted the free gpt-oss tier; the paid model lists at about $0.0015 per decision.
+
 ## Prompt versioning
 
 The decision prompt's base template is versioned in [`agent/prompts/decision/`](agent/prompts/decision). [`registry.json`](agent/prompts/registry.json) records each version's sha256, the commit it came from and what it changed. v1 to v4 were reconstructed from git history:

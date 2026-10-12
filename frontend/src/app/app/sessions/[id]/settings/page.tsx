@@ -183,19 +183,19 @@ export default function SessionSettingsPage() {
                 <option value="openai/gpt-oss-120b:free">GPT-OSS 120B</option>
               </optgroup>
               <optgroup label="Google">
-                <option value="google/gemini-2.5-flash-lite">Gemini 2.5 Flash Lite ($0.075/M)</option>
-                <option value="google/gemini-2.5-flash">Gemini 2.5 Flash ($0.15/M)</option>
+                <option value="google/gemini-2.5-flash-lite">Gemini 2.5 Flash Lite ($0.10/M)</option>
+                <option value="google/gemini-2.5-flash">Gemini 2.5 Flash ($0.30/M)</option>
               </optgroup>
               <optgroup label="OpenAI">
                 <option value="openai/gpt-4o-mini">GPT-4o Mini ($0.15/M)</option>
               </optgroup>
               <optgroup label="Meta">
-                <option value="meta-llama/llama-4-maverick">Llama 4 Maverick ($0.20/M)</option>
-                <option value="meta-llama/llama-4-scout">Llama 4 Scout ($0.10/M)</option>
+                <option value="meta-llama/llama-4-maverick">Llama 4 Maverick ($0.19/M)</option>
+                <option value="meta-llama/llama-4-scout">Llama 4 Scout ($0.18/M)</option>
               </optgroup>
               <optgroup label="DeepSeek">
-                <option value="deepseek/deepseek-chat-v3-0324">DeepSeek V3 ($0.14/M)</option>
-                <option value="deepseek/deepseek-r1">DeepSeek R1 ($0.55/M)</option>
+                <option value="deepseek/deepseek-chat-v3-0324">DeepSeek V3 ($0.29/M)</option>
+                <option value="deepseek/deepseek-r1">DeepSeek R1 ($0.70/M)</option>
               </optgroup>
             </select>
           </Field>
