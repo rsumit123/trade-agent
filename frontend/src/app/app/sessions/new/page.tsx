@@ -10,6 +10,7 @@ import { UpgradeLockButton } from "@/components/Runtime";
 import type { MarketPreset, Session } from "@/lib/types";
 
 const FREE_TIER_MODELS = new Set([
+  "openai/gpt-oss-120b",
   "openai/gpt-4o-mini",
   "google/gemini-2.5-flash",
   "google/gemini-2.5-flash-lite",
@@ -666,10 +667,7 @@ function ModelSelect({ provider, value, onChange, isFree = false }: { provider: 
     return (
       <select value={value} onChange={(e) => onChange(e.target.value)} className="w-full text-sm">
         <optgroup label="Open Source">
-          <option value="qwen/qwen3-next-80b-a3b-instruct:free">Qwen3 Next 80B</option>
-          <option value="z-ai/glm-4.5-air:free">GLM 4.5 Air</option>
-          <option value="meta-llama/llama-3.3-70b-instruct:free">Llama 3.3 70B</option>
-          <option value="openai/gpt-oss-120b:free">GPT-OSS 120B</option>
+          <option value="openai/gpt-oss-120b">GPT-OSS 120B</option>
         </optgroup>
         {isFree && (
           <optgroup label="Available">
@@ -725,11 +723,8 @@ type ModelMeta = {
 };
 
 const MODEL_META: Record<string, ModelMeta> = {
-  // OpenRouter — free
-  "qwen/qwen3-next-80b-a3b-instruct:free": { inPrice: 0, outPrice: 0, tags: ["cheapest", "balanced"] },
-  "z-ai/glm-4.5-air:free":                 { inPrice: 0, outPrice: 0, tags: ["cheapest", "balanced"] },
-  "meta-llama/llama-3.3-70b-instruct:free":{ inPrice: 0, outPrice: 0, tags: ["cheapest"] },
-  "openai/gpt-oss-120b:free":              { inPrice: 0, outPrice: 0, tags: ["cheapest", "best-reasoning"] },
+  // OpenRouter — open-weight (the old ":free" variants were delisted by OpenRouter)
+  "openai/gpt-oss-120b":                 { inPrice: 0.037, outPrice: 0.17, tags: ["cheapest", "best-reasoning"] },
   // OpenRouter — paid
   "google/gemini-2.5-flash":             { inPrice: 0.3, outPrice: 2.5, tags: ["cheapest", "fastest"] },
   "google/gemini-2.5-flash-lite":        { inPrice: 0.1, outPrice: 0.4, tags: ["cheapest", "fastest"] },

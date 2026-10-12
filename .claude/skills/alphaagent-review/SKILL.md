@@ -44,7 +44,7 @@ The owner is **rsumit123@gmail.com**. All emails go there and only replies from 
    If the request fails (non-200 or empty), still send an `[ALERT]` email that explains the failure.
 2. **Optionally check the reasoning in Langfuse.** If a session looks odd (for example zero trades, or repeated losses on the same ticker), read its recent `decision_cycle` traces before guessing at a cause. Use `GET $LANGFUSE_BASE_URL/api/public/v2/observations?fromStartTime=<iso>&fields=core,basic,io`, with basic auth from `~/.langfuse-keys`. The legacy `/api/public/traces` endpoint is not available on this account.
 3. **Analyse each session:**
-   - Running state. A session that isn't running is the top alert.
+   - Running state and LLM health. A session that isn't running, or whose `llm_health.ok` is false (its LLM calls are failing: model delisted, credits gone, auth error), is the top alert. Quote `llm_health.last_error`. A "running" agent with failing LLM calls is not working.
    - Today's trades and P&L.
    - Cumulative live P&L and return %.
    - Exit-type mix. A manual share above 70% is a red flag.

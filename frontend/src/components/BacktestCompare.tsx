@@ -5,10 +5,7 @@ import { useToast } from "./Toast";
 import type { ComparisonStatus, ComparisonChild, SessionConfig } from "@/lib/types";
 
 const AVAILABLE_MODELS: { id: string; label: string; tag?: string }[] = [
-  { id: "qwen/qwen3-next-80b-a3b-instruct:free", label: "Qwen3 Next 80B",      tag: "Open Source" },
-  { id: "z-ai/glm-4.5-air:free",                 label: "GLM 4.5 Air",         tag: "Open Source" },
-  { id: "meta-llama/llama-3.3-70b-instruct:free",label: "Llama 3.3 70B",       tag: "Open Source" },
-  { id: "openai/gpt-oss-120b:free",              label: "GPT-OSS 120B",        tag: "Open Source" },
+  { id: "openai/gpt-oss-120b",           label: "GPT-OSS 120B",      tag: "Open Source" },
   { id: "google/gemini-2.5-flash-lite",  label: "Gemini 2.5 Flash Lite", tag: "Cheapest" },
   { id: "google/gemini-2.5-flash",       label: "Gemini 2.5 Flash",  tag: "Cheap" },
   { id: "openai/gpt-4o-mini",            label: "GPT-4o Mini",       tag: "Cheap" },
@@ -31,7 +28,7 @@ export function BacktestCompare({ baseSessionId, config, defaultStart, defaultEn
   const [status, setStatus] = useState<ComparisonStatus | null>(null);
   const [picker, setPicker] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set([
-    "qwen/qwen3-next-80b-a3b-instruct:free",
+    "openai/gpt-oss-120b",
     "google/gemini-2.5-flash",
   ]));
   const [startDate, setStartDate] = useState(defaultStart || "");

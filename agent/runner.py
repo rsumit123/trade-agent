@@ -635,6 +635,19 @@ class TradingAgent:
             day_goal_context=self._build_day_goal_context() if getattr(self, "_is_backtest", False) or force_intraday else None,
         )
 
+        # A cycle where every LLM call failed is an error, not "ok" — otherwise an
+        # agent whose model was delisted or whose credits ran out looks healthy.
+        llm_error = getattr(self.engine, "last_error", None)
+        llm_calls = int((getattr(self.engine, "last_usage", None) or {}).get("calls", 0) or 0)
+        llm_failed = bool(llm_error) and llm_calls == 0
+        if self.session and not getattr(self, "_is_backtest", False):
+            from .health import record_cycle
+            record_cycle(self.session.session_dir, self.session.session_id,
+                         self._active_model, llm_failed, llm_error)
+        if llm_failed:
+            logger.error(f"❌ Cycle failed — LLM unavailable: {llm_error}")
+            return {"status": "llm_error", "error": llm_error, "actions": []}
+
         logger.info(f"✅ Cycle complete — {len(actions)} actions taken")
         self._cleanup_cycle_directives()
         self._write_thinking_log(actions, bt_date, bt_time)

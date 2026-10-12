@@ -272,6 +272,7 @@ class AnthropicDecisionEngine:
         self.config = config
         self.last_reasoning: List[Dict] = []
         self.last_usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
+        self.last_error: Optional[str] = None   # set when an LLM call fails; read by the runner
         try:
             import anthropic
             self.client = anthropic.Anthropic(api_key=config.api_key)
@@ -313,6 +314,7 @@ class AnthropicDecisionEngine:
         reasoning_trail: List[Dict] = []
         usage_acc = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
         max_iterations = 10
+        self.last_error = None
 
         cycle_cm = tracing.decision_cycle(
             self.config,
@@ -347,6 +349,7 @@ class AnthropicDecisionEngine:
                         )
                 except Exception as e:
                     logger.error(f"LLM API error: {e}")
+                    self.last_error = f"{type(e).__name__}: {e}"[:500]
                     break
 
                 try:
@@ -421,6 +424,7 @@ class OpenRouterDecisionEngine:
         self.config = config
         self.last_reasoning: List[Dict] = []
         self.last_usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
+        self.last_error: Optional[str] = None   # set when an LLM call fails; read by the runner
         try:
             import openai
         except ImportError:
@@ -470,6 +474,7 @@ class OpenRouterDecisionEngine:
         reasoning_trail: List[Dict] = []
         usage_acc = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
         max_iterations = 10
+        self.last_error = None
 
         cycle_cm = tracing.decision_cycle(
             self.config,
@@ -502,6 +507,7 @@ class OpenRouterDecisionEngine:
                         )
                 except Exception as e:
                     logger.error(f"LLM API error: {e}")
+                    self.last_error = f"{type(e).__name__}: {e}"[:500]
                     break
 
                 try:

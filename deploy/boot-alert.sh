@@ -2,8 +2,11 @@
 # Boot Alert — runs on VM startup, reports container status to Telegram
 # Installed as @reboot cron job
 
-BOT_TOKEN="8558554522:AAG8dIwXHhXo6p80M0dEXmgtJUF0khrjCms"
-CHAT_ID="1222108633"
+# Telegram credentials live in the app's .env (never in git)
+ENV_FILE="$(cd "$(dirname "$0")/.." && pwd)/.env"
+_env() { grep -E "^$1=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d "\"'"; }
+BOT_TOKEN="$(_env TELEGRAM_BOT_TOKEN)"
+CHAT_ID="$(_env TELEGRAM_CHAT_ID)"
 
 # Wait for Docker to be ready
 sleep 30

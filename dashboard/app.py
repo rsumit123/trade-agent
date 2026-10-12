@@ -196,11 +196,9 @@ FREE_TIER_MODELS = {
     "openai/gpt-4o-mini",
     "google/gemini-2.5-flash",
     "google/gemini-2.5-flash-lite",
-    # Zero-cost OpenRouter models (verified tool-use support)
-    "qwen/qwen3-next-80b-a3b-instruct:free",
-    "z-ai/glm-4.5-air:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "openai/gpt-oss-120b:free",
+    # Open-weight, ~$0.0015/decision. OpenRouter delisted the old ":free"
+    # variants (they now 404), so they're no longer offered.
+    "openai/gpt-oss-120b",
 }
 
 
@@ -756,6 +754,16 @@ def get_digest(request: Request):
             "owner": s.get("user_email"),
             "running": agent_status["running"],
             "pid": agent_status["pid"],
+        }
+        # LLM health — "running" alone hides agents whose model calls all fail.
+        from agent.health import read_health, ALERT_AFTER
+        h = read_health(SESSIONS_DIR / sid)
+        fails = int(h.get("consecutive_llm_failures", 0) or 0)
+        sc_rec["llm_health"] = {
+            "ok": fails < ALERT_AFTER,
+            "consecutive_failures": fails,
+            "last_error": h.get("last_error") if fails else None,
+            "last_success_at": h.get("last_success_at"),
         }
         db_path = SESSIONS_DIR / sid / "trades.db"
         if not db_path.exists():
