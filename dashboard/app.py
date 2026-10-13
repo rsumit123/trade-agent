@@ -2058,6 +2058,21 @@ def _fetch_prices_with_timeout(market_data, timeout=5, portfolio=None) -> dict:
         return {}
 
 
+def _sync_watchlist(c: Dict) -> None:
+    """Point the cached API-side market data at the watchlist the agent trades.
+
+    The component's config only has the session's default list; fixed-universe
+    picks and scanner picks are applied inside the agent process, so without this
+    the dashboard shows (and prices) the wrong tickers."""
+    sc = c.get("session")
+    if sc is None:
+        return
+    wl = sc.effective_watchlist()
+    if wl:
+        c["market_data"].watchlist = list(wl)
+        c["config"].watchlist = list(wl)
+
+
 def _fetch_watchlist_with_timeout(market_data, timeout=5):
     """Fetch watchlist summary with a timeout. Returns None on timeout."""
     import concurrent.futures
@@ -2075,6 +2090,7 @@ def get_dashboard(session_id: str, user: dict = Depends(current_user)):
     """Bundled dashboard endpoint — returns all data in one response."""
     import concurrent.futures
     c = _get_components(session_id)
+    _sync_watchlist(c)
 
     # Only fetch live prices if there are open positions (avoids 10s+ timeout when idle)
     has_open = len(c["portfolio"].get_open_positions()) > 0
@@ -2566,6 +2582,7 @@ def get_watchlist(session: str = None, user: dict = Depends(current_user)):
     """Get watchlist with current data. Fetches live prices with a 5s timeout."""
     import concurrent.futures
     c = _get_components(session)
+    _sync_watchlist(c)
     try:
         with concurrent.futures.ThreadPoolExecutor() as pool:
             future = pool.submit(c["market_data"].get_watchlist_summary)

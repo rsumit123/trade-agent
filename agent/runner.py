@@ -1027,6 +1027,11 @@ class TradingAgent:
                 old_count = len(self.config.watchlist)
                 self.config.watchlist = new_watchlist
                 self.market_data.watchlist = new_watchlist
+                if self.session is not None:
+                    try:
+                        self.session.write_scan_picks(new_watchlist)
+                    except Exception as e:
+                        logger.warning(f"Could not persist scan picks for the dashboard: {e}")
 
                 logger.info(f"🎯 Pre-market scan: replaced {old_count} stocks with {len(new_watchlist)} dynamic picks")
                 for s in scan_results[:5]:

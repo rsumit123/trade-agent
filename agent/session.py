@@ -149,6 +149,29 @@ class SessionConfig:
             return ("fixed", list(self.universe))
         return ("discovery", None)
 
+    def write_scan_picks(self, tickers: List[str]) -> None:
+        """Persist today's scanner picks so the API process (which never runs
+        the scanner) can show/price the same watchlist as the agent."""
+        import json
+        (self.session_dir / "scan_picks.json").write_text(json.dumps({
+            "date": datetime.now().date().isoformat(), "tickers": list(tickers),
+        }))
+
+    def effective_watchlist(self) -> Optional[List[str]]:
+        """The watchlist the agent is actually trading, or None if unknown.
+
+        Fixed universe -> the user's picks. Discovery -> the latest scanner
+        picks. `self.watchlist` is only the market default and matches neither."""
+        mode, tickers = self.resolve_universe()
+        if mode == "fixed":
+            return tickers
+        import json
+        try:
+            picks = json.loads((self.session_dir / "scan_picks.json").read_text())
+            return [t for t in picks.get("tickers", []) if isinstance(t, str)] or None
+        except (OSError, ValueError, AttributeError):
+            return None
+
 
 # ── Session Operations ─────────────────────────────────────────────────
 
