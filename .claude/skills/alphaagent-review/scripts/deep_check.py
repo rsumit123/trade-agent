@@ -32,10 +32,14 @@ from pathlib import Path
 sys.path.insert(0, "/app")
 
 SESSIONS = [
-    "nse_default", "nse_sonnet", "vin",
+    "nse_default", "nse_sonnet", "nse_opus", "vin",
     "btc_haiku", "btc_haiku_strict", "btc_haiku_no_news",
     "btc_haiku_wide", "btc_haiku_long_hold",
 ]
+# Deliberately stopped; not flagged as down. Remove when restarted.
+PAUSED: set = set()
+# Claude promo credit: $97.04 + $5.06 paid on 2026-10-13; promo expires 2026-10-29.
+CLAUDE_BUDGET_USD, CLAUDE_BUDGET_FROM, CLAUDE_BUDGET_UNTIL = 102.10, "2026-10-13", "2026-10-29"
 WINDOW_H = 24
 LOG_TAIL_BYTES = 8_000_000
 STALE_TRADE_DAYS = 5          # running agent with no trade for this long gets flagged
@@ -139,6 +143,37 @@ def check_openrouter() -> dict:
         return {"configured": True, "error": str(e)[:200]}
 
 
+def check_claude_spend(sessions_dir: Path) -> dict:
+    """Claude spend from the cost ledgers, re-priced with current prices, vs the credit budget."""
+    from agent.llm_pricing import estimate_usd
+
+    since_budget = last_24h = 0.0
+    for f in Path(sessions_dir).glob("*/cost.jsonl"):
+        for line in f.read_text().splitlines():
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if not str(r.get("model", "")).startswith("claude"):
+                continue
+            usd = estimate_usd(r["model"], r.get("input_tokens", 0), r.get("output_tokens", 0))
+            if r["ts"][:10] >= CLAUDE_BUDGET_FROM:
+                since_budget += usd
+            if datetime.fromisoformat(r["ts"]) >= since:
+                last_24h += usd
+    days_left = (datetime.fromisoformat(CLAUDE_BUDGET_UNTIL).date() - now.date()).days + 1
+    remaining = CLAUDE_BUDGET_USD - since_budget
+    projected = last_24h * days_left
+    out = {"spent_since_budget": round(since_budget, 2), "last_24h": round(last_24h, 2),
+           "est_remaining": round(remaining, 2), "days_left": days_left,
+           "projected_at_24h_rate": round(projected, 2)}
+    if projected > remaining:
+        runs_out = remaining / last_24h if last_24h else None
+        problems.append(f"Claude credit: at ${last_24h:.2f}/day the ~${remaining:.0f} left runs out in "
+                        f"~{runs_out:.0f} days, before {CLAUDE_BUDGET_UNTIL} — ALL Claude agents would stop")
+    return out
+
+
 def check_indicators() -> dict:
     """Fetch one live context per data source; every key indicator must be present."""
     from agent.market_data import MarketData
@@ -175,7 +210,7 @@ def main():
     for sid in SESSIONS:
         sdir = Path(SESSIONS_DIR) / sid
         running = _is_agent_running(sid)["running"]
-        if not running:
+        if not running and sid not in PAUSED:
             problems.append(f"{sid}: NOT RUNNING")
         sessions[sid] = {
             "running": running,
@@ -186,6 +221,7 @@ def main():
     result = {
         "generated_at": now.isoformat(timespec="seconds"),
         "openrouter": check_openrouter(),
+        "claude_spend": check_claude_spend(SESSIONS_DIR),
         "indicators": check_indicators(),
         "sessions": sessions,
     }

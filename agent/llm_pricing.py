@@ -24,6 +24,7 @@ MODEL_PRICES = {
     # Anthropic direct
     "claude-haiku-5-5":                    (0.10, 0.50),
     "claude-sonnet-5-5":                   (2.00, 10.00),
+    "claude-opus-5-5":                     (4.00, 20.00),
     "claude-sonnet-4-5-20250929":          (3.00, 15.00),
     "claude-opus-4-0-20250514":            (15.00, 75.00),
     # OpenAI direct
