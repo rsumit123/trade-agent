@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .config import AgentConfig
 from .portfolio import Portfolio, Trade
+from .anthropic_text import response_text, thinking_budget
 
 logger = logging.getLogger(__name__)
 
@@ -165,10 +166,10 @@ Start with `## {date.today().strftime("%Y-%m-%d")} — Daily Review`
                 # Anthropic native client
                 response = llm_client.messages.create(
                     model=self.config.anthropic_model,
-                    max_tokens=1000,
+                    max_tokens=thinking_budget(1000),
                     messages=[{"role": "user", "content": review_prompt}],
                 )
-                reflection = response.content[0].text
+                reflection = response_text(response)
             else:
                 # OpenAI-compatible client (OpenRouter or OpenAI)
                 model = (
@@ -275,10 +276,10 @@ Format as a bullet list under `## 📌 Distilled Rules`. No preamble, just the s
             if self.config.llm_provider == "anthropic":
                 response = llm_client.messages.create(
                     model=self.config.anthropic_model,
-                    max_tokens=800,
+                    max_tokens=thinking_budget(800),
                     messages=[{"role": "user", "content": prompt}],
                 )
-                rules_text = response.content[0].text.strip()
+                rules_text = response_text(response)
             else:
                 model = (
                     self.config.openrouter_model
@@ -416,10 +417,10 @@ Keep it under 120 words. Be honest and specific. No fluff."""
             if self.config.llm_provider == "anthropic":
                 response = llm_client.messages.create(
                     model=self.config.anthropic_model,
-                    max_tokens=300,
+                    max_tokens=thinking_budget(300),
                     messages=[{"role": "user", "content": prompt}],
                 )
-                return response.content[0].text.strip()
+                return response_text(response)
             else:
                 model = (
                     self.config.openrouter_model

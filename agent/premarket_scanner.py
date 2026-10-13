@@ -19,6 +19,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
+from .anthropic_text import response_text, thinking_budget
+
 logger = logging.getLogger(__name__)
 
 MIN_PRICE = 50
@@ -300,10 +302,10 @@ Return ONLY the JSON array, no other text."""
             if llm_config.llm_provider == "anthropic":
                 response = llm_client.messages.create(
                     model=llm_config.anthropic_model,
-                    max_tokens=2000,
+                    max_tokens=thinking_budget(2000),
                     messages=[{"role": "user", "content": prompt}],
                 )
-                text = response.content[0].text.strip()
+                text = response_text(response)
             else:
                 model = (
                     llm_config.openrouter_model
