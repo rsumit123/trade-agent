@@ -832,12 +832,115 @@ def get_digest(request: Request):
     return out
 
 
+def _attach_list_stats(s: dict) -> None:
+    """Running state, live-phase P&L, win rate and sparkline for a session list card."""
+    from agent.session import SESSIONS_DIR
+    import sqlite3
+
+    sid = s["session_id"]
+    status = _is_agent_running(sid)
+    s["is_running"] = status["running"]
+    s["pid"] = status["pid"]
+
+    db_path = SESSIONS_DIR / sid / "trades.db"
+    if not db_path.exists():
+        s["total_trades"] = 0
+        s["win_rate"] = None
+        s["portfolio"] = None
+        s["daily"] = []
+        return
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        starting_capital = s["starting_capital"]
+
+        # Scope stats to the live phase (post Go-Live) so the list card
+        # matches the in-session performance view. Sessions that never
+        # went live fall back to all closed trades.
+        cutoff = s.get("live_started_at") or ""
+        if cutoff:
+            closed_where = "status = 'closed' AND entry_time >= ?"
+            params = (cutoff,)
+        else:
+            closed_where = "status = 'closed'"
+            params = ()
+
+        row = conn.execute(
+            f"SELECT COUNT(*), SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END), "
+            f"COALESCE(SUM(pnl), 0) FROM trades WHERE {closed_where}",
+            params,
+        ).fetchone()
+        total = row[0] or 0
+        wins = row[1] or 0
+        realized_pnl = row[2] or 0
+        s["total_trades"] = total
+        s["win_rate"] = round((wins / total) * 100, 1) if total > 0 else None
+
+        open_count = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE status = 'open'"
+        ).fetchone()[0] or 0
+
+        # Net P&L = realized P&L of the (live-phase) closed trades.
+        # We deliberately do NOT add raw account cash or open-position
+        # entry value: raw cash includes open-short proceeds (a liability)
+        # and adding entry value on top double-counts shorts, which used
+        # to fabricate a phantom positive return. Open positions have no
+        # live price here, so they contribute ~0 unrealized.
+        total_return = realized_pnl
+        total_value = starting_capital + realized_pnl
+        total_return_pct = (total_return / starting_capital * 100) if starting_capital else 0
+
+        s["portfolio"] = {
+            "cash": round(total_value, 2),
+            "total_value": round(total_value, 2),
+            "total_return": round(total_return, 2),
+            "total_return_pct": round(total_return_pct, 2),
+            "open_positions": open_count,
+            "realized_pnl": round(realized_pnl, 2),
+        }
+
+        # Daily performance (last 14 days for sparkline)
+        snapshots = conn.execute(
+            "SELECT date, total_value, daily_pnl FROM daily_snapshots "
+            "ORDER BY date DESC LIMIT 14"
+        ).fetchall()
+        s["daily"] = [
+            {"date": r[0], "total_value": r[1], "daily_pnl": r[2]}
+            for r in snapshots
+        ]
+
+        conn.close()
+    except Exception:
+        s["total_trades"] = 0
+        s["win_rate"] = None
+        s["portfolio"] = None
+        s["daily"] = []
+
+    # Include backtest progress for backtest sessions
+    if s.get("backtest_mode"):
+        progress_path = SESSIONS_DIR / sid / "backtest_progress.json"
+        if progress_path.exists():
+            try:
+                prog = json.loads(progress_path.read_text())
+                s["backtest_progress"] = {
+                    "status": prog.get("status", "unknown"),
+                    "current_day": prog.get("current_day"),
+                    "trading_days": prog.get("trading_days"),
+                    "current_date": prog.get("current_date"),
+                    "start_date": prog.get("start_date"),
+                    "end_date": prog.get("end_date"),
+                }
+            except Exception:
+                s["backtest_progress"] = None
+        else:
+            s["backtest_progress"] = None
+
+
 @app.get("/api/sessions")
 def get_sessions(user: dict = Depends(current_user)):
     """List sessions owned by the current user."""
     try:
-        from agent.session import list_sessions, SESSIONS_DIR
-        import sqlite3
+        from agent.session import list_sessions
         sessions = list_sessions()
         # Hide child sessions from comparison runs unless explicitly requested
         sessions = [s for s in sessions if not s.get("parent_session")]
@@ -847,104 +950,7 @@ def get_sessions(user: dict = Depends(current_user)):
         user_email = (user.get("email") or "").lower()
         sessions = [s for s in sessions if (s.get("user_email") or "").lower() == user_email]
         for s in sessions:
-            sid = s["session_id"]
-            status = _is_agent_running(sid)
-            s["is_running"] = status["running"]
-            s["pid"] = status["pid"]
-
-            db_path = SESSIONS_DIR / sid / "trades.db"
-            if not db_path.exists():
-                s["total_trades"] = 0
-                s["win_rate"] = None
-                s["portfolio"] = None
-                s["daily"] = []
-                continue
-
-            try:
-                conn = sqlite3.connect(str(db_path))
-                starting_capital = s["starting_capital"]
-
-                # Scope stats to the live phase (post Go-Live) so the list card
-                # matches the in-session performance view. Sessions that never
-                # went live fall back to all closed trades.
-                cutoff = s.get("live_started_at") or ""
-                if cutoff:
-                    closed_where = "status = 'closed' AND entry_time >= ?"
-                    params = (cutoff,)
-                else:
-                    closed_where = "status = 'closed'"
-                    params = ()
-
-                row = conn.execute(
-                    f"SELECT COUNT(*), SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END), "
-                    f"COALESCE(SUM(pnl), 0) FROM trades WHERE {closed_where}",
-                    params,
-                ).fetchone()
-                total = row[0] or 0
-                wins = row[1] or 0
-                realized_pnl = row[2] or 0
-                s["total_trades"] = total
-                s["win_rate"] = round((wins / total) * 100, 1) if total > 0 else None
-
-                open_count = conn.execute(
-                    "SELECT COUNT(*) FROM trades WHERE status = 'open'"
-                ).fetchone()[0] or 0
-
-                # Net P&L = realized P&L of the (live-phase) closed trades.
-                # We deliberately do NOT add raw account cash or open-position
-                # entry value: raw cash includes open-short proceeds (a liability)
-                # and adding entry value on top double-counts shorts, which used
-                # to fabricate a phantom positive return. Open positions have no
-                # live price here, so they contribute ~0 unrealized.
-                total_return = realized_pnl
-                total_value = starting_capital + realized_pnl
-                total_return_pct = (total_return / starting_capital * 100) if starting_capital else 0
-
-                s["portfolio"] = {
-                    "cash": round(total_value, 2),
-                    "total_value": round(total_value, 2),
-                    "total_return": round(total_return, 2),
-                    "total_return_pct": round(total_return_pct, 2),
-                    "open_positions": open_count,
-                    "realized_pnl": round(realized_pnl, 2),
-                }
-
-                # Daily performance (last 14 days for sparkline)
-                snapshots = conn.execute(
-                    "SELECT date, total_value, daily_pnl FROM daily_snapshots "
-                    "ORDER BY date DESC LIMIT 14"
-                ).fetchall()
-                s["daily"] = [
-                    {"date": r[0], "total_value": r[1], "daily_pnl": r[2]}
-                    for r in snapshots
-                ]
-
-                conn.close()
-            except Exception:
-                s["total_trades"] = 0
-                s["win_rate"] = None
-                s["portfolio"] = None
-                s["daily"] = []
-
-            # Include backtest progress for backtest sessions
-            if s.get("backtest_mode"):
-                progress_path = SESSIONS_DIR / sid / "backtest_progress.json"
-                if progress_path.exists():
-                    try:
-                        prog = json.loads(progress_path.read_text())
-                        s["backtest_progress"] = {
-                            "status": prog.get("status", "unknown"),
-                            "current_day": prog.get("current_day"),
-                            "trading_days": prog.get("trading_days"),
-                            "current_date": prog.get("current_date"),
-                            "start_date": prog.get("start_date"),
-                            "end_date": prog.get("end_date"),
-                        }
-                    except Exception:
-                        s["backtest_progress"] = None
-                else:
-                    s["backtest_progress"] = None
-
+            _attach_list_stats(s)
         return sessions
     except Exception:
         return []
@@ -953,34 +959,11 @@ def get_sessions(user: dict = Depends(current_user)):
 @app.get("/api/admin/sessions")
 def get_admin_sessions(_admin: dict = Depends(require_admin)):
     """Admin: list ALL sessions (no ownership filter)."""
-    from agent.session import list_sessions, SESSIONS_DIR
-    import sqlite3
+    from agent.session import list_sessions
     sessions = list_sessions()
     sessions = [s for s in sessions if not s.get("parent_session")]
     for s in sessions:
-        sid = s["session_id"]
-        status = _is_agent_running(sid)
-        s["is_running"] = status["running"]
-        s["pid"] = status["pid"]
-        db_path = SESSIONS_DIR / sid / "trades.db"
-        if db_path.exists():
-            try:
-                conn = sqlite3.connect(str(db_path))
-                row = conn.execute(
-                    "SELECT COUNT(*), SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) "
-                    "FROM trades WHERE status = 'closed'"
-                ).fetchone()
-                conn.close()
-                total = row[0] or 0
-                wins = row[1] or 0
-                s["total_trades"] = total
-                s["win_rate"] = round((wins / total) * 100, 1) if total else None
-            except Exception:
-                s["total_trades"] = 0
-                s["win_rate"] = None
-        else:
-            s["total_trades"] = 0
-            s["win_rate"] = None
+        _attach_list_stats(s)
     return sessions
 
 
