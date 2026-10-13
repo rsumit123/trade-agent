@@ -265,6 +265,27 @@ def _get_tool_defs(config, is_backtest: bool = False):
 
 # ── Anthropic Implementation ────────────────────────────────
 
+CACHE = {"type": "ephemeral"}
+
+
+def _with_cache_breakpoints(system: str, messages: List[Dict]):
+    """Mark the system prompt and the newest message as prompt-cache breakpoints.
+
+    A cycle makes 3-5 calls that each resend tools + system + the growing
+    conversation. With these marks every call after the first reads that
+    prefix from the cache (0.1x input price) instead of paying for it again.
+    Only the copy sent to the API is marked, so at most 2 breakpoints are used.
+    """
+    last = messages[-1]
+    content = last["content"]
+    if isinstance(content, str):
+        content = [{"type": "text", "text": content}]
+    content = list(content)
+    content[-1] = {**content[-1], "cache_control": CACHE}
+    return ([{"type": "text", "text": system, "cache_control": CACHE}],
+            messages[:-1] + [{**last, "content": content}])
+
+
 class AnthropicDecisionEngine:
     """Decision engine using Claude API with tool use."""
 
@@ -312,7 +333,8 @@ class AnthropicDecisionEngine:
         messages = [{"role": "user", "content": context}]
         actions_taken = []
         reasoning_trail: List[Dict] = []
-        usage_acc = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
+        usage_acc = {"input_tokens": 0, "output_tokens": 0, "calls": 0,
+                     "cache_write_tokens": 0, "cache_read_tokens": 0}
         max_iterations = 10
         self.last_error = None
 
@@ -331,12 +353,13 @@ class AnthropicDecisionEngine:
                         input=[{"role": "system", "content": system}] + messages,
                         model_parameters={"max_tokens": 4096},
                     ) as gen:
+                        cached_system, cached_messages = _with_cache_breakpoints(system, messages)
                         response = self.client.messages.create(
                             model=self.config.anthropic_model,
                             max_tokens=4096,
-                            system=system,
+                            system=cached_system,
                             tools=tool_defs,
-                            messages=messages,
+                            messages=cached_messages,
                         )
                         u = getattr(response, "usage", None)
                         gen.update(
@@ -344,6 +367,8 @@ class AnthropicDecisionEngine:
                             usage_details={
                                 "input": int(getattr(u, "input_tokens", 0) or 0),
                                 "output": int(getattr(u, "output_tokens", 0) or 0),
+                                "cache_creation_input_tokens": int(getattr(u, "cache_creation_input_tokens", 0) or 0),
+                                "cache_read_input_tokens": int(getattr(u, "cache_read_input_tokens", 0) or 0),
                             } if u is not None else None,
                             metadata={"stop_reason": getattr(response, "stop_reason", None)},
                         )
@@ -357,6 +382,8 @@ class AnthropicDecisionEngine:
                     if u is not None:
                         usage_acc["input_tokens"] += int(getattr(u, "input_tokens", 0) or 0)
                         usage_acc["output_tokens"] += int(getattr(u, "output_tokens", 0) or 0)
+                        usage_acc["cache_write_tokens"] += int(getattr(u, "cache_creation_input_tokens", 0) or 0)
+                        usage_acc["cache_read_tokens"] += int(getattr(u, "cache_read_input_tokens", 0) or 0)
                         usage_acc["calls"] += 1
                 except Exception:
                     pass

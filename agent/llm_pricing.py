@@ -34,10 +34,16 @@ MODEL_PRICES = {
 }
 
 
-def estimate_usd(model: str, input_tokens: int, output_tokens: int) -> float:
-    """Return USD cost estimate for a single LLM call."""
+# Anthropic prompt caching: writes cost 1.25x the input price, reads 0.1x.
+CACHE_WRITE_MULT, CACHE_READ_MULT = 1.25, 0.10
+
+
+def estimate_usd(model: str, input_tokens: int, output_tokens: int,
+                 cache_write_tokens: int = 0, cache_read_tokens: int = 0) -> float:
+    """Return USD cost estimate. input_tokens excludes cached tokens (as Anthropic reports it)."""
     in_price, out_price = MODEL_PRICES.get(model, (1.00, 4.00))
-    return (input_tokens * in_price + output_tokens * out_price) / 1_000_000
+    cached = cache_write_tokens * CACHE_WRITE_MULT + cache_read_tokens * CACHE_READ_MULT
+    return ((input_tokens + cached) * in_price + output_tokens * out_price) / 1_000_000
 
 
 def is_known(model: str) -> bool:

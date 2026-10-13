@@ -156,7 +156,8 @@ def check_claude_spend(sessions_dir: Path) -> dict:
                 continue
             if not str(r.get("model", "")).startswith("claude"):
                 continue
-            usd = estimate_usd(r["model"], r.get("input_tokens", 0), r.get("output_tokens", 0))
+            usd = estimate_usd(r["model"], r.get("input_tokens", 0), r.get("output_tokens", 0),
+                               r.get("cache_write_tokens", 0), r.get("cache_read_tokens", 0))
             if r["ts"][:10] >= CLAUDE_BUDGET_FROM:
                 since_budget += usd
             if datetime.fromisoformat(r["ts"]) >= since:

@@ -689,12 +689,14 @@ class TradingAgent:
         usage = getattr(self.engine, "last_usage", None) or {}
         in_tok = int(usage.get("input_tokens", 0) or 0)
         out_tok = int(usage.get("output_tokens", 0) or 0)
-        if in_tok == 0 and out_tok == 0:
+        cache_w = int(usage.get("cache_write_tokens", 0) or 0)
+        cache_r = int(usage.get("cache_read_tokens", 0) or 0)
+        if in_tok == 0 and out_tok == 0 and cache_w == 0 and cache_r == 0:
             return  # nothing happened (e.g. error before any LLM call)
         active_model = self._active_model
         try:
             from .llm_pricing import estimate_usd
-            usd = estimate_usd(active_model, in_tok, out_tok)
+            usd = estimate_usd(active_model, in_tok, out_tok, cache_w, cache_r)
         except Exception:
             usd = 0.0
 
@@ -711,6 +713,8 @@ class TradingAgent:
             "model": active_model,
             "input_tokens": in_tok,
             "output_tokens": out_tok,
+            "cache_write_tokens": cache_w,
+            "cache_read_tokens": cache_r,
             "calls": int(usage.get("calls", 0) or 0),
             "usd": round(usd, 6),
         }
