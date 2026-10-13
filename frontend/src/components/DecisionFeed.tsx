@@ -289,15 +289,15 @@ function computeHoldMinutes(entry: string, exit: string | null): string | null {
 }
 
 function exitTypeBg(t: string): string {
-  if (t === "target") return "rgba(34,197,94,0.10)";
-  if (t === "stop") return "rgba(239,68,68,0.10)";
+  if (t === "target_hit") return "rgba(34,197,94,0.10)";
+  if (t === "stop_hit") return "rgba(239,68,68,0.10)";
   if (t === "forced_close") return "rgba(245,158,11,0.10)";
   if (t === "manual") return "rgba(96,165,250,0.10)";
   return "rgba(148,163,184,0.10)";
 }
 function exitTypeFg(t: string): string {
-  if (t === "target") return "#22c55e";
-  if (t === "stop") return "#ef4444";
+  if (t === "target_hit") return "#22c55e";
+  if (t === "stop_hit") return "#ef4444";
   if (t === "forced_close") return "#fbbf24";
   if (t === "manual") return "#60a5fa";
   return "#94a3b8";
