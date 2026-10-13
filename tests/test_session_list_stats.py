@@ -35,3 +35,20 @@ def test_admin_list_has_same_stats_as_user_list(tmp_path, monkeypatch):
     [admin] = app.get_admin_sessions({})
     assert admin["portfolio"]["total_return"] == 504.0
     assert admin["is_running"] is True
+
+
+def test_list_card_matches_dashboard_win_rate_and_live_sparkline(tmp_path, monkeypatch):
+    # Win rate excludes breakevens (like the dashboard) and the sparkline drops
+    # pre-Go-Live (backtest) snapshots.
+    s = _session_with_trades(tmp_path, monkeypatch)
+    con = sqlite3.connect(tmp_path / "s1" / "trades.db")
+    con.execute("insert into trades values ('closed', 0.0, '2026-10-13T06:00')")
+    con.executemany("insert into daily_snapshots values (?,?,?)", [
+        ("2026-04-01", 480_000.0, -5.0), ("2026-10-12", 500_100.0, 100.0),
+    ])
+    con.commit()
+    con.close()
+    s["live_started_at"] = "2026-10-01T00:00:00"
+    app._attach_list_stats(s)
+    assert s["total_trades"] == 3 and s["win_rate"] == 50.0  # 1 win / (1 win + 1 loss)
+    assert [d["date"] for d in s["daily"]] == ["2026-10-12"]

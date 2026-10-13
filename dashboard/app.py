@@ -867,14 +867,18 @@ def _attach_list_stats(s: dict) -> None:
 
         row = conn.execute(
             f"SELECT COUNT(*), SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END), "
-            f"COALESCE(SUM(pnl), 0) FROM trades WHERE {closed_where}",
+            f"COALESCE(SUM(pnl), 0), SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) "
+            f"FROM trades WHERE {closed_where}",
             params,
         ).fetchone()
         total = row[0] or 0
         wins = row[1] or 0
+        losses = row[3] or 0
         realized_pnl = row[2] or 0
         s["total_trades"] = total
-        s["win_rate"] = round((wins / total) * 100, 1) if total > 0 else None
+        # Breakevens are excluded from the denominator, like the dashboard's win rate.
+        decisive = wins + losses
+        s["win_rate"] = round((wins / decisive) * 100, 1) if decisive > 0 else None
 
         open_count = conn.execute(
             "SELECT COUNT(*) FROM trades WHERE status = 'open'"
@@ -900,9 +904,13 @@ def _attach_list_stats(s: dict) -> None:
         }
 
         # Daily performance (last 14 days for sparkline)
+        # Live phase only, like /api/performance/daily (backtest replay days
+        # carry simulated values that would pollute the sparkline).
+        snap_where, snap_params = ("WHERE date >= ? ", (cutoff[:10],)) if cutoff else ("", ())
         snapshots = conn.execute(
-            "SELECT date, total_value, daily_pnl FROM daily_snapshots "
-            "ORDER BY date DESC LIMIT 14"
+            f"SELECT date, total_value, daily_pnl FROM daily_snapshots {snap_where}"
+            "ORDER BY date DESC LIMIT 14",
+            snap_params,
         ).fetchall()
         s["daily"] = [
             {"date": r[0], "total_value": r[1], "daily_pnl": r[2]}
