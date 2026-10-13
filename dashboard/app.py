@@ -40,7 +40,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 from agent.config import AgentConfig
 from agent.portfolio import Portfolio
-from agent.market_data import MarketData, create_market_data
+from agent.market_data import MarketData, create_market_data, prices_incl_positions
 from agent.learner import Learner
 from agent.risk_manager import RiskManager
 from agent.sector_data import get_nse_sectors
@@ -1969,7 +1969,7 @@ def backtest_go_live(session_id: str, user: dict = Depends(current_user)):
         c = _get_components(session_id)
         prices = {}
         try:
-            prices = c["market_data"].get_current_prices()
+            prices = prices_incl_positions(c["market_data"], c["portfolio"])
         except Exception:
             pass
         c["portfolio"].reset_for_live(prices)
@@ -2070,7 +2070,7 @@ def get_dashboard(session_id: str, user: dict = Depends(current_user)):
     if has_open:
         # Fetch prices + watchlist in parallel with shared thread pool
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-            price_future = pool.submit(c["market_data"].get_current_prices)
+            price_future = pool.submit(prices_incl_positions, c["market_data"], c["portfolio"])
             wl_future = pool.submit(c["market_data"].get_watchlist_summary)
             try:
                 prices = price_future.result(timeout=5)

@@ -37,3 +37,24 @@ def test_current_price_single_ticker_multiindex(monkeypatch):
     monkeypatch.setattr(md.yf, "download", lambda *a, **k: data)
     monkeypatch.setattr(md.yf, "Ticker", lambda t: (_ for _ in ()).throw(AssertionError("fallback used")))
     assert md.MarketData(["BTC-USD"]).get_current_prices() == {"BTC-USD": 82710.0}
+
+
+def test_prices_incl_positions_quotes_holdings_outside_watchlist(tmp_path):
+    # Scanner sessions hold stocks the dashboard's watchlist doesn't contain;
+    # they used to be valued at entry price (₹0 P&L).
+    from agent.market_data import prices_incl_positions
+    from agent.portfolio import Portfolio
+
+    class FakeData:
+        watchlist = ["RELIANCE.NS"]
+        def get_current_prices(self, tickers=None):
+            self.asked = tickers
+            return {t: 100.0 for t in (tickers or self.watchlist)}
+
+    pf = Portfolio(str(tmp_path / "t.db"), 500_000)
+    data = FakeData()
+    assert prices_incl_positions(data, pf) == {"RELIANCE.NS": 100.0}
+    pf.execute_buy("HCLTECH.NS", 10, 90.0, "intraday")
+    prices = prices_incl_positions(data, pf)
+    assert data.asked == ["RELIANCE.NS", "HCLTECH.NS"]
+    assert pf.get_portfolio_summary(prices)["holdings"][0]["unrealized_pnl"] == 100.0

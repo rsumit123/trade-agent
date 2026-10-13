@@ -284,6 +284,18 @@ class MarketData:
         return market_open <= now <= market_close
 
 
+def prices_incl_positions(market_data, portfolio) -> Dict[str, float]:
+    """Prices for the watchlist plus every open position.
+
+    Scanner sessions replace their watchlist during the day, so a holding can
+    fall outside it; valuing it from the watchlist alone silently uses the
+    entry price (₹0 P&L)."""
+    held = [t.ticker for t in portfolio.get_open_positions()]
+    if not held:
+        return market_data.get_current_prices()
+    return market_data.get_current_prices(list(dict.fromkeys([*market_data.watchlist, *held])))
+
+
 def create_market_data(config, market_preset=None):
     """Factory: create appropriate market data provider based on config.
 

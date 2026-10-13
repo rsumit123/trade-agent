@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .config import AgentConfig
 from .portfolio import Portfolio
-from .market_data import MarketData, create_market_data
+from .market_data import MarketData, create_market_data, prices_incl_positions
 from .web_research import WebResearcher
 from .decision_engine import create_engine
 from .risk_manager import RiskManager
@@ -144,7 +144,7 @@ class TradingAgent:
             return {"query": query, "results": results[:8]}
 
         elif tool_name == "get_portfolio_status":
-            prices = self.market_data.get_current_prices()
+            prices = prices_incl_positions(self.market_data, self.portfolio)
             return self.portfolio.get_portfolio_summary(prices)
 
         elif tool_name == "get_stock_details":
@@ -462,7 +462,7 @@ class TradingAgent:
 
             # Today's P&L from portfolio
             try:
-                prices = self.market_data.get_current_prices()
+                prices = prices_incl_positions(self.market_data, self.portfolio)
             except Exception:
                 prices = {}
             portfolio = self.portfolio.get_portfolio_summary(prices)
@@ -551,7 +551,7 @@ class TradingAgent:
 
         # 1. OBSERVE — gather market data
         logger.info("👁️  Observing market...")
-        prices = self.market_data.get_current_prices()
+        prices = prices_incl_positions(self.market_data, self.portfolio)
         watchlist_data = self.market_data.get_watchlist_summary()
 
         # News fetch is per-session opt-out (experiment: does news improve
@@ -772,7 +772,7 @@ class TradingAgent:
     def run_daily_review(self):
         """Run end-of-day review and update learning journal."""
         logger.info("📝 Running daily review...")
-        prices = self.market_data.get_current_prices()
+        prices = prices_incl_positions(self.market_data, self.portfolio)
 
         # Save daily snapshot
         self.portfolio.save_daily_snapshot(prices)
