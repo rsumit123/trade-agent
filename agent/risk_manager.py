@@ -119,7 +119,7 @@ class RiskManager:
 
         return False, "Within limits"
 
-    def check_intraday_close(self) -> bool:
+    def check_intraday_close(self, now=None) -> bool:
         """Check if it's time to force-close intraday positions (near market close).
         Returns False for 24/7 markets (no forced close)."""
         preset = self.config._market_preset
@@ -127,7 +127,7 @@ class RiskManager:
             return False
 
         from zoneinfo import ZoneInfo
-        now = datetime.now(ZoneInfo(self.config.timezone))
+        now = now or datetime.now(ZoneInfo(self.config.timezone))
 
         close_str = self.config.market_close  # e.g. "15:30"
         buffer = preset.intraday_close_buffer_min if preset else 15

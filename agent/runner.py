@@ -811,6 +811,9 @@ class TradingAgent:
                     is_premarket_window = self._is_premarket_window()
 
                 if not market_open and not is_premarket_window:
+                    # Regular markets review once after the close, when every
+                    # intraday position has been force-closed.
+                    self._maybe_run_daily_review()
                     logger.info("💤 Market closed, waiting...")
                     time.sleep(60)
                     continue
@@ -901,16 +904,13 @@ class TradingAgent:
             f"P&L {sym}{pnl:+,.2f}. Reason: {trade.exit_reason}".rstrip()
         )
 
-    def _maybe_run_daily_review(self):
+    def _maybe_run_daily_review(self, now=None):
         """
-        Run daily review once per calendar day (UTC).
+        Run the daily review once per day.
         For 24/7 markets (crypto), triggers at midnight UTC.
-        For regular markets, triggers near market close.
+        For regular markets, triggers once after the close on weekdays.
         """
         from datetime import datetime, timezone
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        if self._last_review_date == today:
-            return  # Already reviewed today
 
         is_24x7 = (
             self.market_data.market_preset
@@ -918,26 +918,52 @@ class TradingAgent:
         )
 
         if is_24x7:
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            if self._last_review_date == today:
+                return  # Already reviewed today
             # For 24/7 markets: run review once per UTC day at midnight
             if self._last_review_date is not None and self._last_review_date != today:
                 logger.info("🔄 Running scheduled daily review (24/7 market)")
                 self.run_daily_review()
             self._last_review_date = today
-        else:
-            # For regular markets: run review once per day near market close
-            # Use a separate flag so we don't miss the close window
-            if not hasattr(self, '_review_done_today'):
-                self._review_done_today = False
+            return
 
-            if self._last_review_date != today:
-                # New day — reset the flag
-                self._review_done_today = False
-                self._last_review_date = today
+        # Regular markets. This used to share the early return above, which
+        # marked the day done on the first (morning) loop, so the close-time
+        # review only ran when an agent happened to start after the close.
+        now = now or datetime.now(ZoneInfo(self.config.timezone))
+        today = now.strftime("%Y-%m-%d")
+        if now.weekday() >= 5 or self.market_data.is_market_open():
+            return
+        if not self.risk_manager.check_intraday_close(now):
+            return  # before today's close (pre-market)
+        if self._review_marker_date() == today:
+            return
+        logger.info("🔄 Running scheduled daily review (market closed)")
+        self.run_daily_review()
+        self._set_review_marker(today)
 
-            if not self._review_done_today and self.risk_manager.check_intraday_close():
-                logger.info("🔄 Running scheduled daily review (market closing)")
-                self.run_daily_review()
-                self._review_done_today = True
+    def _review_marker_path(self):
+        return self.session.session_dir / "last_daily_review" if self.session else None
+
+    def _review_marker_date(self):
+        """Date of the last close-time review; on disk so a restart doesn't repeat it."""
+        path = self._review_marker_path()
+        if path is None:
+            return getattr(self, "_review_done_date", None)
+        try:
+            return path.read_text().strip()
+        except OSError:
+            return None
+
+    def _set_review_marker(self, today: str):
+        self._review_done_date = today
+        path = self._review_marker_path()
+        if path is not None:
+            try:
+                path.write_text(today)
+            except OSError as e:
+                logger.warning(f"Could not record daily review date: {e}")
 
     def _is_premarket_window(self) -> bool:
         """Check if we're in the pre-market window (8:30 AM - market open)."""
