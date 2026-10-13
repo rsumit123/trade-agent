@@ -9,6 +9,16 @@ import type { Session } from "@/lib/types";
 type Filter = "all" | "live" | "stopped";
 type SortBy = "recent" | "return" | "today" | "winrate" | "trades";
 
+/** Most common currency symbol across sessions (rollups are shown in one symbol). */
+function dominantSymbol(sessions: Session[]): string {
+  const counts: Record<string, number> = {};
+  sessions.forEach((s) => {
+    const sym = s.currency_symbol || "$";
+    counts[sym] = (counts[sym] || 0) + 1;
+  });
+  return Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || "$";
+}
+
 function SkeletonCard() {
   return (
     <div className="bg-bg-card border border-border rounded-2xl p-5 space-y-4">
@@ -180,6 +190,9 @@ export function SessionsListView({
 
   const rollup = useMemo(() => {
     const todayIso = new Date().toISOString().slice(0, 10);
+    // Money totals are shown in one symbol, so only sum sessions in that
+    // currency (₹ NSE and $ crypto can't be added together).
+    const rollupSym = dominantSymbol(sessions);
     let totalReturn = 0;
     let totalValue = 0;
     let totalCapital = 0;
@@ -188,16 +201,17 @@ export function SessionsListView({
     let todayPnl = 0;
     let havePortfolio = 0;
     for (const s of sessions) {
-      if (s.portfolio) {
+      const sameCurrency = (s.currency_symbol || "$") === rollupSym;
+      if (s.portfolio && sameCurrency) {
         totalReturn += s.portfolio.total_return || 0;
         totalValue += s.portfolio.total_value || 0;
         totalCapital += s.starting_capital || 0;
-        openPositions += s.portfolio.open_positions || 0;
         havePortfolio++;
       }
+      if (s.portfolio) openPositions += s.portfolio.open_positions || 0;
       trades += s.total_trades ?? 0;
       const last = (s.daily ?? [])[0];
-      if (last?.date === todayIso) todayPnl += last.daily_pnl ?? 0;
+      if (sameCurrency && last?.date === todayIso) todayPnl += last.daily_pnl ?? 0;
     }
     const returnPct = totalCapital > 0 ? (totalReturn / totalCapital) * 100 : 0;
     return { totalReturn, totalValue, totalCapital, returnPct, openPositions, trades, todayPnl, havePortfolio };
@@ -321,16 +335,11 @@ function PortfolioRollup({
   const accent = isProfit ? "#22c55e" : "#ef4444";
 
   // Pick a single currency symbol (most common across sessions)
-  const symCounts: Record<string, number> = {};
-  sessions.forEach((s) => {
-    const sym = s.currency_symbol || "$";
-    symCounts[sym] = (symCounts[sym] || 0) + 1;
-  });
-  const sym = Object.entries(symCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || "$";
+  const sym = dominantSymbol(sessions);
 
   // Build combined daily total_value series for the watermark sparkline
   const byDate: Record<string, number> = {};
-  sessions.forEach((s) => {
+  sessions.filter((s) => (s.currency_symbol || "$") === sym).forEach((s) => {
     (s.daily ?? []).forEach((d) => {
       if (d.total_value != null) byDate[d.date] = (byDate[d.date] || 0) + d.total_value;
     });
