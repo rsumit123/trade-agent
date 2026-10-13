@@ -189,7 +189,7 @@ def _build_context(portfolio: Dict, watchlist: List[Dict], news: str,
         vr_str  = f"{vr:>4.1f}x"  if vr  is not None else " n/a"
         r2res_str = f"{r2res:>5.1f}%" if r2res is not None else "  n/a"
         r2sup_str = f"{r2sup:>5.1f}%" if r2sup is not None else "  n/a"
-        max_qty_str = f"  max_qty={int(s.get('max_qty') or 0):>5d}" if show_maxqty else ""
+        max_qty_str = f"  max_qty={s.get('max_qty') or 0:>5g}" if show_maxqty else ""
         watchlist_lines.append(
             f"{ticker:20s}  {sym}{price:>8.2f}  {chg:>+6.2f}%  "
             f"RSI={rsi_str}  vol={vr_str}  res={r2res_str}  sup={r2sup_str}  sma={sma}{max_qty_str}"

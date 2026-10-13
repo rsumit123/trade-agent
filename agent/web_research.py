@@ -361,6 +361,11 @@ class LLMWebSearchTool:
                 f" SHORT positions are force-covered at {trigger_h}:{trigger_m:02d} "
                 f"({tz_label}) if not closed manually."
             )
+        if market_preset and market_preset.fractional_qty:
+            qty_schema = {"type": "number",
+                          "description": "Units to trade, fractions allowed (e.g. 0.015). Required for BUY and SHORT"}
+        else:
+            qty_schema = {"type": "integer", "description": "Number of shares (required for BUY and SHORT)"}
         return {
             "name": "place_trade",
             "description": (
@@ -384,10 +389,7 @@ class LLMWebSearchTool:
                         "type": "string",
                         "description": "Stock ticker, e.g. 'RELIANCE.NS' (required for BUY and SHORT)"
                     },
-                    "quantity": {
-                        "type": "integer",
-                        "description": "Number of shares (required for BUY and SHORT)"
-                    },
+                    "quantity": qty_schema,
                     "trade_type": {
                         "type": "string",
                         "enum": ["intraday", "swing"],

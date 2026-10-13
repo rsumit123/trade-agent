@@ -5,6 +5,7 @@ Runs the Observe → Decide → Act → Learn loop on a schedule.
 
 import json
 import logging
+import math
 import random
 import time
 from datetime import datetime
@@ -431,6 +432,11 @@ class TradingAgent:
         except Exception:
             per_trade_amt = None
 
+        # Whole shares for stocks; crypto trades in fractions (one BTC costs
+        # more than a $10k account's per-trade budget, so int() gave max_qty=0
+        # and the crypto agents could never trade).
+        fractional = bool(self.preset and getattr(self.preset, "fractional_qty", False))
+
         per_pos_cap = equity * per_pos_cap_pct
         budget = min(cash, per_pos_cap)
         if per_trade_amt and per_trade_amt > 0:
@@ -441,7 +447,8 @@ class TradingAgent:
                 price = float(row.get("current_price") or 0)
                 if price <= 0:
                     continue
-                row["max_qty"] = int(budget // price)
+                row["max_qty"] = (math.floor(budget / price * 1e6) / 1e6 if fractional
+                                  else int(budget // price))
             except Exception:
                 continue
 

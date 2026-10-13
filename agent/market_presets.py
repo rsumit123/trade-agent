@@ -32,6 +32,7 @@ class MarketPreset:
     locale: str = "en-US"                   # for number formatting
     default_watchlist_count: int = 0         # for UI display (0 = use len(watchlist))
     use_premarket_scanner: bool = False      # run pre-market scan before first cycle
+    fractional_qty: bool = False             # quantities may be fractional (crypto: 0.015 BTC)
 
 
 # ── NSE (Indian Stock Markets) ─────────────────────────────────────────
@@ -124,6 +125,7 @@ NSE_PRESET = MarketPreset(
 
 CRYPTO_PRESET = MarketPreset(
     market_id="crypto",
+    fractional_qty=True,
     display_name="Cryptocurrency Markets",
     currency="USD",
     currency_symbol="$",
