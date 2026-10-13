@@ -32,10 +32,12 @@ class MarketData:
 
     def get_current_prices(self, tickers: List[str] = None) -> Dict[str, float]:
         """Get latest prices for watchlist or specific tickers."""
+        explicit = bool(tickers)
         tickers = tickers or self.watchlist
 
-        # Return cache if fresh
-        if (self._cache_time and
+        # Return cache if fresh. Explicit ticker requests (trade execution, the
+        # stop/target monitor) always fetch live, matching KiteMarketData.
+        if (not explicit and self._cache_time and
             datetime.now() - self._cache_time < self._cache_ttl and
             all(t in self._price_cache for t in tickers)):
             return {t: self._price_cache[t] for t in tickers}

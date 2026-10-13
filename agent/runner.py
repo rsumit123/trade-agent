@@ -5,8 +5,10 @@ Runs the Observe → Decide → Act → Learn loop on a schedule.
 
 import json
 import logging
+import random
 import time
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Dict, Any
 from pathlib import Path
 
@@ -19,6 +21,11 @@ from .risk_manager import RiskManager
 from .learner import Learner
 
 logger = logging.getLogger(__name__)
+
+# Between decision cycles, open positions are checked against their stop/target
+# this often, so a level touched mid-interval fills like a resting broker order
+# instead of waiting up to `intraday_interval_min` for the next cycle.
+MONITOR_INTERVAL_S = 60
 
 
 class TradingAgent:
@@ -44,6 +51,10 @@ class TradingAgent:
             self.config = config or AgentConfig()
 
         sym = self.config.currency_symbol
+
+        # Exits the agent didn't decide itself (stop/target/forced close), reported
+        # to it at the start of its next decision so it knows what happened.
+        self._auto_exits: list[str] = []
 
         # Ensure directories exist
         for path in [self.config.db_path, self.config.learnings_path, self.config.log_path]:
@@ -578,6 +589,7 @@ class TradingAgent:
             logger.info(f"🛑 Stop/target triggered on {len(stopped)} positions")
             for trade in stopped:
                 self.learner.write_trade_log(trade, llm_client=self.engine.client)
+                self._note_auto_exit(trade)
 
         # 4. Force-close intraday positions near market close (≥15:15 IST)
         #    Skip during backtest — the backtest engine handles EOD close separately
@@ -602,6 +614,15 @@ class TradingAgent:
         if directives_text:
             logger.info(f"📋 Live directives active ({directives_text.count(chr(10))} items)")
             learnings = directives_text + "\n\n" + learnings
+
+        # Tell the agent about positions closed without its decision since last cycle.
+        auto_exits = list(self._auto_exits)
+        if auto_exits:
+            learnings = (
+                "## Since your last decision\n"
+                "These positions were closed automatically (not by you):\n"
+                + "\n".join(auto_exits) + "\n\n" + learnings
+            )
 
         # Add pre-market scan summary to news context if available
         premarket_summary = getattr(self, '_premarket_summary', '')
@@ -647,6 +668,9 @@ class TradingAgent:
         if llm_failed:
             logger.error(f"❌ Cycle failed — LLM unavailable: {llm_error}")
             return {"status": "llm_error", "error": llm_error, "actions": []}
+
+        # The agent has now seen these exits.
+        del self._auto_exits[:len(auto_exits)]
 
         logger.info(f"✅ Cycle complete — {len(actions)} actions taken")
         self._cleanup_cycle_directives()
@@ -809,7 +833,7 @@ class TradingAgent:
                     sleep_seconds = 30 * 60  # 30 min for swing
 
                 logger.info(f"⏳ Next cycle in {sleep_seconds // 60} minutes")
-                time.sleep(sleep_seconds)
+                self._sleep_monitoring_positions(sleep_seconds)
 
         except KeyboardInterrupt:
             logger.info("🛑 Agent stopped by user")
@@ -817,6 +841,61 @@ class TradingAgent:
         except Exception as e:
             logger.error(f"💥 Agent crashed with unhandled exception: {e}", exc_info=True)
             raise
+
+    def _sleep_monitoring_positions(self, sleep_seconds: float):
+        """Sleep until the next cycle, checking open positions' stops/targets each minute."""
+        deadline = time.monotonic() + sleep_seconds
+        # Per-agent jitter so agents sharing one Kite key don't quote in the same second.
+        step = MONITOR_INTERVAL_S + random.uniform(0, 10)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(step, remaining))
+            if deadline - time.monotonic() > 1:
+                self._monitor_positions()
+
+    def _monitor_positions(self):
+        """One stop/target check for open positions. No LLM call; never raises."""
+        if getattr(self, "_is_backtest", False):
+            return
+        try:
+            positions = self.portfolio.get_open_positions()
+            if not positions or not self.market_data.is_market_open():
+                return
+            tickers = sorted({p.ticker for p in positions})
+            prices = self.market_data.get_current_prices(tickers)
+            if not prices:
+                return                      # quote failed / rate-limited: try next minute
+            closed = self.risk_manager.run_stop_loss_sweep(prices)
+            for trade in closed:
+                logger.info(f"⏱️  Between-cycle exit: {trade.ticker} ({trade.exit_type})")
+                self.learner.write_trade_log(trade, llm_client=self.engine.client)
+                self._note_auto_exit(trade)
+        except Exception as e:
+            logger.warning(f"Position monitor skipped this minute: {e}")
+
+    def _note_auto_exit(self, trade):
+        """Queue a one-line note about an exit the agent didn't make, for its next prompt."""
+        if trade is None or trade.exit_price is None:
+            return
+        label = {
+            "stop_hit": "was STOPPED OUT",
+            "target_hit": "hit its TARGET",
+            "forced_close": "was force-closed before market close",
+        }.get(trade.exit_type, "was closed")
+        try:
+            tz = ZoneInfo(self.preset.timezone) if self.preset else None
+        except Exception:
+            tz = None
+        now = datetime.now(tz)
+        sym = self.config.currency_symbol
+        pnl = trade.pnl or 0.0
+        self._auto_exits.append(
+            f"- {trade.ticker} {trade.direction} ({trade.quantity} @ {sym}{trade.entry_price:,.2f}) "
+            f"{label} at {sym}{trade.exit_price:,.2f} ({now:%H:%M} {now.tzname() or ''}). "
+            f"P&L {sym}{pnl:+,.2f}. Reason: {trade.exit_reason}".rstrip()
+        )
 
     def _maybe_run_daily_review(self):
         """
@@ -1047,3 +1126,4 @@ class TradingAgent:
                 logger.info(f"⏰ Force-closing intraday LONG: {pos.ticker}")
                 trade = self.portfolio.execute_sell(pos.id, price, reason="End-of-day forced close", exit_type="forced_close")
             self.learner.write_trade_log(trade, llm_client=self.engine.client)
+            self._note_auto_exit(trade)
