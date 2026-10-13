@@ -1,8 +1,8 @@
 "use client";
 import { cn } from "@/lib/api";
-import type { RiskStatus } from "@/lib/types";
+import type { PortfolioSummary, RiskStatus } from "@/lib/types";
 
-export function RiskPanel({ risk }: { risk: RiskStatus | null }) {
+export function RiskPanel({ risk, portfolio }: { risk: RiskStatus | null; portfolio?: PortfolioSummary | null }) {
   if (!risk) {
     return (
       <div className="bg-bg-card border border-border rounded-xl overflow-hidden">
@@ -17,8 +17,12 @@ export function RiskPanel({ risk }: { risk: RiskStatus | null }) {
   const riskColor = (pct: number) => pct > 80 ? "accent-red" : pct > 50 ? "accent-amber" : "accent-green";
   const dailyPct = risk.daily_limit_used_pct;
   const positionPct = (risk.open_positions / risk.max_positions) * 100;
-  const capitalPct = risk.max_trade_amount > 0
-    ? Math.max(0, Math.min(100, ((risk.max_trade_amount - risk.cash_available) / risk.max_trade_amount) * 100))
+  // Gross exposure (longs at market, shorts at cover cost) as a share of equity.
+  // The old formula compared available cash to the per-trade cap, which is 0%
+  // for any account holding more cash than one trade.
+  const grossExposure = (portfolio?.holdings || []).reduce((s, h) => s + Math.abs(h.market_value || 0), 0);
+  const capitalPct = portfolio && portfolio.total_value > 0
+    ? Math.max(0, Math.min(100, (grossExposure / portfolio.total_value) * 100))
     : 0;
 
   const bars = [

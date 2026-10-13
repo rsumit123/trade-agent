@@ -267,7 +267,7 @@ export default function SessionDashboard() {
               />
             </div>
             <div>
-              <RiskPanel risk={risk} />
+              <RiskPanel risk={risk} portfolio={portfolio} />
             </div>
           </div>
 
