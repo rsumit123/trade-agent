@@ -24,9 +24,9 @@ The owner is **rsumit123@gmail.com**. All emails go there and only replies from 
 
 | Session | Market | Role |
 |---|---|---|
-| nse_default | nse (swing) | Gemini 2.5 Flash baseline |
+| nse_default | nse (swing) | Haiku 5.5 since 2026-10-13 (was Gemini 2.5 Flash; OpenRouter out of credit) |
 | nse_sonnet | nse-intraday | Sonnet 5.5 |
-| vin | nse | gpt-oss-120b (free), brother's session |
+| vin | nse | Haiku 5.5 since 2026-10-13 (was gpt-oss-120b), brother's session |
 | btc_haiku | crypto | Haiku control |
 | btc_haiku_strict | crypto | experiment: strict exits |
 | btc_haiku_no_news | crypto | experiment: `include_news: false` |
