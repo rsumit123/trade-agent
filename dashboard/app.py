@@ -2033,12 +2033,18 @@ def get_market_presets():
 # ── API Routes (session-aware) ───────────────────────────────
 
 
-def _fetch_prices_with_timeout(market_data, timeout=5) -> dict:
-    """Fetch live prices with a timeout. Returns {} on timeout or error."""
+def _fetch_prices_with_timeout(market_data, timeout=5, portfolio=None) -> dict:
+    """Fetch live prices with a timeout. Returns {} on timeout or error.
+
+    Pass the session portfolio so open positions outside the (scanner-driven)
+    watchlist are priced too; otherwise they are valued at entry price."""
     import concurrent.futures
     try:
         with concurrent.futures.ThreadPoolExecutor() as pool:
-            future = pool.submit(market_data.get_current_prices)
+            if portfolio is not None:
+                future = pool.submit(prices_incl_positions, market_data, portfolio)
+            else:
+                future = pool.submit(market_data.get_current_prices)
             return future.result(timeout=timeout)
     except Exception:
         return {}
@@ -2189,7 +2195,7 @@ def get_portfolio(session: str = None, user: dict = Depends(current_user)):
     if session: _ensure_session_access(session, user)
     """Get current portfolio summary. Fetches live prices with a 5s timeout."""
     c = _get_components(session)
-    prices = _fetch_prices_with_timeout(c["market_data"], timeout=5)
+    prices = _fetch_prices_with_timeout(c["market_data"], timeout=5, portfolio=c["portfolio"])
     return c["portfolio"].get_portfolio_summary(prices)
 
 
@@ -2237,7 +2243,7 @@ def get_risk_status(session: str = None, user: dict = Depends(current_user)):
     if session: _ensure_session_access(session, user)
     """Get current risk metrics. Fetches live prices with a 5s timeout."""
     c = _get_components(session)
-    prices = _fetch_prices_with_timeout(c["market_data"], timeout=5)
+    prices = _fetch_prices_with_timeout(c["market_data"], timeout=5, portfolio=c["portfolio"])
     return c["risk_manager"].get_risk_status(prices)
 
 
