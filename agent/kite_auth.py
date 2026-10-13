@@ -10,10 +10,12 @@ Handles the full login flow:
 Access token is cached to disk and reused until it expires (midnight IST).
 """
 
+import fcntl
 import json
 import logging
 import os
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -22,6 +24,8 @@ from urllib.parse import urlparse, parse_qs
 import requests
 
 logger = logging.getLogger(__name__)
+
+LOGIN_RETRY_WAITS_S = [5, 15]
 
 
 class KiteAuth:
@@ -63,13 +67,41 @@ class KiteAuth:
             logger.info(f"🔑 Using cached Kite token (expires {token.get('expires_at', '?')})")
             return kite
 
-        # Need fresh login
-        logger.info("🔑 Kite token expired or missing — performing auto-login...")
-        access_token = self._auto_login()
-        self._cache_token(access_token)
+        # Need fresh login. Agents start together after a deploy; without the
+        # lock they all log in at once, the logins clash ("Failed to extract
+        # request_token") and the losers fall back to yfinance for the day.
+        with self._login_lock():
+            token = self._load_cached_token()   # another agent may have just logged in
+            if token and not self._is_expired(token):
+                kite.set_access_token(token["access_token"])
+                logger.info("🔑 Using Kite token cached by another agent")
+                return kite
+            logger.info("🔑 Kite token expired or missing — performing auto-login...")
+            access_token = self._login_with_retry()
+            self._cache_token(access_token)
         kite.set_access_token(access_token)
         logger.info("✅ Kite auto-login successful")
         return kite
+
+    @contextmanager
+    def _login_lock(self):
+        """Exclusive lock across agent processes for the duration of a login."""
+        with open(self.token_path.with_suffix(".lock"), "w") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+
+    def _login_with_retry(self) -> str:
+        for attempt, wait in enumerate(LOGIN_RETRY_WAITS_S + [None], start=1):
+            try:
+                return self._auto_login()
+            except ValueError as e:
+                if wait is None or "Missing Kite credentials" in str(e):
+                    raise
+                logger.warning(f"Kite auto-login attempt {attempt} failed ({e}); retrying in {wait}s")
+                time.sleep(wait)
 
     def _auto_login(self) -> str:
         """Perform fully automated login: password → TOTP → request_token → access_token."""
