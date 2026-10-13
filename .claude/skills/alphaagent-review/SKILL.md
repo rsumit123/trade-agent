@@ -42,27 +42,37 @@ The owner is **rsumit123@gmail.com**. All emails go there and only replies from 
      https://alphaagent-api.skdev.one/api/digest
    ```
    If the request fails (non-200 or empty), still send an `[ALERT]` email that explains the failure.
-2. **Optionally check the reasoning in Langfuse.** If a session looks odd (for example zero trades, or repeated losses on the same ticker), read its recent `decision_cycle` traces before guessing at a cause. Use `GET $LANGFUSE_BASE_URL/api/public/v2/observations?fromStartTime=<iso>&fields=core,basic,io`, with basic auth from `~/.langfuse-keys`. The legacy `/api/public/traces` endpoint is not available on this account.
-3. **Analyse each session:**
+2. **Run the deep check (required).** The digest only shows outcomes. It can't tell "chose not to trade" from "couldn't think". Every one of these went unnoticed for months while cycles logged "ok": OpenRouter 402s, a delisted model, crashed trade reflections, missing EMA50, and a price-fetch error on every BTC cycle.
+   ```bash
+   ssh ssh-social "docker exec -i alphaagent-backend python3 -" \
+     < .claude/skills/alphaagent-review/scripts/deep_check.py
+   ```
+   Every line in `problems` goes in the email under a "Problems found" heading, above the per-session bullets. If the script itself fails, say so in the email; don't skip the section.
+3. **Investigate before concluding.** Never explain zero trades, a losing streak or a quiet agent from the numbers alone. Before attributing anything to strategy:
+   - Read the agent's own log lines for the period (`sessions/<id>/agent.log` on the VM): did LLM calls return 200, did tools return data?
+   - Read 2–3 recent `decision_cycle` traces in Langfuse. Check that the indicators the prompt relies on are actually present, not `None`. Use `GET $LANGFUSE_BASE_URL/api/public/v2/observations?fromStartTime=<iso>&fields=core,basic,io`, with basic auth from `~/.langfuse-keys`. The legacy `/api/public/traces` endpoint is not available on this account.
+   - For each trade closed since the last review, compare the thesis with what the price actually did (Kite 15-minute candles for NSE). Say whether the market moved against it, or whether entry, target or stop was the problem.
+   - Anything that looks like a code or data bug goes in the email as a bug, with the log line, even though it can't be fixed by email. Say it needs Claude Code.
+4. **Analyse each session:**
    - Running state and LLM health. A session that isn't running, or whose `llm_health.ok` is false (its LLM calls are failing: model delisted, credits gone, auth error), is the top alert. Quote `llm_health.last_error`. A "running" agent with failing LLM calls is not working.
    - Today's trades and P&L.
    - Cumulative live P&L and return %.
    - Exit-type mix. A manual share above 70% is a red flag.
    - Repeated losing tickers: 3+ trades with negative P&L.
    - Open positions held for a long time.
-4. **BTC table.** Compare control against strict, no_news, wide and long_hold on cumulative P&L, today's P&L, win rate, trades today and exit mix. Name the leader, the laggard and the variable that seems to matter most. Treat fewer than about 30 closed trades per variant as noise.
-5. **NSE A/B.** Compare nse_default with nse_sonnet. Say "too early" if either has fewer than 20 trades, and note that they use different presets (swing vs intraday).
-6. **Suggestions.** At most 2, numbered "1." and "2.". Each must map one-to-one to an `apply_action.py` action, with the exact value (the full prompt text, the exact tickers). If nothing is worth changing, write "No changes recommended today — continue observing."
-7. **Send the email** with Gmail `send_message` to rsumit123@gmail.com.
+5. **BTC table.** Compare control against strict, no_news, wide and long_hold on cumulative P&L, today's P&L, win rate, trades today and exit mix. Name the leader, the laggard and the variable that seems to matter most. Treat fewer than about 30 closed trades per variant as noise.
+6. **NSE A/B.** Compare nse_default with nse_sonnet. Say "too early" if either has fewer than 20 trades, and note that they use different presets (swing vs intraday).
+7. **Suggestions.** At most 2, numbered "1." and "2.". Each must map one-to-one to an `apply_action.py` action, with the exact value (the full prompt text, the exact tickers). If nothing is worth changing, write "No changes recommended today — continue observing."
+8. **Send the email** with Gmail `send_message` to rsumit123@gmail.com.
    - Subject: `AlphaAgent daily review — <YYYY-MM-DD>`, using the IST date.
    - Body: plain text, no markdown.
-   - Order: health line, per-session bullets, BTC table, NSE verdict, suggestions.
+   - Order: health line, problems found, per-session bullets, BTC table, NSE verdict, suggestions.
    - End with these two lines verbatim:
      ```
      Reply (first line only) with: approve 1 / approve 2 / approve all / skip / hold — or approve N with <your modification>, e.g. 'approve 1 with interval 30 instead of 60'. Modifications must stay within: universe, news on/off, prompt override, cycle interval, prompt version, stop/restart one agent.
      -- AlphaAgent reviewer [bot]
      ```
-8. **Check the loop's expiry.** If the scheduled loop jobs expire within 2 days, put "Heads-up: the review loop expires in <N> days — tell me in Claude Code to re-arm it." at the top of the email.
+9. **Check the loop's expiry.** If the scheduled loop jobs expire within 2 days, put "Heads-up: the review loop expires in <N> days — tell me in Claude Code to re-arm it." at the top of the email.
 
 ## Mode 2: Reply check
 

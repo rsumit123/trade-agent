@@ -46,14 +46,15 @@ class MarketData:
             data = yf.download(tickers, period="1d", interval="1m",
                              progress=False, threads=True)
             if not data.empty:
+                close = data["Close"]
                 for ticker in tickers:
                     try:
-                        if len(tickers) == 1:
-                            last_price = data["Close"].iloc[-1]
-                        else:
-                            last_price = data["Close"][ticker].iloc[-1]
-                        if pd.notna(last_price):
-                            prices[ticker] = round(float(last_price), 2)
+                        # yfinance ≥0.2.4x returns per-ticker columns even for one
+                        # ticker, so data["Close"] can be a DataFrame either way.
+                        series = close[ticker] if isinstance(close, pd.DataFrame) else close
+                        series = series.dropna()
+                        if not series.empty:
+                            prices[ticker] = round(float(series.iloc[-1]), 2)
                     except (KeyError, IndexError):
                         logger.warning(f"No price data for {ticker}")
         except Exception as e:

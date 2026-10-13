@@ -26,3 +26,14 @@ def test_stock_context_has_ema50_and_trend(monkeypatch):
     assert int(_FakeTicker.requested["period"].rstrip("d")) >= 60
     assert ctx["ema_50"] is not None
     assert ctx["ema_trend"] == "bullish"
+
+
+def test_current_price_single_ticker_multiindex(monkeypatch):
+    # yfinance now returns ("Close", ticker) columns even for one ticker; this
+    # used to raise "truth value of a Series is ambiguous" on every BTC cycle.
+    idx = pd.date_range(end="2026-10-13 03:00", periods=3, freq="min")
+    cols = pd.MultiIndex.from_product([["Close", "Volume"], ["BTC-USD"]])
+    data = pd.DataFrame([[82700.0, 1], [82710.0, 1], [np.nan, 1]], index=idx, columns=cols)
+    monkeypatch.setattr(md.yf, "download", lambda *a, **k: data)
+    monkeypatch.setattr(md.yf, "Ticker", lambda t: (_ for _ in ()).throw(AssertionError("fallback used")))
+    assert md.MarketData(["BTC-USD"]).get_current_prices() == {"BTC-USD": 82710.0}
