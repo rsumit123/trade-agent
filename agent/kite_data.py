@@ -149,9 +149,10 @@ class KiteMarketData:
 
             change_pct = ((current_price - prev_close) / prev_close * 100) if prev_close else 0
 
-            # Get historical candles for technical indicators (30 days daily)
+            # Daily candles for technicals. 100 calendar days ≈ 65+ trading days, so
+            # EMA(50) is available (35 days gave ~24 bars and ema_50 was always None).
             if token:
-                from_date = (datetime.now() - timedelta(days=35)).strftime("%Y-%m-%d")
+                from_date = (datetime.now() - timedelta(days=100)).strftime("%Y-%m-%d")
                 to_date = datetime.now().strftime("%Y-%m-%d")
                 candles = self._call_with_retry(
                     "historical_data(stock_context)",

@@ -77,14 +77,15 @@ class MarketData:
     def get_stock_context(self, ticker: str, include_vwap: bool = True) -> Dict[str, Any]:
         """
         Get rich technical context for a specific stock.
-        Fetches 30 days of daily data to compute ATR(14), RSI(14), vol_ratio(20d).
+        Fetches 90 days of daily data so EMA(50) is available; ATR, RSI, vol_ratio
+        and volatility keep their original (≤30-day) windows.
         VWAP requires a separate 1m intraday call — set include_vwap=False for
         bulk watchlist scans to avoid 111 extra network calls per cycle.
         """
         try:
             stock = yf.Ticker(ticker)
-            # 30 days gives us enough for ATR(14), RSI(14), vol_ratio(20d)
-            hist = stock.history(period="30d", interval="1d")
+            # EMA(50) needs 50+ daily bars; 30d left it (and ema_trend) always None.
+            hist = stock.history(period="90d", interval="1d")
 
             if hist.empty:
                 return {"ticker": ticker, "error": "No data available"}
@@ -153,7 +154,7 @@ class MarketData:
 
             # ── Volume ratio (today vs 20-day avg) ─────────────────────
             vol_ratio = None
-            avg_volume = int(hist["Volume"].mean())
+            avg_volume = int(hist["Volume"].iloc[-30:].mean())
             if len(hist) >= 2:
                 vol_today   = float(hist["Volume"].iloc[-1])
                 # 20 sessions before today (or however many we have)
@@ -164,7 +165,7 @@ class MarketData:
 
             # ── Daily returns for historical volatility ────────────────
             if len(closes) > 1:
-                returns    = closes.pct_change().dropna()
+                returns    = closes.iloc[-30:].pct_change().dropna()
                 volatility = round(float(returns.std() * 100), 2)
             else:
                 volatility = 0.0
