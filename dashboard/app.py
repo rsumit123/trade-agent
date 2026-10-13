@@ -2109,8 +2109,10 @@ def get_dashboard(session_id: str, user: dict = Depends(current_user)):
     # Risk
     risk = c["risk_manager"].get_risk_status(prices)
 
-    # Performance
-    perf = c["learner"].get_performance_stats()
+    # Performance — same live-phase, uncapped scope as /api/performance and the
+    # list card (learner.get_performance_stats() looks at the last 100 trades of
+    # any phase, so it drifted from both).
+    perf = _stats_from_trades(_filter_closed_after_live(c, c["portfolio"].get_closed_trades(limit=-1)))
 
     # Watchlist fallback
     if watchlist_data is None:
@@ -2284,7 +2286,7 @@ def get_performance(session: str = None, user: dict = Depends(current_user)):
     if session: _ensure_session_access(session, user)
     """Get aggregate performance stats (live trades only after Go-Live)."""
     c = _get_components(session)
-    closed = c["portfolio"].get_closed_trades(limit=500)
+    closed = c["portfolio"].get_closed_trades(limit=-1)
     closed = _filter_closed_after_live(c, closed)
     return _stats_from_trades(closed)
 
@@ -2296,11 +2298,11 @@ def get_detailed_performance(session: str = None, user: dict = Depends(current_u
     c = _get_components(session)
     learner = c["learner"]
     # Recompute stats from post-Go-Live trades only.
-    closed_for_stats = _filter_closed_after_live(c, c["portfolio"].get_closed_trades(limit=500))
+    closed_for_stats = _filter_closed_after_live(c, c["portfolio"].get_closed_trades(limit=-1))
     stats = _stats_from_trades(closed_for_stats)
 
     # Category breakdowns (also live-only)
-    closed = _filter_closed_after_live(c, c["portfolio"].get_closed_trades(limit=500))
+    closed = _filter_closed_after_live(c, c["portfolio"].get_closed_trades(limit=-1))
     categories = {}
     for label, filter_fn in [
         ("long", lambda t: getattr(t, 'direction', 'long') == 'long'),
