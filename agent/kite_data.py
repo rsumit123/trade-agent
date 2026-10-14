@@ -41,14 +41,7 @@ class KiteMarketData:
         if not self._auth:
             return False
         try:
-            # Force a fresh token (delete the cached one — it's clearly stale)
-            try:
-                if hasattr(self._auth, "token_path") and self._auth.token_path.exists():
-                    self._auth.token_path.unlink()
-            except Exception:
-                pass
-            new_kite = self._auth.get_authenticated_client()
-            self.kite = new_kite
+            self.kite = self._auth.refresh_client(getattr(self.kite, "access_token", None))
             logger.info("🔑 Kite client re-authenticated after token rejection")
             return True
         except Exception as e:

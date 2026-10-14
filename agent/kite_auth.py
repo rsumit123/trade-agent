@@ -83,6 +83,29 @@ class KiteAuth:
         logger.info("✅ Kite auto-login successful")
         return kite
 
+    def refresh_client(self, rejected_token: Optional[str] = None):
+        """Return a client after Kite rejected `rejected_token`.
+
+        Every login revokes the previous token, so a rejection usually means
+        another agent just logged in and cached a newer one. Use that instead
+        of logging in again, which would revoke it and set off the next agent.
+        """
+        from kiteconnect import KiteConnect
+
+        with self._login_lock():
+            token = self._load_cached_token()
+            if (token and not self._is_expired(token)
+                    and token.get("access_token") != rejected_token):
+                access_token = token["access_token"]
+                logger.info("🔑 Using newer Kite token cached by another agent")
+            else:
+                logger.info("🔑 Kite token rejected — performing auto-login...")
+                access_token = self._login_with_retry()
+                self._cache_token(access_token)
+        kite = KiteConnect(api_key=self.api_key)
+        kite.set_access_token(access_token)
+        return kite
+
     @contextmanager
     def _login_lock(self):
         """Exclusive lock across agent processes for the duration of a login."""

@@ -71,3 +71,18 @@ def test_login_gives_up_after_retries(auth):
     with pytest.raises(ValueError):
         auth.get_authenticated_client()
     assert len(n) == 3
+
+
+def test_rejected_token_reuses_newer_cached_token(auth):
+    # Each login revokes the previous token. An agent whose token was revoked
+    # must pick up the newer cached one, not log in again and revoke it.
+    auth._cache_token("newer")
+    auth._auto_login = lambda: pytest.fail("should not log in")
+    assert auth.refresh_client(rejected_token="older").token == "newer"
+
+
+def test_rejected_cached_token_triggers_login(auth):
+    auth._cache_token("bad")
+    auth._auto_login = lambda: "fresh"
+    assert auth.refresh_client(rejected_token="bad").token == "fresh"
+    assert auth._load_cached_token()["access_token"] == "fresh"

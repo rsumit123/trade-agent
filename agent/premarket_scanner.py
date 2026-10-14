@@ -50,12 +50,7 @@ class PreMarketScanner:
         if not self._auth:
             return False
         try:
-            try:
-                if hasattr(self._auth, "token_path") and self._auth.token_path.exists():
-                    self._auth.token_path.unlink()
-            except Exception:
-                pass
-            self.kite = self._auth.get_authenticated_client()
+            self.kite = self._auth.refresh_client(getattr(self.kite, "access_token", None))
             logger.info("🔑 Scanner re-authenticated Kite client")
             return True
         except Exception as e:
