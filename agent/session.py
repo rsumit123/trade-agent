@@ -149,13 +149,26 @@ class SessionConfig:
             return ("fixed", list(self.universe))
         return ("discovery", None)
 
-    def write_scan_picks(self, tickers: List[str]) -> None:
+    def write_scan_picks(self, tickers: List[str], summary: str = "") -> None:
         """Persist today's scanner picks so the API process (which never runs
-        the scanner) can show/price the same watchlist as the agent."""
+        the scanner) can show/price the same watchlist as the agent, and so a
+        restarted agent can resume today's picks instead of re-scanning."""
         import json
         (self.session_dir / "scan_picks.json").write_text(json.dumps({
             "date": datetime.now().date().isoformat(), "tickers": list(tickers),
+            "summary": summary,
         }))
+
+    def read_scan_picks(self, date: str) -> Optional[dict]:
+        """Scanner picks saved on `date` (ISO), or None."""
+        import json
+        try:
+            picks = json.loads((self.session_dir / "scan_picks.json").read_text())
+        except (OSError, ValueError):
+            return None
+        if picks.get("date") != date or not picks.get("tickers"):
+            return None
+        return picks
 
     def effective_watchlist(self) -> Optional[List[str]]:
         """The watchlist the agent is actually trading, or None if unknown.

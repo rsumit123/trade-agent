@@ -1063,6 +1063,18 @@ class TradingAgent:
             self._scan_date = today
             return
 
+        # Restarted mid-day: resume today's picks. A fresh scan after the open
+        # ranks stocks that have already made their move.
+        saved = self.session.read_scan_picks(today) if self.session is not None else None
+        if saved:
+            self.config.watchlist = list(saved["tickers"])
+            self.market_data.watchlist = list(saved["tickers"])
+            self._premarket_summary = saved.get("summary", "")
+            self._scan_done_today = True
+            self._scan_date = today
+            logger.info(f"🎯 Resumed today's {len(saved['tickers'])} pre-market picks (no re-scan)")
+            return
+
         try:
             from .premarket_scanner import PreMarketScanner
             scanner = PreMarketScanner(
@@ -1089,11 +1101,6 @@ class TradingAgent:
                 old_count = len(self.config.watchlist)
                 self.config.watchlist = new_watchlist
                 self.market_data.watchlist = new_watchlist
-                if self.session is not None:
-                    try:
-                        self.session.write_scan_picks(new_watchlist)
-                    except Exception as e:
-                        logger.warning(f"Could not persist scan picks for the dashboard: {e}")
 
                 logger.info(f"🎯 Pre-market scan: replaced {old_count} stocks with {len(new_watchlist)} dynamic picks")
                 for s in scan_results[:5]:
@@ -1108,6 +1115,11 @@ class TradingAgent:
                     reason = s.get("llm_reason", s.get("reason", ""))
                     lines.append(f"  {i+1}. {s['ticker']} (Rs{s['ltp']}) gap={s['gap_pct']:+.1f}% [{direction}] — {reason}")
                 self._premarket_summary = "\n".join(lines)
+                if self.session is not None:
+                    try:
+                        self.session.write_scan_picks(new_watchlist, self._premarket_summary)
+                    except Exception as e:
+                        logger.warning(f"Could not persist scan picks: {e}")
             else:
                 logger.warning("Pre-market scan returned no results — keeping existing watchlist")
                 self._premarket_summary = ""
