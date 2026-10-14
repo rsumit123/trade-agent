@@ -20,6 +20,7 @@ from .web_research import WebResearcher
 from .decision_engine import create_engine
 from .risk_manager import RiskManager
 from .learner import Learner
+from . import trade_alerts
 
 logger = logging.getLogger(__name__)
 
@@ -153,13 +154,36 @@ class TradingAgent:
             return self.market_data.get_stock_context(ticker)
 
         elif tool_name == "place_trade":
-            return self._execute_trade(tool_input)
+            result = self._execute_trade(tool_input)
+            self._trade_alert(trade_alerts.format_trade, tool_input, result)
+            return result
 
         elif tool_name == "update_levels":
-            return self._update_levels(tool_input)
+            old = self._position_levels(tool_input.get("trade_id"))
+            result = self._update_levels(tool_input)
+            self._trade_alert(trade_alerts.format_levels, tool_input, result, *old)
+            return result
 
         else:
             return {"error": f"Unknown tool: {tool_name}"}
+
+    def _position_levels(self, trade_id):
+        """(stop, target) of an open position before it changes, for the alert."""
+        try:
+            pos = next((p for p in self.portfolio.get_open_positions() if p.id == int(trade_id)), None)
+            return (pos.stop_price, pos.target_price) if pos else (None, None)
+        except Exception:
+            return (None, None)
+
+    def _trade_alert(self, fmt, *args):
+        """Telegram alert for a trade action, if the session opted in. Never raises."""
+        if not getattr(self, "session", None) or getattr(self, "_is_backtest", False):
+            return
+        try:
+            text = fmt(self.session.session_id, self.config.currency_symbol, *args)
+            trade_alerts.send(self.session.session_dir, text)
+        except Exception as e:
+            logger.warning(f"Trade alert failed: {e}")
 
     def _update_levels(self, tool_input: Dict) -> Dict:
         """Adjust stop_price / target_price on an existing open position.
@@ -893,6 +917,7 @@ class TradingAgent:
         """Queue a one-line note about an exit the agent didn't make, for its next prompt."""
         if trade is None or trade.exit_price is None:
             return
+        self._trade_alert(trade_alerts.format_auto_exit, trade)
         label = {
             "stop_hit": "was STOPPED OUT",
             "target_hit": "hit its TARGET",
