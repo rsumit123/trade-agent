@@ -37,3 +37,29 @@ def test_yesterdays_picks_are_not_reused(agent):
     path = agent.session.session_dir / "scan_picks.json"
     path.write_text(path.read_text().replace(date.today().isoformat(), "2000-01-01"))
     assert agent.session.read_scan_picks(date.today().isoformat()) is None
+
+
+def _scanner_spy(monkeypatch, calls):
+    class Spy:
+        def __init__(self, *a, **k):
+            pass
+
+        def scan(self, **k):
+            calls.append(k)
+            return [{"ticker": "HCLTECH.NS", "ltp": 1500.0, "gap_pct": -0.5, "llm_direction": "short"}]
+    monkeypatch.setattr(pms, "PreMarketScanner", Spy)
+
+
+def test_no_scan_before_the_open(agent, monkeypatch):
+    # At 08:30 Kite still quotes yesterday's candle, so the "gap" is yesterday's
+    # open vs close: HCLTECH's +8.4% day on 10-13 was ranked a -6.1% gap-down.
+    calls = []
+    _scanner_spy(monkeypatch, calls)
+    agent.market_data.is_market_open = lambda: False
+    agent._maybe_run_premarket_scan()
+    assert calls == [] and agent.market_data.watchlist == ["DEFAULT.NS"]
+
+    agent.market_data.is_market_open = lambda: True        # 09:15: scan, once
+    agent._maybe_run_premarket_scan()
+    agent._maybe_run_premarket_scan()
+    assert len(calls) == 1 and agent.market_data.watchlist == ["HCLTECH.NS"]
