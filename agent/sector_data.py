@@ -120,3 +120,29 @@ def get_nse_sectors() -> Dict[str, List[str]]:
         logger.warning("Sector refresh failed; using stale cache.")
         return cached["sectors"]
     return {}
+
+
+NIFTY50_CACHE = Path("sessions/_nifty50.json")
+
+
+def get_nifty50() -> List[str]:
+    """Nifty 50 constituents as .NS tickers (for market breadth). Cached like
+    the sector lists; a stale cache beats nothing; [] if neither is available."""
+    try:
+        cached = json.loads(NIFTY50_CACHE.read_text())
+    except Exception:
+        cached = None
+    if cached:
+        try:
+            age = (datetime.now() - datetime.fromisoformat(cached["fetched_at"])).days
+            if age < CACHE_MAX_AGE_DAYS and cached.get("tickers"):
+                return cached["tickers"]
+        except Exception:
+            pass
+    text = _fetch_index_csv("ind_nifty50list")
+    tickers = parse_constituents_csv(text) if text else []
+    if tickers:
+        NIFTY50_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        NIFTY50_CACHE.write_text(json.dumps({"fetched_at": datetime.now().isoformat(), "tickers": tickers}))
+        return tickers
+    return (cached or {}).get("tickers", [])

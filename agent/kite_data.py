@@ -310,6 +310,8 @@ class KiteMarketData:
                 ohlc = quote.get("ohlc", {})
                 prev_close = ohlc.get("close", current_price)
                 change_pct = ((current_price - prev_close) / prev_close * 100) if prev_close else 0
+                day_open = ohlc.get("open")
+                chg_open_pct = round((current_price - day_open) / day_open * 100, 2) if day_open else None
                 volume = quote.get("volume", 0)
                 vwap = quote.get("average_price")
 
@@ -322,6 +324,7 @@ class KiteMarketData:
                     "ticker": ticker,
                     "current_price": round(current_price, 2),
                     "change_pct": round(change_pct, 2),
+                    "chg_open_pct": chg_open_pct,
                     "rsi_14": None,  # Computed on-demand via get_stock_details
                     "atr_14": None,
                     "vol_ratio": None,

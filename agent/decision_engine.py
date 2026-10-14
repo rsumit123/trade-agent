@@ -170,7 +170,7 @@ def _format_system_prompt(config, learnings, is_market_open, force_intraday=Fals
 
 def _build_context(portfolio: Dict, watchlist: List[Dict], news: str,
                    risk: Dict, config: AgentConfig = None,
-                   day_goal_context: str = None) -> str:
+                   day_goal_context: str = None, market_context: str = None) -> str:
     """Build the initial context message for the LLM."""
     sym = config.currency_symbol if config else "₹"
 
@@ -190,9 +190,11 @@ def _build_context(portfolio: Dict, watchlist: List[Dict], news: str,
         r2res_str = f"{r2res:>5.1f}%" if r2res is not None else "  n/a"
         r2sup_str = f"{r2sup:>5.1f}%" if r2sup is not None else "  n/a"
         max_qty_str = f"  max_qty={s.get('max_qty') or 0:>5g}" if show_maxqty else ""
+        rs = s.get('rs_vs_nifty')
+        rs_str = f"  vsNifty={rs:>+6.2f}%" if rs is not None else ""
         watchlist_lines.append(
             f"{ticker:20s}  {sym}{price:>8.2f}  {chg:>+6.2f}%  "
-            f"RSI={rsi_str}  vol={vr_str}  res={r2res_str}  sup={r2sup_str}  sma={sma}{max_qty_str}"
+            f"RSI={rsi_str}  vol={vr_str}  res={r2res_str}  sup={r2sup_str}  sma={sma}{rs_str}{max_qty_str}"
         )
     watchlist_text = "\n".join(watchlist_lines) if watchlist_lines else "(no data)"
 
@@ -207,6 +209,7 @@ def _build_context(portfolio: Dict, watchlist: List[Dict], news: str,
 
     asset_label = "assets" if (config and config._market_preset and config._market_preset.market_id == "crypto") else "stocks"
     goal_section = f"\n{day_goal_context}\n" if day_goal_context else ""
+    market_section = f"\n{market_context}\n" if market_context else ""
 
     return f"""## Current Portfolio
 ```json
@@ -217,7 +220,7 @@ def _build_context(portfolio: Dict, watchlist: List[Dict], news: str,
 ```json
 {json.dumps(risk, indent=2)}
 ```
-{goal_section}
+{goal_section}{market_section}
 ## Full Watchlist — {len(watchlist)} {asset_label} sorted by absolute % move (biggest movers first)
 RSI: <30=oversold, >70=overbought | vol: today/20d avg volume ratio (>1.5 = above-avg volume) | res/sup: % distance to 5d resistance/support
 ```
@@ -338,6 +341,7 @@ class AnthropicDecisionEngine:
         backtest_date: str = None,
         backtest_time: str = None,
         day_goal_context: str = None,
+        market_context: str = None,
     ) -> List[Dict]:
         """
         Run the full decision loop with tool use.
@@ -346,7 +350,8 @@ class AnthropicDecisionEngine:
         """
         context = _build_context(portfolio_summary, watchlist_data,
                                  news_context, risk_status, self.config,
-                                 day_goal_context=day_goal_context)
+                                 day_goal_context=day_goal_context,
+                                 market_context=market_context)
 
         system, prompt_info = _format_system_prompt(self.config, learnings, is_market_open, force_intraday,
                                        is_backtest=is_backtest, backtest_date=backtest_date, backtest_time=backtest_time)
@@ -506,10 +511,12 @@ class OpenRouterDecisionEngine:
         backtest_date: str = None,
         backtest_time: str = None,
         day_goal_context: str = None,
+        market_context: str = None,
     ) -> List[Dict]:
         context = _build_context(portfolio_summary, watchlist_data,
                                  news_context, risk_status, self.config,
-                                 day_goal_context=day_goal_context)
+                                 day_goal_context=day_goal_context,
+                                 market_context=market_context)
 
         system, prompt_info = _format_system_prompt(self.config, learnings, is_market_open, force_intraday,
                                        is_backtest=is_backtest, backtest_date=backtest_date, backtest_time=backtest_time)

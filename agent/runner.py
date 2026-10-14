@@ -564,6 +564,18 @@ class TradingAgent:
             logger.debug(f"Day goal context build failed: {e}")
             return ""
 
+    def _market_context(self, watchlist_data: list, is_backtest: bool) -> str:
+        """Live Nifty / Bank Nifty / VIX / breadth block for NSE agents on Kite,
+        and each watchlist row's strength vs Nifty. "" when unavailable."""
+        if (is_backtest or getattr(self, "_is_backtest", False) or not self.preset
+                or self.preset.is_24x7 or not hasattr(self.market_data, "_call_with_retry")):
+            return ""
+        from . import market_context
+        from .sector_data import get_nifty50
+        ctx = market_context.fetch(self.market_data, get_nifty50())
+        market_context.add_relative_strength(watchlist_data, ctx)
+        return market_context.format_context(ctx)
+
     # ── Main Loop ────────────────────────────────────────────
 
     def run_once(self, force_intraday: bool = False, is_backtest: bool = False) -> Dict:
@@ -584,6 +596,7 @@ class TradingAgent:
         logger.info("👁️  Observing market...")
         prices = prices_incl_positions(self.market_data, self.portfolio)
         watchlist_data = self.market_data.get_watchlist_summary()
+        market_ctx = self._market_context(watchlist_data, is_backtest)
 
         # News fetch is per-session opt-out (experiment: does news improve
         # or hurt decisions?). Default behaviour (include_news=True) is unchanged.
@@ -685,6 +698,7 @@ class TradingAgent:
             backtest_date=bt_date,
             backtest_time=bt_time,
             day_goal_context=self._build_day_goal_context() if getattr(self, "_is_backtest", False) or force_intraday else None,
+            market_context=market_ctx,
         )
 
         # A cycle where every LLM call failed is an error, not "ok" — otherwise an
