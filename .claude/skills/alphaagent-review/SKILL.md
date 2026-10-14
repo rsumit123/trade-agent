@@ -27,12 +27,13 @@ The owner is **rsumit123@gmail.com**. All emails go there and only replies from 
 | nse_default | nse (swing) | Haiku 5.5 since 2026-10-13 (was Gemini 2.5 Flash; OpenRouter out of credit) |
 | nse_sonnet | nse-intraday | Sonnet 5.5 |
 | nse_opus | nse-intraday | Opus 5.5 with a "more freedom" prompt override, open universe, 15-min cycles (since 2026-10-13) |
+| nse_haiku | nse-intraday | Haiku 5.5, exact clone of nse_sonnet's config (same 44-stock universe, 10-min cycles) — clean Haiku vs Sonnet comparison (since 2026-10-15) |
 | vin | nse | Haiku 5.5 since 2026-10-13 (was gpt-oss-120b), brother's session |
 | btc_haiku | crypto | Haiku control |
 | btc_haiku_strict | crypto | experiment: strict exits |
 | btc_haiku_no_news | crypto | experiment: `include_news: false` |
 | btc_haiku_wide | crypto | experiment: 5-coin universe |
-| btc_haiku_long_hold | crypto | experiment: 60-min cycles |
+| btc_haiku_long_hold | crypto | experiment: 60-min cycles — STOPPED 2026-10-14 (slot given to nse_haiku); don't flag as down |
 
 ## Mode 1: Review
 
@@ -62,7 +63,7 @@ The owner is **rsumit123@gmail.com**. All emails go there and only replies from 
    - Repeated losing tickers: 3+ trades with negative P&L.
    - Open positions held for a long time.
 5. **BTC table.** Compare control against strict, no_news, wide and long_hold on cumulative P&L, today's P&L, win rate, trades today and exit mix. Name the leader, the laggard and the variable that seems to matter most. Treat fewer than about 30 closed trades per variant as noise.
-6. **NSE comparison.** The main comparison is nse_opus against nse_sonnet: same preset, capital and risk limits, but Opus has a "more freedom" prompt and an open universe. A difference can't be credited to the model alone, because both the model and the rules changed. Also compare nse_default with nse_sonnet, noting they use different presets (swing vs intraday). Say "too early" for any agent with fewer than 20 trades. Report `claude_spend` from the deep check (spent, last 24h, projected vs remaining) in the health line.
+6. **NSE comparison.** The main comparison is nse_opus against nse_sonnet: same preset, capital and risk limits, but Opus has a "more freedom" prompt and an open universe. A difference can't be credited to the model alone, because both the model and the rules changed. Also compare nse_haiku with nse_sonnet: identical config, so any difference is the model (nse_haiku starts with no distilled rules of its own). Also compare nse_default with nse_sonnet, noting they use different presets (swing vs intraday). Say "too early" for any agent with fewer than 20 trades. Report `claude_spend` from the deep check (spent, last 24h, projected vs remaining) in the health line.
 7. **Suggestions.** At most 2, numbered "1." and "2.". Each must map one-to-one to an `apply_action.py` action, with the exact value (the full prompt text, the exact tickers). If nothing is worth changing, write "No changes recommended today — continue observing."
 8. **Send the email** with Gmail `send_message` to rsumit123@gmail.com.
    - Subject: `AlphaAgent daily review — <YYYY-MM-DD>`, using the IST date.

@@ -34,7 +34,7 @@ import time
 
 # Only the production fleet the loop reviews. Never user-owned trial sessions.
 ALLOWED_SESSIONS = {
-    "nse_default", "nse_sonnet", "nse_opus", "vin",
+    "nse_default", "nse_sonnet", "nse_opus", "nse_haiku", "vin",
     "btc_haiku", "btc_haiku_strict", "btc_haiku_no_news",
     "btc_haiku_wide", "btc_haiku_long_hold",
 }

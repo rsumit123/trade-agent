@@ -32,12 +32,12 @@ from pathlib import Path
 sys.path.insert(0, "/app")
 
 SESSIONS = [
-    "nse_default", "nse_sonnet", "nse_opus", "vin",
+    "nse_default", "nse_sonnet", "nse_opus", "nse_haiku", "vin",
     "btc_haiku", "btc_haiku_strict", "btc_haiku_no_news",
     "btc_haiku_wide", "btc_haiku_long_hold",
 ]
 # Deliberately stopped; not flagged as down. Remove when restarted.
-PAUSED: set = set()
+PAUSED: set = {"btc_haiku_long_hold"}   # 2026-10-14: its slot went to nse_haiku
 # Claude promo credit: $97.04 + $5.06 paid on 2026-10-13; promo expires 2026-10-29.
 CLAUDE_BUDGET_USD, CLAUDE_BUDGET_FROM, CLAUDE_BUDGET_UNTIL = 102.10, "2026-10-13", "2026-10-29"
 WINDOW_H = 24
