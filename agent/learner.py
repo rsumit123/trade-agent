@@ -367,7 +367,7 @@ Format as a bullet list under `## 📌 Distilled Rules`. No preamble, just the s
             if self.config.llm_provider == "anthropic":
                 response = llm_client.messages.create(
                     model=self.config.anthropic_model,
-                    max_tokens=thinking_budget(2500),
+                    max_tokens=thinking_budget(6000),
                     messages=[{"role": "user", "content": prompt}],
                 )
                 rules_text = response_text(response)
@@ -380,7 +380,7 @@ Format as a bullet list under `## 📌 Distilled Rules`. No preamble, just the s
                 )
                 response = llm_client.chat.completions.create(
                     model=model,
-                    max_tokens=3000,
+                    max_tokens=6000,
                     messages=[{"role": "user", "content": prompt}],
                 )
                 rules_text = (response.choices[0].message.content or "").strip()
