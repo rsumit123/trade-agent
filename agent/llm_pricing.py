@@ -35,14 +35,17 @@ MODEL_PRICES = {
 
 
 # Anthropic prompt caching: writes cost 1.25x the input price, reads 0.1x.
-CACHE_WRITE_MULT, CACHE_READ_MULT = 1.25, 0.10
+CACHE_WRITE_MULT, CACHE_WRITE_1H_MULT, CACHE_READ_MULT = 1.25, 2.00, 0.10
 
 
 def estimate_usd(model: str, input_tokens: int, output_tokens: int,
-                 cache_write_tokens: int = 0, cache_read_tokens: int = 0) -> float:
-    """Return USD cost estimate. input_tokens excludes cached tokens (as Anthropic reports it)."""
+                 cache_write_tokens: int = 0, cache_read_tokens: int = 0,
+                 cache_write_1h_tokens: int = 0) -> float:
+    """Return USD cost estimate. input_tokens excludes cached tokens (as Anthropic reports it).
+    cache_write_1h_tokens is the part of cache_write_tokens written with the 1-hour TTL."""
     in_price, out_price = MODEL_PRICES.get(model, (1.00, 4.00))
-    cached = cache_write_tokens * CACHE_WRITE_MULT + cache_read_tokens * CACHE_READ_MULT
+    cached = ((cache_write_tokens - cache_write_1h_tokens) * CACHE_WRITE_MULT
+              + cache_write_1h_tokens * CACHE_WRITE_1H_MULT + cache_read_tokens * CACHE_READ_MULT)
     return ((input_tokens + cached) * in_price + output_tokens * out_price) / 1_000_000
 
 

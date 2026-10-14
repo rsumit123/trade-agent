@@ -266,6 +266,19 @@ def _get_tool_defs(config, is_backtest: bool = False):
 # ── Anthropic Implementation ────────────────────────────────
 
 CACHE = {"type": "ephemeral"}
+CACHE_1H = {"type": "ephemeral", "ttl": "1h"}
+CONTEXT_HEADER = "\n## Current Context\n"
+
+
+def _split_system(system: str):
+    """(stable, per_cycle): the "## Current Context" section holds the clock, so
+    it changes every cycle; everything else only changes after a daily review."""
+    i = system.find(CONTEXT_HEADER)
+    if i < 0:
+        return system, ""
+    j = system.find("\n## ", i + len(CONTEXT_HEADER))
+    end = len(system) if j < 0 else j
+    return system[:i] + system[end:], system[i:end].strip()
 
 
 def _with_cache_breakpoints(system: str, messages: List[Dict]):
@@ -274,6 +287,8 @@ def _with_cache_breakpoints(system: str, messages: List[Dict]):
     A cycle makes 3-5 calls that each resend tools + system + the growing
     conversation. With these marks every call after the first reads that
     prefix from the cache (0.1x input price) instead of paying for it again.
+    The stable part of the system prompt is cached for an hour so the next
+    cycle (10-60 min later) reads it too; the clock goes in a block after it.
     Only the copy sent to the API is marked, so at most 2 breakpoints are used.
     """
     last = messages[-1]
@@ -282,8 +297,16 @@ def _with_cache_breakpoints(system: str, messages: List[Dict]):
         content = [{"type": "text", "text": content}]
     content = list(content)
     content[-1] = {**content[-1], "cache_control": CACHE}
-    return ([{"type": "text", "text": system, "cache_control": CACHE}],
-            messages[:-1] + [{**last, "content": content}])
+    stable, per_cycle = _split_system(system)
+    blocks = [{"type": "text", "text": stable, "cache_control": CACHE_1H}]
+    if per_cycle:
+        blocks.append({"type": "text", "text": per_cycle})
+    return blocks, messages[:-1] + [{**last, "content": content}]
+
+
+def _cache_write_1h(u) -> int:
+    cc = getattr(u, "cache_creation", None)
+    return int(getattr(cc, "ephemeral_1h_input_tokens", 0) or 0) if cc is not None else 0
 
 
 class AnthropicDecisionEngine:
@@ -334,7 +357,7 @@ class AnthropicDecisionEngine:
         actions_taken = []
         reasoning_trail: List[Dict] = []
         usage_acc = {"input_tokens": 0, "output_tokens": 0, "calls": 0,
-                     "cache_write_tokens": 0, "cache_read_tokens": 0}
+                     "cache_write_tokens": 0, "cache_write_1h_tokens": 0, "cache_read_tokens": 0}
         max_iterations = 10
         self.last_error = None
 
@@ -383,6 +406,7 @@ class AnthropicDecisionEngine:
                         usage_acc["input_tokens"] += int(getattr(u, "input_tokens", 0) or 0)
                         usage_acc["output_tokens"] += int(getattr(u, "output_tokens", 0) or 0)
                         usage_acc["cache_write_tokens"] += int(getattr(u, "cache_creation_input_tokens", 0) or 0)
+                        usage_acc["cache_write_1h_tokens"] += _cache_write_1h(u)
                         usage_acc["cache_read_tokens"] += int(getattr(u, "cache_read_input_tokens", 0) or 0)
                         usage_acc["calls"] += 1
                 except Exception:
