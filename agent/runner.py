@@ -28,6 +28,9 @@ logger = logging.getLogger(__name__)
 # this often, so a level touched mid-interval fills like a resting broker order
 # instead of waiting up to `intraday_interval_min` for the next cycle.
 MONITOR_INTERVAL_S = 60
+# Kite quotes are real-time and cheap (one call for held tickers only), so stops
+# are checked 4x as often there: a 60s check let fast moves fill ~1-2% past the stop.
+MONITOR_INTERVAL_KITE_S = 15
 
 
 class TradingAgent:
@@ -316,7 +319,9 @@ class TradingAgent:
                 return {"success": False, "error": f"No open position with id {trade_id}"}
 
             prices = self.market_data.get_current_prices([pos.ticker])
-            price = prices.get(pos.ticker, pos.entry_price)
+            price = prices.get(pos.ticker)
+            if not price:
+                return {"success": False, "error": f"Cannot get price for {pos.ticker} — try again next cycle"}
 
             # A SHORT must be closed by covering, not selling. If the LLM issues
             # SELL on a short, route it to cover so cash/P&L stay correct.
@@ -417,7 +422,9 @@ class TradingAgent:
                 return {"success": False, "error": f"No open SHORT position with id {trade_id}"}
 
             prices = self.market_data.get_current_prices([pos.ticker])
-            price = prices.get(pos.ticker, pos.entry_price)
+            price = prices.get(pos.ticker)
+            if not price:
+                return {"success": False, "error": f"Cannot get price for {pos.ticker} — try again next cycle"}
 
             trade = self.portfolio.execute_cover(trade_id, price, reason)
             self.learner.write_trade_log(trade, llm_client=self.engine.client)
@@ -897,10 +904,13 @@ class TradingAgent:
             raise
 
     def _sleep_monitoring_positions(self, sleep_seconds: float):
-        """Sleep until the next cycle, checking open positions' stops/targets each minute."""
+        """Sleep until the next cycle, checking open positions' stops/targets every 15s (Kite) or minute."""
         deadline = time.monotonic() + sleep_seconds
         # Per-agent jitter so agents sharing one Kite key don't quote in the same second.
-        step = MONITOR_INTERVAL_S + random.uniform(0, 10)
+        if hasattr(getattr(self, "market_data", None), "_call_with_retry"):     # Kite
+            step = MONITOR_INTERVAL_KITE_S + random.uniform(0, 3)
+        else:
+            step = MONITOR_INTERVAL_S + random.uniform(0, 10)
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:

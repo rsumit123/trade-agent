@@ -111,3 +111,26 @@ def test_sleep_checks_every_minute_until_next_cycle(agent, monkeypatch):
 
     assert clock["t"] == 600
     assert checks == [60.0 * i for i in range(1, 10)]       # not at 600: the cycle itself sweeps
+
+
+def test_kite_agents_check_stops_every_15s(agent, monkeypatch):
+    clock = {"t": 0.0}
+    monkeypatch.setattr(runner_mod.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(runner_mod.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+    monkeypatch.setattr(runner_mod.random, "uniform", lambda a, b: 0)
+    agent.market_data = NS(_call_with_retry=lambda label, fn: None)    # Kite-like
+    checks = []
+    monkeypatch.setattr(agent, "_monitor_positions", lambda: checks.append(clock["t"]))
+
+    agent._sleep_monitoring_positions(60)
+
+    assert checks == [15.0, 30.0, 45.0]
+
+
+def test_manual_exit_without_a_live_price_is_refused(agent):
+    # It used to book the exit at the entry price (fake zero P&L) when the quote failed.
+    t = agent.portfolio.execute_buy("SBIN.NS", 10, 940.0, "intraday", stop_price=930, target_price=960)
+    agent.market_data = _Market({}, fail=False)
+    res = agent._execute_trade({"action": "SELL", "trade_id": t.id, "reason": "exit"})
+    assert res["success"] is False and "Cannot get price" in res["error"]
+    assert [p.id for p in agent.portfolio.get_open_positions()] == [t.id]

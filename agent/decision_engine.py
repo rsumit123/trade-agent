@@ -192,9 +192,16 @@ def _build_context(portfolio: Dict, watchlist: List[Dict], news: str,
         max_qty_str = f"  max_qty={s.get('max_qty') or 0:>5g}" if show_maxqty else ""
         rs = s.get('rs_vs_nifty')
         rs_str = f"  vsNifty={rs:>+6.2f}%" if rs is not None else ""
+        vd = s.get('vwap_dist_pct')
+        if vd is not None:   # live intraday position (Kite)
+            hi, lo = s.get('from_day_high_pct'), s.get('from_day_low_pct')
+            pos_str = (f"vwap={vd:>+6.2f}%  dayHi={hi:>+6.2f}%  dayLo={lo:>+6.2f}%"
+                       if hi is not None and lo is not None else f"vwap={vd:>+6.2f}%")
+        else:
+            pos_str = f"sma={sma}"
         watchlist_lines.append(
             f"{ticker:20s}  {sym}{price:>8.2f}  {chg:>+6.2f}%  "
-            f"RSI={rsi_str}  vol={vr_str}  res={r2res_str}  sup={r2sup_str}  sma={sma}{rs_str}{max_qty_str}"
+            f"RSI={rsi_str}  vol={vr_str}  res={r2res_str}  sup={r2sup_str}  {pos_str}{rs_str}{max_qty_str}"
         )
     watchlist_text = "\n".join(watchlist_lines) if watchlist_lines else "(no data)"
 
@@ -222,9 +229,10 @@ def _build_context(portfolio: Dict, watchlist: List[Dict], news: str,
 ```
 {goal_section}{market_section}
 ## Full Watchlist — {len(watchlist)} {asset_label} sorted by absolute % move (biggest movers first)
-RSI: <30=oversold, >70=overbought | vol: today/20d avg volume ratio (>1.5 = above-avg volume) | res/sup: % distance to 5d resistance/support
+RSI: <30=oversold, >70=overbought | vol: today's volume SO FAR / 20d avg daily volume (partial day: weigh it against time elapsed) | res/sup: % distance to 5d resistance/support
+vwap: % above(+)/below(-) today's VWAP | dayHi/dayLo: % from today's high (0 = at the high) / today's low — a stock far above its low and near its high has already made its move
 ```
-{"ticker":20s}  {"price":>8s}  {"chg%":>7s}  {"RSI":>9s}  {"vol":>8s}  {"res":>8s}  {"sup":>8s}  sma
+{"ticker":20s}  {"price":>8s}  {"chg%":>7s}  {"RSI":>9s}  {"vol":>8s}  {"res":>8s}  {"sup":>8s}  position
 {"-"*95}
 {watchlist_text}
 ```

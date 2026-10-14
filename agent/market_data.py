@@ -133,7 +133,7 @@ class MarketData:
                 avg_gain = gain.ewm(com=13, adjust=False).mean()
                 avg_loss = loss.ewm(com=13, adjust=False).mean()
                 rs       = avg_gain / avg_loss.replace(0, float("nan"))
-                rsi_series = 100 - (100 / (1 + rs))
+                rsi_series = (100 - (100 / (1 + rs))).where(avg_loss > 0, 100.0)   # no losses = RSI 100
                 rsi_14 = round(float(rsi_series.iloc[-1]), 1)
 
             # ── EMA(20), EMA(50) — trend filters ───────────────────────

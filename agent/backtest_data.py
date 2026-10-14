@@ -138,8 +138,8 @@ class BacktestMarketData:
                 loss = (-delta).where(delta < 0, 0.0)
                 avg_gain = gain.ewm(com=13, min_periods=14).mean()
                 avg_loss = loss.ewm(com=13, min_periods=14).mean()
-                rs = avg_gain / avg_loss.replace(0, float('inf'))
-                rsi = 100 - (100 / (1 + rs))
+                rs = avg_gain / avg_loss.replace(0, float('nan'))
+                rsi = (100 - (100 / (1 + rs))).where(avg_loss > 0, 100.0)   # no losses = RSI 100
                 rsi_14 = round(float(rsi.iloc[-1]), 1)
 
                 # ATR(14)

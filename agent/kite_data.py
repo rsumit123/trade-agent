@@ -5,14 +5,100 @@ Drop-in replacement for MarketData (yfinance). Same interface, real-time data.
 Uses kite.quote() for live prices, kite.historical_data() for candles/technicals.
 """
 
+import fcntl
+import json
 import logging
 import math
-from datetime import datetime, timedelta
+import os
+import time
+from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Dict, List, Any, Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+IST = ZoneInfo("Asia/Kolkata")
+# Past daily candles change once a day, so all agents share one cache file per
+# day instead of each pulling 100 days of history per stock per cycle.
+DAILY_CACHE_DIR = Path("sessions/_daily_candles")
+HISTORY_DAYS = 100        # ≈ 65+ trading days, so EMA(50) is available
+HIST_THROTTLE_S = 0.4     # Kite allows ~3 historical calls/sec per API key
+
+
+def _with_today_bar(past: pd.DataFrame, quote: dict) -> pd.DataFrame:
+    """Past daily candles plus today's bar built from the live quote."""
+    ohlc = quote.get("ohlc") or {}
+    last = quote.get("last_price")
+    if not last or not ohlc.get("open"):
+        return past
+    today = pd.DataFrame([{
+        "open": ohlc["open"], "high": max(ohlc.get("high") or last, last),
+        "low": min(ohlc.get("low") or last, last), "close": last,
+        "volume": quote.get("volume", 0) or 0,
+    }])
+    return pd.concat([past, today], ignore_index=True)
+
+
+def compute_technicals(df: pd.DataFrame, current_price: float, volume: float) -> Dict[str, Any]:
+    """Daily indicators from candles whose last row is today. Used by both the
+    watchlist rows and get_stock_details so the two always agree."""
+    out = {"rsi_14": None, "atr_14": None, "sma_5": None, "ema_20": None, "ema_50": None,
+           "macd": None, "macd_signal": None, "macd_hist": None, "vol_ratio": None,
+           "high_5d": current_price, "low_5d": current_price}
+    if len(df) >= 15:
+        close = df["close"]
+
+        # RSI(14) — Wilder smoothing
+        delta = close.diff()
+        gain = delta.where(delta > 0, 0.0)
+        loss = (-delta).where(delta < 0, 0.0)
+        avg_gain = gain.ewm(com=13, min_periods=14).mean()
+        avg_loss = loss.ewm(com=13, min_periods=14).mean()
+        rs = avg_gain / avg_loss.replace(0, float('nan'))
+        rsi = (100 - (100 / (1 + rs))).where(avg_loss > 0, 100.0)   # no losses = RSI 100
+        out["rsi_14"] = round(float(rsi.iloc[-1]), 1)
+
+        # ATR(14)
+        h = df["high"]
+        l = df["low"]
+        c = close.shift(1)
+        tr = pd.concat([h - l, (h - c).abs(), (l - c).abs()], axis=1).max(axis=1)
+        atr = tr.ewm(com=13, min_periods=14).mean()
+        out["atr_14"] = round(float(atr.iloc[-1]), 2)
+
+        out["sma_5"] = round(float(close.rolling(5).mean().iloc[-1]), 2)
+
+        # EMA(20) and EMA(50) — trend filters
+        if len(df) >= 20:
+            out["ema_20"] = round(float(close.ewm(span=20, adjust=False).mean().iloc[-1]), 2)
+        if len(df) >= 50:
+            out["ema_50"] = round(float(close.ewm(span=50, adjust=False).mean().iloc[-1]), 2)
+
+        # MACD(12, 26, 9) — trend & momentum
+        if len(df) >= 26:
+            ema_12 = close.ewm(span=12, adjust=False).mean()
+            ema_26 = close.ewm(span=26, adjust=False).mean()
+            macd = ema_12 - ema_26
+            signal = macd.ewm(span=9, adjust=False).mean()
+            out["macd"] = round(float(macd.iloc[-1]), 2)
+            out["macd_signal"] = round(float(signal.iloc[-1]), 2)
+            out["macd_hist"] = round(out["macd"] - out["macd_signal"], 2)
+
+        # 5-day high/low (today included)
+        out["high_5d"] = float(df["high"].tail(5).max())
+        out["low_5d"] = float(df["low"].tail(5).min())
+
+        # Volume ratio: today's volume so far / 20-day average (today included)
+        avg_vol = float(df["volume"].tail(20).mean()) if len(df) >= 20 else float(df["volume"].mean())
+        if avg_vol > 0:
+            out["vol_ratio"] = round(volume / avg_vol, 2)
+
+    out["dist_to_resistance_pct"] = round((out["high_5d"] - current_price) / current_price * 100, 2) if current_price else None
+    out["dist_to_support_pct"] = round((current_price - out["low_5d"]) / current_price * 100, 2) if current_price else None
+    return out
 
 
 class KiteMarketData:
@@ -88,6 +174,60 @@ class KiteMarketData:
 
     # ── Core Data Methods (same interface as MarketData) ─────
 
+    def past_daily(self, tickers: List[str]) -> Dict[str, pd.DataFrame]:
+        """Daily candles before today for each ticker, from a per-day cache file
+        shared by all agents. Tickers whose history can't be fetched are left
+        out (their indicators show n/a) and retried next cycle."""
+        today = datetime.now(IST).date()
+        mem = getattr(self, "_daily_mem", None)
+        if mem is None or mem.get("date") != today:
+            mem = self._daily_mem = {"date": today, "data": {}}
+        want = [t for t in dict.fromkeys(tickers) if t not in mem["data"]]
+        if want:
+            DAILY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            path = DAILY_CACHE_DIR / f"{today.isoformat()}.json"
+            with open(path.with_suffix(".lock"), "w") as lockf:
+                fcntl.flock(lockf, fcntl.LOCK_EX)      # one agent fetches at a time
+                try:
+                    cache = json.loads(path.read_text()) if path.exists() else {}
+                except ValueError:
+                    cache = {}
+                fetched = False
+                for t in want:
+                    if t in cache:
+                        continue
+                    token = self._get_instrument_token(t)
+                    if not token:
+                        continue
+                    try:
+                        candles = self._call_with_retry(
+                            "historical_data(daily)",
+                            lambda k, tok=token: k.historical_data(
+                                instrument_token=tok,
+                                from_date=(today - timedelta(days=HISTORY_DAYS)).isoformat(),
+                                to_date=(today - timedelta(days=1)).isoformat(),
+                                interval="day",
+                            ),
+                        )
+                    except Exception as e:
+                        logger.warning(f"Daily history unavailable for {t}: {e}")
+                        continue
+                    finally:
+                        time.sleep(HIST_THROTTLE_S)
+                    cache[t] = [[str(c["date"])[:10], c["open"], c["high"], c["low"], c["close"], c["volume"]]
+                                for c in candles if str(c["date"])[:10] < today.isoformat()]
+                    fetched = True
+                if fetched:
+                    tmp = path.with_suffix(f".{os.getpid()}.tmp")
+                    tmp.write_text(json.dumps(cache))
+                    os.replace(tmp, path)
+                fcntl.flock(lockf, fcntl.LOCK_UN)
+            for t in want:
+                if t in cache:
+                    mem["data"][t] = pd.DataFrame(
+                        cache[t], columns=["date", "open", "high", "low", "close", "volume"])
+        return {t: mem["data"][t] for t in tickers if t in mem["data"]}
+
     def get_current_prices(self, tickers: List[str] = None) -> Dict[str, float]:
         """Get real-time LTP for watchlist or specific tickers."""
         symbols = tickers or self.watchlist
@@ -119,7 +259,9 @@ class KiteMarketData:
             return prices
         except Exception as e:
             logger.error(f"Kite get_current_prices failed: {e}")
-            return self._price_cache or {}
+            # Callers asking for specific tickers (the stop monitor, order pricing)
+            # must not get the cached watchlist prices, which can be minutes old.
+            return {} if tickers else (self._price_cache or {})
 
     def get_stock_context(self, ticker: str, include_vwap: bool = True) -> Dict[str, Any]:
         """Get rich technical context for a single stock using Kite data."""
@@ -142,86 +284,20 @@ class KiteMarketData:
 
             change_pct = ((current_price - prev_close) / prev_close * 100) if prev_close else 0
 
-            # Daily candles for technicals. 100 calendar days ≈ 65+ trading days, so
-            # EMA(50) is available (35 days gave ~24 bars and ema_50 was always None).
-            if token:
-                from_date = (datetime.now() - timedelta(days=100)).strftime("%Y-%m-%d")
-                to_date = datetime.now().strftime("%Y-%m-%d")
-                candles = self._call_with_retry(
-                    "historical_data(stock_context)",
-                    lambda k, t=token, fd=from_date, td=to_date: k.historical_data(
-                        instrument_token=t, from_date=fd, to_date=td, interval="day",
-                    ),
-                )
-                df = pd.DataFrame(candles)
-            else:
-                df = pd.DataFrame()
-
-            # Compute technicals from historical data
-            rsi_14 = None
-            atr_14 = None
-            sma_5 = None
-            ema_20 = None
-            ema_50 = None
-            macd_line = None
-            macd_signal = None
-            macd_hist = None
-            vol_ratio = None
-            high_5d = current_price
-            low_5d = current_price
-
-            if len(df) >= 15:
-                close = df["close"]
-
-                # RSI(14) — Wilder smoothing
-                delta = close.diff()
-                gain = delta.where(delta > 0, 0.0)
-                loss = (-delta).where(delta < 0, 0.0)
-                avg_gain = gain.ewm(com=13, min_periods=14).mean()
-                avg_loss = loss.ewm(com=13, min_periods=14).mean()
-                rs = avg_gain / avg_loss.replace(0, float('inf'))
-                rsi = 100 - (100 / (1 + rs))
-                rsi_14 = round(float(rsi.iloc[-1]), 1)
-
-                # ATR(14)
-                h = df["high"]
-                l = df["low"]
-                c = close.shift(1)
-                tr = pd.concat([h - l, (h - c).abs(), (l - c).abs()], axis=1).max(axis=1)
-                atr = tr.ewm(com=13, min_periods=14).mean()
-                atr_14 = round(float(atr.iloc[-1]), 2)
-
-                # SMA(5)
-                sma_5 = round(float(close.rolling(5).mean().iloc[-1]), 2)
-
-                # EMA(20) and EMA(50) — trend filters
-                if len(df) >= 20:
-                    ema_20 = round(float(close.ewm(span=20, adjust=False).mean().iloc[-1]), 2)
-                if len(df) >= 50:
-                    ema_50 = round(float(close.ewm(span=50, adjust=False).mean().iloc[-1]), 2)
-
-                # MACD(12, 26, 9) — trend & momentum
-                if len(df) >= 26:
-                    ema_12 = close.ewm(span=12, adjust=False).mean()
-                    ema_26 = close.ewm(span=26, adjust=False).mean()
-                    macd = ema_12 - ema_26
-                    signal = macd.ewm(span=9, adjust=False).mean()
-                    macd_line = round(float(macd.iloc[-1]), 2)
-                    macd_signal = round(float(signal.iloc[-1]), 2)
-                    macd_hist = round(macd_line - macd_signal, 2)
-
-                # 5-day high/low
-                high_5d = float(df["high"].tail(5).max())
-                low_5d = float(df["low"].tail(5).min())
-
-                # Volume ratio: today's volume / 20-day average
-                avg_vol = float(df["volume"].tail(20).mean()) if len(df) >= 20 else float(df["volume"].mean())
-                if avg_vol > 0:
-                    vol_ratio = round(volume / avg_vol, 2)
-
-            # Distance to resistance/support
-            dist_to_resistance = round(((high_5d - current_price) / current_price * 100), 2) if current_price else None
-            dist_to_support = round(((current_price - low_5d) / current_price * 100), 2) if current_price else None
+            # Daily history (cached once a day, shared by all agents) plus
+            # today's bar from the live quote — the same series the watchlist uses.
+            try:
+                past = self.past_daily([ticker]).get(ticker)
+            except Exception as e:
+                logger.warning(f"Daily history cache unavailable: {e}")
+                past = None
+            df = _with_today_bar(past, quote) if past is not None else pd.DataFrame()
+            t = compute_technicals(df, current_price, volume)
+            rsi_14, atr_14, sma_5 = t["rsi_14"], t["atr_14"], t["sma_5"]
+            ema_20, ema_50 = t["ema_20"], t["ema_50"]
+            macd_line, macd_signal, macd_hist = t["macd"], t["macd_signal"], t["macd_hist"]
+            vol_ratio, high_5d, low_5d = t["vol_ratio"], t["high_5d"], t["low_5d"]
+            dist_to_resistance, dist_to_support = t["dist_to_resistance_pct"], t["dist_to_support_pct"]
 
             # VWAP from Kite quote (built-in, no extra call needed!)
             vwap = quote.get("average_price", None)  # Kite provides VWAP as average_price
@@ -296,6 +372,11 @@ class KiteMarketData:
                 quotes = self._call_with_retry("quote(watchlist)", lambda k, b=batch: k.quote(b))
                 all_quotes.update(quotes)
 
+            try:
+                history = self.past_daily(self.watchlist)
+            except Exception as e:   # indicators show n/a; prices still flow
+                logger.warning(f"Daily history cache unavailable: {e}")
+                history = {}
             summaries = []
             dropped = []
             for ticker in self.watchlist:
@@ -315,24 +396,29 @@ class KiteMarketData:
                 volume = quote.get("volume", 0)
                 vwap = quote.get("average_price")
 
-                # For the summary, we need RSI and ATR from historical data
-                # But fetching 111 historical calls is slow — use get_stock_context for that
-                # Instead, provide what we can from the quote and mark RSI/ATR as None
-                # The LLM can call get_stock_details for individual stocks it's interested in
+                # Daily indicators from the shared once-a-day history plus today's
+                # bar, so these match get_stock_details exactly.
+                past = history.get(ticker)
+                t = (compute_technicals(_with_today_bar(past, quote), current_price, volume)
+                     if past is not None and day_open else {})
+                day_high, day_low = ohlc.get("high"), ohlc.get("low")
 
                 summaries.append({
                     "ticker": ticker,
                     "current_price": round(current_price, 2),
                     "change_pct": round(change_pct, 2),
                     "chg_open_pct": chg_open_pct,
-                    "rsi_14": None,  # Computed on-demand via get_stock_details
-                    "atr_14": None,
-                    "vol_ratio": None,
-                    "dist_to_resistance_pct": None,
-                    "dist_to_support_pct": None,
-                    "sma_5": None,
+                    "rsi_14": t.get("rsi_14"),
+                    "atr_14": t.get("atr_14"),
+                    "vol_ratio": t.get("vol_ratio"),
+                    "dist_to_resistance_pct": t.get("dist_to_resistance_pct"),
+                    "dist_to_support_pct": t.get("dist_to_support_pct"),
+                    "sma_5": t.get("sma_5"),
                     "price_vs_sma": "above" if (vwap and current_price > vwap) else "below",
                     "vwap": round(vwap, 2) if vwap else None,
+                    "vwap_dist_pct": round((current_price - vwap) / vwap * 100, 2) if vwap else None,
+                    "from_day_high_pct": round((current_price - day_high) / day_high * 100, 2) if day_high and day_open else None,
+                    "from_day_low_pct": round((current_price - day_low) / day_low * 100, 2) if day_low and day_open else None,
                     "volume": volume,
                 })
 
