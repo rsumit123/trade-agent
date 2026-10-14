@@ -5,7 +5,8 @@ The agent learns from its wins and losses and feeds insights back into future de
 
 import json
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 
@@ -40,6 +41,74 @@ class Learner:
     def _sym(self) -> str:
         """Currency symbol from config."""
         return self.config.currency_symbol
+
+    # ── Market-time helpers ──────────────────────────────────────────
+    # The container runs in UTC and the DB stores UTC-aware ISO timestamps, so
+    # "today" and journal stamps must be computed in the market timezone.
+
+    @property
+    def _tz(self):
+        try:
+            return ZoneInfo(self.config.timezone)
+        except Exception:
+            return ZoneInfo("Asia/Kolkata")
+
+    @property
+    def _tz_label(self) -> str:
+        return "IST" if self._tz.key == "Asia/Kolkata" else self._tz.key
+
+    @property
+    def _is_24x7(self) -> bool:
+        return bool(getattr(getattr(self.config, "_market_preset", None), "is_24x7", False))
+
+    def _now_local(self) -> datetime:
+        """Now in the market timezone (the backtest clock, when set, is naive simulated market time)."""
+        clock = getattr(self.portfolio, "_clock", None)
+        if clock is not None:
+            try:
+                return clock().replace(tzinfo=self._tz)
+            except Exception:
+                pass
+        return datetime.now(self._tz)
+
+    def _parse_local(self, iso: Optional[str]) -> Optional[datetime]:
+        """Parse a stored trade timestamp into the market timezone. Naive values are
+        UTC (legacy rows) except under the backtest clock, where they are market time."""
+        if not iso:
+            return None
+        try:
+            dt = datetime.fromisoformat(iso)
+        except Exception:
+            return None
+        if dt.tzinfo is None:
+            naive_tz = self._tz if getattr(self.portfolio, "_clock", None) is not None else timezone.utc
+            dt = dt.replace(tzinfo=naive_tz)
+        return dt.astimezone(self._tz)
+
+    def _in_review_window(self, iso: Optional[str]) -> bool:
+        """Today's market date; for 24/7 markets the review fires just after
+        midnight UTC, so use the trailing 24h instead."""
+        dt = self._parse_local(iso)
+        if dt is None:
+            return False
+        now = self._now_local()
+        if self._is_24x7:
+            return now - timedelta(hours=24) < dt <= now
+        return dt.date() == now.date()
+
+    def _todays_activity(self):
+        """(closed in window, opened in window and still open)."""
+        closed = [t for t in self.portfolio.get_closed_trades(limit=-1)
+                  if self._in_review_window(t.exit_time)]
+        opened_open = [t for t in self.portfolio.get_open_positions()
+                       if self._in_review_window(t.entry_time)]
+        return closed, opened_open
+
+    @staticmethod
+    def _pnl_pct(trade) -> float:
+        """Direction-aware return on entry price."""
+        move = (trade.exit_price - trade.entry_price) / trade.entry_price * 100
+        return -move if (getattr(trade, "direction", "long") or "long").lower() == "short" else move
 
     def _ensure_journal(self):
         """Create the journal file if it doesn't exist."""
@@ -102,27 +171,33 @@ class Learner:
         Ask the LLM to review today's trades and generate learnings.
         Returns the reflection text that gets appended to the journal.
         """
-        today_trades = self.portfolio.get_today_trades()
-        recent_closed = self.portfolio.get_closed_trades(limit=10)
-        summary = self.portfolio.get_portfolio_summary()
+        closed_today, opened_open = self._todays_activity()
 
-        if not today_trades and not recent_closed:
+        # Nothing opened or closed today: no review (don't burn an LLM call)
+        if not closed_today and not opened_open:
             return ""
 
+        summary = self.portfolio.get_portfolio_summary()
+
         # Build review context
-        trades_data = []
-        for t in today_trades:
-            trades_data.append({
+        def _row(t):
+            return {
                 "ticker": t.ticker,
+                "direction": (t.direction or "long").upper(),
                 "action": t.action,
                 "type": t.trade_type,
                 "entry_price": t.entry_price,
                 "exit_price": t.exit_price,
                 "pnl": t.pnl,
+                "pnl_pct": round(self._pnl_pct(t), 2) if t.exit_price else None,
                 "status": t.status,
+                "exit_type": t.exit_type,
                 "reason": t.reason,
                 "exit_reason": t.exit_reason,
-            })
+            }
+
+        trades_data = [_row(t) for t in closed_today]
+        open_data = [_row(t) for t in opened_open]
 
         # Compute stats to ground the review in numbers, not just narrative
         stats = self.get_performance_stats()
@@ -130,9 +205,14 @@ class Learner:
 
         review_prompt = f"""Review today's trading activity and write a brief learning reflection.
 
-## Today's Trades
+## Trades Closed Today (includes swing positions entered earlier)
 ```json
 {json.dumps(trades_data, indent=2)}
+```
+
+## Positions Opened Today and Still Open (no P&L yet - unrealized)
+```json
+{json.dumps(open_data, indent=2)}
 ```
 
 ## Portfolio Summary
@@ -140,7 +220,7 @@ class Learner:
 {json.dumps(summary, indent=2)}
 ```
 
-## Quantitative Performance (all-time)
+## Quantitative Performance (all closed trades)
 ```
 Overall:  {stats.get('total_trades', 0)} trades | Win rate: {stats.get('win_rate', 0)}% | Avg win: {self._sym}{stats.get('avg_win', 0)} | Avg loss: {self._sym}{stats.get('avg_loss', 0)}
 {stats_by_type}
@@ -158,7 +238,7 @@ Write a concise reflection (3-5 bullet points) covering:
 4. One specific rule or insight to apply going forward
 
 Format as markdown. Be honest and specific — vague platitudes are useless.
-Start with `## {date.today().strftime("%Y-%m-%d")} — Daily Review`
+Start with `## {self._now_local().strftime("%Y-%m-%d")} — Daily Review`
 """
 
         try:
@@ -192,7 +272,7 @@ Start with `## {date.today().strftime("%Y-%m-%d")} — Daily Review`
 
     def _fallback_review(self, trades: List[Dict], summary: Dict) -> str:
         """Generate a basic review without LLM if API fails."""
-        today = date.today().strftime("%Y-%m-%d")
+        today = self._now_local().strftime("%Y-%m-%d")
         wins = sum(1 for t in trades if (t.get("pnl") or 0) > 0)
         losses = sum(1 for t in trades if (t.get("pnl") or 0) < 0)
         total_pnl = sum(t.get("pnl") or 0 for t in trades)
@@ -212,17 +292,25 @@ Start with `## {date.today().strftime("%Y-%m-%d")} — Daily Review`
         the top of get_learnings() so no wisdom is lost to truncation.
         Called at end-of-day after generate_daily_review().
         """
+        # No trade opened or closed today: nothing new to learn
+        closed_today, opened_open = self._todays_activity()
+        if not closed_today and not opened_open:
+            return
+
         content = self.journal_path.read_text()
 
-        # Strip existing rules block so we regenerate from scratch
+        # Strip existing rules block (it is fed back in as input below)
         rules_marker = "\n## 📌 Distilled Rules"
         rules_start = content.find(rules_marker)
         rules_end_marker = "\n---"
+        previous_rules = ""
         if rules_start >= 0:
             rules_end = content.find(rules_end_marker, rules_start + len(rules_marker))
             if rules_end >= 0:
+                previous_rules = content[rules_start:rules_end].strip()
                 content_without_rules = content[:rules_start] + content[rules_end + len(rules_end_marker):]
             else:
+                previous_rules = content[rules_start:].strip()
                 content_without_rules = content[:rules_start]
         else:
             content_without_rules = content
@@ -237,7 +325,10 @@ Start with `## {date.today().strftime("%Y-%m-%d")} — Daily Review`
 
         total_trades = stats.get('total_trades', 0)
 
-        prompt = f"""You are a trading journal assistant. Read ALL the trade entries, reflections, AND quantitative stats below. Extract the most important, actionable trading rules.
+        prompt = f"""You are a trading journal assistant. Read the previous rules, the recent trade entries and reflections, AND the quantitative stats below. Update the rules: keep earlier lessons that still hold, revise or drop those the new evidence contradicts, and add new ones.
+
+## Previous Distilled Rules (update these with the new evidence)
+{previous_rules or "(none yet)"}
 
 ## Quantitative Performance
 ```
@@ -245,7 +336,7 @@ Overall:  {total_trades} trades | Win rate: {stats.get('win_rate', 0)}% | Avg wi
 {stats_by_type}
 ```
 
-## Journal Entries
+## Recent Journal Entries
 {content_without_rules[-8000:]}
 
 ---
@@ -276,10 +367,11 @@ Format as a bullet list under `## 📌 Distilled Rules`. No preamble, just the s
             if self.config.llm_provider == "anthropic":
                 response = llm_client.messages.create(
                     model=self.config.anthropic_model,
-                    max_tokens=thinking_budget(800),
+                    max_tokens=thinking_budget(2500),
                     messages=[{"role": "user", "content": prompt}],
                 )
                 rules_text = response_text(response)
+                truncated = getattr(response, "stop_reason", None) == "max_tokens"
             else:
                 model = (
                     self.config.openrouter_model
@@ -288,10 +380,21 @@ Format as a bullet list under `## 📌 Distilled Rules`. No preamble, just the s
                 )
                 response = llm_client.chat.completions.create(
                     model=model,
-                    max_tokens=800,
+                    max_tokens=3000,
                     messages=[{"role": "user", "content": prompt}],
                 )
-                rules_text = response.choices[0].message.content.strip()
+                rules_text = (response.choices[0].message.content or "").strip()
+                truncated = getattr(response.choices[0], "finish_reason", None) == "length"
+
+            # A reply cut off at max_tokens (or with almost no bullets) would
+            # replace good rules with a fragment: keep the existing block.
+            bullets = sum(1 for ln in rules_text.splitlines() if ln.lstrip().startswith(("-", "*", "•")))
+            if truncated or bullets < 3:
+                logger.warning(
+                    f"Distilled rules reply unusable (truncated={truncated}, bullets={bullets}) "
+                    "- keeping existing rules block"
+                )
+                return
 
             # Ensure it starts with the right header
             if not rules_text.startswith("## 📌 Distilled Rules"):
@@ -331,7 +434,7 @@ Format as a bullet list under `## 📌 Distilled Rules`. No preamble, just the s
         - BUY: brief entry note (thesis captured at decision time).
         - SELL: LLM-generated reflection on what happened and what to learn.
         """
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        timestamp = f"{self._now_local().strftime('%Y-%m-%d %H:%M')} {self._tz_label}"
 
         if trade.exit_price is None:
             # ── Entry log ─────────────────────────────────────────────
@@ -355,7 +458,8 @@ Format as a bullet list under `## 📌 Distilled Rules`. No preamble, just the s
         else:
             # ── Exit: generate LLM reflection ─────────────────────────
             pnl = trade.pnl or 0
-            pnl_pct = ((trade.exit_price - trade.entry_price) / trade.entry_price) * 100
+            pnl_pct = self._pnl_pct(trade)
+            direction = (trade.direction or "long").upper()
             outcome = "WIN ✅" if pnl > 0 else "LOSS ❌"
             hold_time = ""
             if trade.entry_time and trade.exit_time:
@@ -368,7 +472,7 @@ Format as a bullet list under `## 📌 Distilled Rules`. No preamble, just the s
                     pass
 
             summary_line = (
-                f"**EXIT** {trade.quantity}x {trade.ticker} | "
+                f"**EXIT** {direction} {trade.quantity}x {trade.ticker} | "
                 f"{outcome} | {self._sym}{trade.entry_price:.2f} → {self._sym}{trade.exit_price:.2f} | "
                 f"P&L: {self._sym}{pnl:+.2f} ({pnl_pct:+.2f}%) | held {hold_time}"
             )
@@ -395,6 +499,7 @@ Format as a bullet list under `## 📌 Distilled Rules`. No preamble, just the s
 
 ## Trade Summary
 - Ticker: {trade.ticker}
+- Direction: {(trade.direction or "long").upper()}
 - Type: {trade.trade_type}
 - Entry: {self._sym}{trade.entry_price:.2f}  Exit: {self._sym}{trade.exit_price:.2f}
 - P&L: {self._sym}{pnl:+.2f} ({pnl_pct:+.2f}%)
@@ -449,7 +554,7 @@ Keep it under 120 words. Be honest and specific. No fluff."""
 
     def _get_stats_by_category(self) -> str:
         """Compute win rate breakdowns by direction and trade type for prompt injection."""
-        closed = self.portfolio.get_closed_trades(limit=200)
+        closed = self.portfolio.get_closed_trades(limit=-1)
         if not closed:
             return "No closed trades yet."
 
@@ -468,12 +573,12 @@ Keep it under 120 words. Be honest and specific. No fluff."""
             avg_pnl = round(sum(t.pnl or 0 for t in subset) / len(subset), 2)
             lines.append(f"{label:10s}: {len(subset):3d} trades | WR: {wr}% | Avg P&L: {self._sym}{avg_pnl}")
 
-        # Per-exit-type breakdown if exit_type is tracked
-        for label, keyword in [
-            ("Stop hits", "stop"),
-            ("Target hits", "target"),
+        # Per-exit-type breakdown from the exit_type column
+        for label, exit_type in [
+            ("Stop hits", "stop_hit"),
+            ("Target hits", "target_hit"),
         ]:
-            subset = [t for t in closed if keyword.lower() in (t.exit_reason or '').lower()]
+            subset = [t for t in closed if t.exit_type == exit_type]
             if subset:
                 avg_pnl = round(sum(t.pnl or 0 for t in subset) / len(subset), 2)
                 lines.append(f"{label:10s}: {len(subset):3d} trades | Avg P&L: {self._sym}{avg_pnl}")
@@ -482,7 +587,7 @@ Keep it under 120 words. Be honest and specific. No fluff."""
 
     def get_performance_stats(self, days: int = 30) -> Dict[str, Any]:
         """Calculate aggregate performance stats for the review."""
-        closed = self.portfolio.get_closed_trades(limit=100)
+        closed = self.portfolio.get_closed_trades(limit=-1)
 
         if not closed:
             return {"total_trades": 0, "message": "No closed trades yet"}

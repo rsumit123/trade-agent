@@ -176,7 +176,7 @@ NSE_INTRADAY_PRESET = MarketPreset(
     ],
     news_region="in-en",
     news_queries=[
-        "Indian stock market today {date} news",
+        "Indian stock market today NSE Nifty movers",
         "NSE Nifty intraday movers today",
     ],
     news_sources=["moneycontrol", "economictimes", "livemint", "business-standard"],

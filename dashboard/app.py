@@ -67,7 +67,7 @@ def _get_components(session_id: str = None) -> Dict:
             # Honor session.data_source — Kite for NSE sessions, yfinance for crypto.
             # Previously hardcoded yfinance MarketData, which spammed
             # "possibly delisted" errors on every dashboard poll during NSE backtests.
-            market_data = create_market_data(config, market_preset=preset)
+            market_data = create_market_data(config, market_preset=preset, retry_kite=False)
             learner = Learner(config, portfolio)
             risk_manager = RiskManager(config, portfolio)
             _components[sid] = {

@@ -246,9 +246,12 @@ Analyze the market conditions and your portfolio. Use your tools to research
 specific {asset_label} if needed, then decide whether to make any trades.
 
 LONG signals: RSI <35 (oversold bounce), vol_ratio >1.5 (breakout volume), price near support (sup <1%),
-  EMA trend bullish (ema_20 > ema_50), MACD bullish_cross.
+  EMA trend bullish (ema_20 > ema_50), MACD bullish_cross (just crossed up).
 SHORT signals: RSI >70 (overbought), price near resistance (res <0.5%), vol_ratio >1.5 (distribution),
-  EMA trend bearish (ema_20 < ema_50), MACD bearish_cross.
+  EMA trend bearish (ema_20 < ema_50), MACD bearish_cross (just crossed down).
+macd_state in get_stock_details: bullish_cross/bearish_cross = the MACD crossed its signal line on today's bar
+  (daily, so it can flip intraday); *_cross_1bar_ago = on the previous daily bar; above_signal/below_signal = only
+  which side it sits on (a state, not a fresh cross). res/sup of n/a = too little history to measure, not "at" a level.
 Use `get_stock_details` to fetch full indicators (RSI, ATR, EMA20/50, MACD, VWAP) before any trade.
 Caution: avoid entering longs when RSI >75 or near resistance; avoid shorts when RSI <30.
 Confluence wins: a setup with 2+ aligned signals (e.g. RSI<30 + bullish EMA + MACD turning) is far stronger.

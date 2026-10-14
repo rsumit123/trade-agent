@@ -31,6 +31,8 @@ MONITOR_INTERVAL_S = 60
 # Kite quotes are real-time and cheap (one call for held tickers only), so stops
 # are checked 4x as often there: a 60s check let fast moves fill ~1-2% past the stop.
 MONITOR_INTERVAL_KITE_S = 15
+# A failed/empty stock scan is retried on later cycles, this many tries per day.
+MAX_SCAN_ATTEMPTS = 3
 
 
 class TradingAgent:
@@ -228,6 +230,20 @@ class TradingAgent:
         provider = self.config.llm_provider
         return getattr(self.config, f"{provider}_model", "unknown")
 
+    def _check_quantity(self, quantity):
+        """Return (quantity, error). Whole shares, or any positive amount on
+        fractional markets; 0, negative, missing or non-numeric are refused."""
+        fractional = bool(self.preset and getattr(self.preset, "fractional_qty", False))
+        if isinstance(quantity, bool) or not isinstance(quantity, (int, float)) or not math.isfinite(quantity):
+            return None, f"Invalid quantity {quantity!r}: must be a positive {'number' if fractional else 'whole number'}"
+        if quantity <= 0:
+            return None, f"Invalid quantity {quantity!r}: must be greater than 0"
+        if not fractional:
+            if quantity != int(quantity):
+                return None, f"Invalid quantity {quantity!r}: whole shares only"
+            quantity = int(quantity)
+        return quantity, None
+
     def _execute_trade(self, trade_input: Dict) -> Dict:
         """Execute a trade with risk checks."""
         action = trade_input.get("action", "")
@@ -242,8 +258,15 @@ class TradingAgent:
 
         if action == "BUY":
             ticker = trade_input.get("ticker", "")
-            quantity = trade_input.get("quantity", 0)
+            quantity, qty_err = self._check_quantity(trade_input.get("quantity"))
+            if qty_err:
+                logger.warning(f"❌ BUY rejected: {qty_err}")
+                return {"success": False, "error": qty_err}
             trade_type = trade_input.get("trade_type", "swing")
+            if self.preset and list(self.preset.trade_types) == ["intraday"]:
+                if trade_type != "intraday":
+                    logger.info(f"⏰ {ticker}: {self.preset.market_id} is intraday-only — booking as intraday (asked: {trade_type})")
+                trade_type = "intraday"
 
             # Get current price
             prices = self.market_data.get_current_prices([ticker])
@@ -351,10 +374,12 @@ class TradingAgent:
 
         elif action == "SHORT":
             ticker = trade_input.get("ticker", "")
-            quantity = trade_input.get("quantity", 0)
-
-            if not ticker or not quantity:
+            if not ticker:
                 return {"success": False, "error": "ticker and quantity required for SHORT"}
+            quantity, qty_err = self._check_quantity(trade_input.get("quantity"))
+            if qty_err:
+                logger.warning(f"❌ Short rejected: {qty_err}")
+                return {"success": False, "error": qty_err}
 
             # Get current price
             prices = self.market_data.get_current_prices([ticker])
@@ -603,6 +628,40 @@ class TradingAgent:
         logger.info("👁️  Observing market...")
         prices = prices_incl_positions(self.market_data, self.portfolio)
         watchlist_data = self.market_data.get_watchlist_summary()
+
+        # 2. Stop/target sweep — writes journal entry for each closed position.
+        #    Runs before the risk status (so the prompt sees post-exit P&L/cash)
+        #    and even when trading is blocked or data is down.
+        stopped = self.risk_manager.run_stop_loss_sweep(prices)
+        if stopped:
+            logger.info(f"🛑 Stop/target triggered on {len(stopped)} positions")
+            for trade in stopped:
+                self.learner.write_trade_log(trade, llm_client=self.engine.client)
+                self._note_auto_exit(trade)
+
+        # 3. Force-close intraday positions near market close (≥15:15 IST)
+        #    Skip during backtest — the backtest engine handles EOD close separately
+        if not is_backtest:
+            near_close = self.risk_manager.check_intraday_close()
+            if near_close:
+                self._close_intraday_positions(prices)
+                # Don't let LLM open new positions when we're in the closing window
+                logger.info("⏰ Near market close — skipping new trade decisions")
+                return {"status": "ok", "actions": [], "portfolio": self.portfolio.get_portfolio_summary(prices)}
+
+        # 4. Check risk status (after the sweep, so it reflects any exits above)
+        risk_status = self.risk_manager.get_risk_status(prices)
+        if not risk_status["can_trade"]:
+            logger.warning("⚠️  Daily loss limit hit — no trading today")
+            return {"status": "blocked", "reason": "daily loss limit"}
+
+        # Kite outage: a watchlist with neither summary rows nor quotes would
+        # pay for a full LLM cycle on "(no data)".
+        if (not is_backtest and not getattr(self, "_is_backtest", False)
+                and self.config.watchlist and not watchlist_data and not prices):
+            logger.warning("⚠️  No market data (watchlist summary and quotes both empty) — skipping LLM this cycle")
+            return {"status": "no_data", "actions": []}
+
         market_ctx = self._market_context(watchlist_data, is_backtest)
 
         # News fetch is per-session opt-out (experiment: does news improve
@@ -627,30 +686,6 @@ class TradingAgent:
                 logger.info(f"📰 News: {' | '.join(headlines)}")
             else:
                 logger.info(f"📰 News context loaded ({len(news)} chars)")
-
-        # 2. Check risk status
-        risk_status = self.risk_manager.get_risk_status(prices)
-        if not risk_status["can_trade"]:
-            logger.warning("⚠️  Daily loss limit hit — no trading today")
-            return {"status": "blocked", "reason": "daily loss limit"}
-
-        # 3. Run stop/target sweep — writes journal entry for each closed position
-        stopped = self.risk_manager.run_stop_loss_sweep(prices)
-        if stopped:
-            logger.info(f"🛑 Stop/target triggered on {len(stopped)} positions")
-            for trade in stopped:
-                self.learner.write_trade_log(trade, llm_client=self.engine.client)
-                self._note_auto_exit(trade)
-
-        # 4. Force-close intraday positions near market close (≥15:15 IST)
-        #    Skip during backtest — the backtest engine handles EOD close separately
-        if not is_backtest:
-            near_close = self.risk_manager.check_intraday_close()
-            if near_close:
-                self._close_intraday_positions(prices)
-                # Don't let LLM open new positions when we're in the closing window
-                logger.info("⏰ Near market close — skipping new trade decisions")
-                return {"status": "ok", "actions": [], "portfolio": self.portfolio.get_portfolio_summary(prices)}
 
         # 5. DECIDE + ACT — let the LLM make decisions
         logger.info("🧠 Running decision engine...")
@@ -892,6 +927,21 @@ class TradingAgent:
             logger.error(f"💥 Agent crashed with unhandled exception: {e}", exc_info=True)
             raise
 
+    def _seconds_to_forced_close(self):
+        """Seconds until the intraday forced-close time today, or None when there
+        is none (24/7 market, backtest) or it has already passed."""
+        if getattr(self, "_is_backtest", False):
+            return None
+        try:
+            now = datetime.now(ZoneInfo(self.config.timezone))
+            trigger = self.risk_manager.forced_close_time(now)
+        except Exception:
+            return None
+        if trigger is None:
+            return None
+        left = (trigger - now).total_seconds()
+        return left if left > 0 else None
+
     def _sleep_monitoring_positions(self, sleep_seconds: float):
         """Sleep until the next cycle, checking open positions' stops/targets every 15s (Kite) or minute."""
         deadline = time.monotonic() + sleep_seconds
@@ -904,12 +954,18 @@ class TradingAgent:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return
-            time.sleep(min(step, remaining))
+            nap = min(step, remaining)
+            # Wake exactly at the forced-close time rather than up to a step late.
+            to_close = self._seconds_to_forced_close()
+            if to_close is not None:
+                nap = min(nap, to_close + 0.5)
+            time.sleep(nap)
             if deadline - time.monotonic() > 1:
                 self._monitor_positions()
 
     def _monitor_positions(self):
-        """One stop/target check for open positions. No LLM call; never raises."""
+        """One stop/target check for open positions, plus the end-of-day forced
+        close of intraday positions. No LLM call; never raises."""
         if getattr(self, "_is_backtest", False):
             return
         try:
@@ -925,6 +981,10 @@ class TradingAgent:
                 logger.info(f"⏱️  Between-cycle exit: {trade.ticker} ({trade.exit_type})")
                 self.learner.write_trade_log(trade, llm_client=self.engine.client)
                 self._note_auto_exit(trade)
+            # The next decision cycle may only start after the close, so the
+            # forced close must not wait for one.
+            if self.risk_manager.check_intraday_close():
+                self._close_intraday_positions(prices)
         except Exception as e:
             logger.warning(f"Position monitor skipped this minute: {e}")
 
@@ -1110,7 +1170,15 @@ class TradingAgent:
                     logger.info(f"  {dir_icon} {s['ticker']:15s} gap={s['gap_pct']:+5.1f}% — {reason}")
 
                 # Build scan summary from the already-selected results (don't re-scan)
-                lines = [f"## Pre-Market Picks — {len(scan_results)} Stocks Selected by AI"]
+                try:
+                    scanned = datetime.now(ZoneInfo(self.config.timezone))
+                    stamp = f"{scanned:%H:%M} {scanned.tzname() or ''}".strip()
+                except Exception:
+                    stamp = datetime.now().strftime("%H:%M")
+                lines = [
+                    f"## Scanner Picks — {len(scan_results)} stocks selected by AI at {stamp}",
+                    "  (prices and gap % are as of that scan, not live — see the watchlist table for current prices)",
+                ]
                 for i, s in enumerate(scan_results):
                     direction = s.get("llm_direction", "?")
                     reason = s.get("llm_reason", s.get("reason", ""))
@@ -1121,6 +1189,9 @@ class TradingAgent:
                         self.session.write_scan_picks(new_watchlist, self._premarket_summary)
                     except Exception as e:
                         logger.warning(f"Could not persist scan picks: {e}")
+                self._scan_done_today = True
+                self._scan_date = today
+                return
             else:
                 logger.warning("Pre-market scan returned no results — keeping existing watchlist")
                 self._premarket_summary = ""
@@ -1129,8 +1200,17 @@ class TradingAgent:
             logger.error(f"Pre-market scan failed: {e}")
             self._premarket_summary = ""
 
-        self._scan_done_today = True
-        self._scan_date = today
+        # Failed or empty: retry on the next cycles rather than trading the stale
+        # default universe all day; give up after MAX_SCAN_ATTEMPTS.
+        if getattr(self, "_scan_attempt_date", None) != today:
+            self._scan_attempt_date, self._scan_attempts = today, 0
+        self._scan_attempts += 1
+        if self._scan_attempts >= MAX_SCAN_ATTEMPTS:
+            logger.error(f"Pre-market scan failed {self._scan_attempts}x today — keeping the existing watchlist")
+            self._scan_done_today = True
+            self._scan_date = today
+        else:
+            logger.warning(f"Pre-market scan attempt {self._scan_attempts}/{MAX_SCAN_ATTEMPTS} failed — will retry next cycle")
 
     def _load_directives(self) -> str:
         """Load active directives from directive.json for system prompt injection."""
@@ -1193,12 +1273,17 @@ class TradingAgent:
             pass
 
     def _close_intraday_positions(self, prices: Dict[str, float]):
-        """Force-close all intraday positions (longs and shorts) near market close."""
+        """Force-close all intraday positions (longs and shorts) near market close.
+        Live prices only: a position with no quote is skipped (the between-cycle
+        monitor retries) rather than booked at its entry price."""
         positions = self.portfolio.get_open_positions()
         intraday = [p for p in positions if p.trade_type == "intraday"]
 
         for pos in intraday:
-            price = prices.get(pos.ticker, pos.entry_price)
+            price = prices.get(pos.ticker)
+            if not price:
+                logger.warning(f"⚠️  No live price for {pos.ticker} (id {pos.id}) — forced close deferred, retrying")
+                continue
             if pos.direction == "short":
                 logger.info(f"⏰ Force-covering intraday SHORT: {pos.ticker}")
                 trade = self.portfolio.execute_cover(pos.id, price, reason="End-of-day forced cover", exit_type="forced_close")

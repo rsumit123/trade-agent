@@ -14,6 +14,7 @@ Instrument master is cached to disk (weekly refresh).
 
 import json
 import logging
+import re
 import time as _time
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +29,37 @@ MAX_PRICE = 10000
 MIN_GAP_PCT = 0.3
 INSTRUMENT_CACHE = Path("sessions/_nse_instruments.json")
 CACHE_MAX_AGE_DAYS = 7
+OHLC_BATCH_SIZE = 500
+_SKIP_KEYWORDS = {"NIFTY", "GOLD", "SILVER", "LIQUID", "BEES", "CPSE", "ETF", "MIDCAP", "VIX", "BHARATBOND"}
+_SKIP_TAGS = ["-SM", "-P1", "-NZ", "-N9", "-NM", "-YY", "-N2", "-RE", "-PP", "-ST", "-BE"]
+# Tradingsymbols like "ROCKPP-E1" / "MHLSRG-SF" / "XYZ-BZ": the suffix after the hyphen is an
+# exchange series code (partly-paid, SIF, trade-to-trade, InvIT, gold bond, debt ...), never a
+# normal EQ stock. Real company names with hyphens (BAJAJ-AUTO, NAM-INDIA, HCL-INSYS,
+# BOSCH-HCIL, UMIYA-MRO) have a longer suffix; "-IT" (BDR-IT) is a real company, so allow it.
+_SERIES_SUFFIX_RE = re.compile(r"-[A-Z0-9]{1,2}$")
+_REAL_SHORT_SUFFIXES = {"-IT"}
+
+
+def _is_tradable_equity(sym: str, name: str = "") -> bool:
+    """True for a plain, liquid-style NSE equity. Used on cache refresh AND cache load,
+    so an already-written cache is re-filtered without needing a refresh."""
+    if not sym:
+        return False
+    up = sym.upper()
+    if any(skip in up for skip in _SKIP_KEYWORDS):
+        return False
+    if any(c.isdigit() for c in sym[:3]):
+        return False
+    if any(tag in sym for tag in _SKIP_TAGS):
+        return False
+    m = _SERIES_SUFFIX_RE.search(sym)
+    if m and m.group(0) not in _REAL_SHORT_SUFFIXES:
+        return False
+    if up.endswith("INAV"):  # ETF/fund intraday indicative NAV feeds (ICICISINAV, KOTLIQINAV)
+        return False
+    if "PPD UP" in (name or "").upper():  # partly-paid shares
+        return False
+    return True
 
 
 class PreMarketScanner:
@@ -75,8 +107,12 @@ class PreMarketScanner:
                 data = json.loads(INSTRUMENT_CACHE.read_text())
                 age = (datetime.now() - datetime.fromisoformat(data.get("date", "2000-01-01"))).days
                 if age < CACHE_MAX_AGE_DAYS:
-                    instruments = data.get("instruments", [])
-                    logger.info(f"📋 Using cached instruments ({len(instruments)} stocks, {age}d old)")
+                    raw = data.get("instruments", [])
+                    instruments = [i for i in raw if _is_tradable_equity(i.get("tradingsymbol", ""), i.get("name", ""))]
+                    logger.info(
+                        f"📋 Using cached instruments ({len(instruments)} stocks, {age}d old"
+                        f"{f', {len(raw) - len(instruments)} non-equity dropped' if len(raw) != len(instruments) else ''})"
+                    )
                     return instruments
             except Exception:
                 pass
@@ -90,17 +126,12 @@ class PreMarketScanner:
             logger.error(f"Failed to download instruments: {e}")
             return []
 
-        SKIP_KEYWORDS = {"NIFTY", "GOLD", "SILVER", "LIQUID", "BEES", "CPSE", "ETF", "MIDCAP", "VIX", "BHARATBOND"}
         equities = []
         for i in all_instruments:
             sym = i.get("tradingsymbol", "")
             if not sym or i.get("instrument_type") != "EQ" or i.get("exchange") != "NSE":
                 continue
-            if any(skip in sym.upper() for skip in SKIP_KEYWORDS):
-                continue
-            if any(c.isdigit() for c in sym[:3]):
-                continue
-            if any(tag in sym for tag in ["-SM", "-P1", "-NZ", "-N9", "-NM", "-YY", "-N2", "-RE", "-PP", "-ST", "-BE"]):
+            if i.get("segment") == "INDICES" or not _is_tradable_equity(sym, i.get("name", "")):
                 continue
             equities.append({
                 "tradingsymbol": sym,
@@ -114,6 +145,38 @@ class PreMarketScanner:
         return equities
 
     # ── Phase 1: Quantitative Filter ──────────────────────────
+
+    def _fetch_ohlc_batch(self, n: int, batch: List[str]) -> Dict[str, Any]:
+        """kite.ohlc() for one batch. Kite's Cloudflare front sometimes serves a 'Just a moment'
+        HTML page for a *specific combination* of symbols (e.g. JTEKTINDIA+TATACONSUM+JUBLPHARMA
+        +VARROC together; each fine alone, in any order) which hit batch 1 on every scan. So after
+        one backed-off retry, bisect the batch: the offending combination gets split and the
+        halves succeed. Returns whatever could be fetched; never raises."""
+        for attempt in range(2):
+            try:
+                return self._call_with_retry(f"ohlc(batch{n})", lambda k, b=batch: k.ohlc(b))
+            except Exception as e:
+                logger.warning(f"  Batch {n} ({len(batch)} symbols) failed (attempt {attempt + 1}): {str(e)[:120]}")
+                if attempt == 0:
+                    _time.sleep(2)
+        budget = [25]  # bound single-symbol failures so a dead session can't trigger thousands of calls
+        return self._bisect_ohlc(n, batch, budget)
+
+    def _bisect_ohlc(self, n: int, batch: List[str], budget: List[int]) -> Dict[str, Any]:
+        if not batch or budget[0] <= 0:
+            return {}
+        try:
+            _time.sleep(0.5)
+            return self.kite.ohlc(batch)
+        except Exception as e:
+            if len(batch) == 1:
+                budget[0] -= 1
+                logger.warning(f"  Batch {n}: {batch[0]} unfetchable even alone: {str(e)[:80]}")
+                return {}
+        mid = len(batch) // 2
+        out = self._bisect_ohlc(n, batch[:mid], budget)
+        out.update(self._bisect_ohlc(n, batch[mid:], budget))
+        return out
 
     def scan_phase1(self, max_candidates: int = 60) -> List[Dict[str, Any]]:
         """
@@ -130,28 +193,22 @@ class PreMarketScanner:
         # Fetch OHLC in batches
         all_data = {}
         kite_symbols = [f"NSE:{sym}" for sym in symbols]
-        for i in range(0, len(kite_symbols), 500):
-            batch = kite_symbols[i:i + 500]
-            try:
-                data = self._call_with_retry(
-                    f"ohlc(batch{i // 500 + 1})",
-                    lambda k, b=batch: k.ohlc(b),
+        for i in range(0, len(kite_symbols), OHLC_BATCH_SIZE):
+            batch = kite_symbols[i:i + OHLC_BATCH_SIZE]
+            n = i // OHLC_BATCH_SIZE + 1
+            got = self._fetch_ohlc_batch(n, batch)
+            all_data.update(got)
+            missing = [b for b in batch if b not in got]
+            if missing:
+                logger.warning(
+                    f"⚠️ Phase 1 batch {n}: {len(missing)}/{len(batch)} symbols returned no OHLC "
+                    f"(e.g. {', '.join(missing[:5])})"
                 )
-                all_data.update(data)
-            except Exception as e:
-                logger.warning(f"  Batch {i // 500 + 1} failed: {e}")
-                _time.sleep(3)
-                try:
-                    data = self._call_with_retry(
-                        f"ohlc(batch{i // 500 + 1} retry)",
-                        lambda k, b=batch: k.ohlc(b),
-                    )
-                    all_data.update(data)
-                except Exception:
-                    pass
-            if i + 500 < len(kite_symbols):
+            if i + OHLC_BATCH_SIZE < len(kite_symbols):
                 _time.sleep(1)
 
+        if len(all_data) < len(kite_symbols):
+            logger.warning(f"⚠️ Phase 1 incomplete: {len(kite_symbols) - len(all_data)} of {len(kite_symbols)} symbols missing")
         logger.info(f"📊 Got data for {len(all_data)} stocks")
 
         # Build instrument name lookup

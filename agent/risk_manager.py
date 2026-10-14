@@ -119,12 +119,12 @@ class RiskManager:
 
         return False, "Within limits"
 
-    def check_intraday_close(self, now=None) -> bool:
-        """Check if it's time to force-close intraday positions (near market close).
-        Returns False for 24/7 markets (no forced close)."""
+    def forced_close_time(self, now=None):
+        """Today's forced-close moment (market close minus buffer) in the market's
+        timezone, or None for 24/7 markets."""
         preset = self.config._market_preset
         if preset and preset.is_24x7:
-            return False
+            return None
 
         from zoneinfo import ZoneInfo
         now = now or datetime.now(ZoneInfo(self.config.timezone))
@@ -132,9 +132,16 @@ class RiskManager:
         close_str = self.config.market_close  # e.g. "15:30"
         buffer = preset.intraday_close_buffer_min if preset else 15
         close_h, close_m = map(int, close_str.split(":"))
-        market_close = now.replace(hour=close_h, minute=close_m, second=0)
-        trigger_time = market_close - timedelta(minutes=buffer)
-        return now >= trigger_time
+        market_close = now.replace(hour=close_h, minute=close_m, second=0, microsecond=0)
+        return market_close - timedelta(minutes=buffer)
+
+    def check_intraday_close(self, now=None) -> bool:
+        """Check if it's time to force-close intraday positions (near market close).
+        Returns False for 24/7 markets (no forced close)."""
+        from zoneinfo import ZoneInfo
+        now = now or datetime.now(ZoneInfo(self.config.timezone))
+        trigger_time = self.forced_close_time(now)
+        return trigger_time is not None and now >= trigger_time
 
     def run_stop_loss_sweep(self, current_prices: Dict[str, float]):
         """

@@ -16,8 +16,13 @@ import pandas as pd
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 import logging
+import time
+
+from .kite_data import macd_state_from
 
 logger = logging.getLogger(__name__)
+
+KITE_INIT_RETRY_DELAYS = (20, 40)   # 3 attempts over ~1 min before falling back to yfinance
 
 
 class MarketData:
@@ -145,7 +150,7 @@ class MarketData:
                 ema_50 = round(float(closes.ewm(span=50, adjust=False).mean().iloc[-1]), 2)
 
             # ── MACD(12, 26, 9) ────────────────────────────────────────
-            macd_line = macd_signal = macd_hist = None
+            macd_line = macd_signal = macd_hist = macd_state = None
             if len(hist) >= 26:
                 ema_12 = closes.ewm(span=12, adjust=False).mean()
                 ema_26 = closes.ewm(span=26, adjust=False).mean()
@@ -154,6 +159,7 @@ class MarketData:
                 macd_line = round(float(macd.iloc[-1]), 2)
                 macd_signal = round(float(signal.iloc[-1]), 2)
                 macd_hist = round(macd_line - macd_signal, 2)
+                macd_state = macd_state_from(macd - signal)
 
             # ── Volume ratio (today vs 20-day avg) ─────────────────────
             vol_ratio = None
@@ -192,15 +198,6 @@ class MarketData:
             ema_trend = None
             if ema_20 and ema_50:
                 ema_trend = "bullish" if ema_20 > ema_50 else "bearish"
-            macd_state = None
-            if macd_line is not None and macd_signal is not None:
-                if macd_line > macd_signal and macd_hist > 0:
-                    macd_state = "bullish_cross"
-                elif macd_line < macd_signal and macd_hist < 0:
-                    macd_state = "bearish_cross"
-                else:
-                    macd_state = "neutral"
-
             return {
                 "ticker":                  ticker,
                 "current_price":           round(current, 2),
@@ -296,27 +293,45 @@ def prices_incl_positions(market_data, portfolio) -> Dict[str, float]:
     return market_data.get_current_prices(list(dict.fromkeys([*market_data.watchlist, *held])))
 
 
-def create_market_data(config, market_preset=None):
+def create_market_data(config, market_preset=None, retry_kite=True):
     """Factory: create appropriate market data provider based on config.
 
     Returns KiteMarketData if data_source='kite' and Kite credentials are available,
-    otherwise falls back to yfinance MarketData.
+    otherwise falls back to yfinance MarketData. retry_kite=False (API request
+    path) tries Kite once and falls back quietly instead of sleeping and alerting.
     """
     data_source = getattr(config, 'data_source', 'yfinance')
     if hasattr(config, '_session_config') and config._session_config:
         data_source = getattr(config._session_config, 'data_source', data_source)
 
     if data_source == "kite":
-        try:
-            from .kite_auth import KiteAuth
-            from .kite_data import KiteMarketData
+        from .kite_auth import KiteAuth
+        from .kite_data import KiteMarketData
 
-            auth = KiteAuth()  # Reads from env vars
-            kite = auth.get_authenticated_client()
-            logger.info("📊 Using Kite Connect for market data (real-time)")
-            return KiteMarketData(config.watchlist, market_preset, kite, auth=auth)
-        except Exception as e:
-            logger.warning(f"Kite Connect init failed, falling back to yfinance: {e}")
+        err = None
+        for delay in ((*KITE_INIT_RETRY_DELAYS, None) if retry_kite else (None,)):
+            try:
+                auth = KiteAuth()  # Reads from env vars
+                kite = auth.get_authenticated_client()
+                logger.info("📊 Using Kite Connect for market data (real-time)")
+                return KiteMarketData(config.watchlist, market_preset, kite, auth=auth)
+            except Exception as e:
+                err = e
+                if delay is not None:
+                    logger.warning(f"Kite Connect init failed ({e}), retrying in {delay}s")
+                    time.sleep(delay)
+        if not retry_kite:
+            logger.warning(f"Kite Connect init failed, using yfinance: {err}")
             return MarketData(config.watchlist, market_preset)
+        # The fallback is for the whole process lifetime, so make it loud.
+        name = getattr(getattr(config, "_session_config", None), "session_id", "") or "agent"
+        logger.error(f"Kite Connect init failed after retries, falling back to yfinance: {err}")
+        try:
+            from .health import send_telegram
+            send_telegram(f"AlphaAgent {name}: Kite init failed after retries ({err}). "
+                          f"Running on yfinance until restart.")
+        except Exception as e:
+            logger.warning(f"Telegram alert failed: {e}")
+        return MarketData(config.watchlist, market_preset)
 
     return MarketData(config.watchlist, market_preset)

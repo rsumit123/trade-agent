@@ -45,6 +45,8 @@ def agent(tmp_path):
     a.engine = NS(client=None)
     a._auto_exits = []
     a._is_backtest = False
+    a._seconds_to_forced_close = lambda: None      # keep these tests independent of the wall clock
+    a.risk_manager.check_intraday_close = lambda now=None: False
     return a
 
 

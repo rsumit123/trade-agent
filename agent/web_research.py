@@ -366,6 +366,18 @@ class LLMWebSearchTool:
                           "description": "Units to trade, fractions allowed (e.g. 0.015). Required for BUY and SHORT"}
         else:
             qty_schema = {"type": "integer", "description": "Number of shares (required for BUY and SHORT)"}
+        if market_preset and list(market_preset.trade_types) == ["intraday"]:
+            trade_type_schema = {
+                "type": "string",
+                "enum": ["intraday"],
+                "description": "Always intraday on this market — every position is force-closed before the close"
+            }
+        else:
+            trade_type_schema = {
+                "type": "string",
+                "enum": ["intraday", "swing"],
+                "description": "Holding period — SHORT is always intraday regardless of this value"
+            }
         return {
             "name": "place_trade",
             "description": (
@@ -390,11 +402,7 @@ class LLMWebSearchTool:
                         "description": "Stock ticker, e.g. 'RELIANCE.NS' (required for BUY and SHORT)"
                     },
                     "quantity": qty_schema,
-                    "trade_type": {
-                        "type": "string",
-                        "enum": ["intraday", "swing"],
-                        "description": "Holding period — SHORT is always intraday regardless of this value"
-                    },
+                    "trade_type": trade_type_schema,
                     "trade_id": {
                         "type": "integer",
                         "description": "Trade ID to close (required for SELL and COVER)"

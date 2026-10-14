@@ -11,7 +11,7 @@ import logging
 import math
 import os
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time as dtime, timedelta
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 from zoneinfo import ZoneInfo
@@ -26,6 +26,35 @@ IST = ZoneInfo("Asia/Kolkata")
 DAILY_CACHE_DIR = Path("sessions/_daily_candles")
 HISTORY_DAYS = 100        # ≈ 65+ trading days, so EMA(50) is available
 HIST_THROTTLE_S = 0.4     # Kite allows ~3 historical calls/sec per API key
+INSTRUMENT_LOAD_DELAYS = (2, 5)     # backoff between startup attempts to load the instrument list
+INSTRUMENT_RELOAD_MIN_S = 60        # at most one lazy reload attempt a minute while the map is empty
+NIFTY_TOKEN = 256265                # NIFTY 50 index — used to detect exchange holidays
+HOLIDAY_PROBE_AFTER = dtime(9, 20)  # first minute candles exist by now on a real trading day
+HOLIDAY_PROBE_RETRY_S = 300         # after a failed probe, don't hammer Kite from the per-minute monitor
+HOLIDAY_CONFIRM_S = 600             # a holiday needs two empty probes this far apart
+HOLIDAY_RECHECK_S = 1800            # and is re-checked this often, in case candles were just late
+
+
+def macd_state_from(hist: pd.Series) -> Optional[str]:
+    """Honest MACD label from the histogram series (MACD - signal). A *cross* is
+    the histogram changing sign: 'bullish_cross'/'bearish_cross' on the latest bar,
+    '..._cross_1bar_ago' one bar earlier; otherwise just which side of the signal
+    line the MACD is on."""
+    if hist is None or len(hist) < 3:
+        return None
+    h0, h1, h2 = (float(x) for x in hist.iloc[-1:-4:-1])
+    if h0 > 0:
+        side, kind = "above_signal", "bullish"
+    elif h0 < 0:
+        side, kind = "below_signal", "bearish"
+    else:
+        return "neutral"
+    prior = lambda h: h <= 0 if h0 > 0 else h >= 0
+    if prior(h1):
+        return f"{kind}_cross"
+    if prior(h2):
+        return f"{kind}_cross_1bar_ago"
+    return side
 
 
 def _with_today_bar(past: pd.DataFrame, quote: dict) -> pd.DataFrame:
@@ -46,8 +75,8 @@ def compute_technicals(df: pd.DataFrame, current_price: float, volume: float) ->
     """Daily indicators from candles whose last row is today. Used by both the
     watchlist rows and get_stock_details so the two always agree."""
     out = {"rsi_14": None, "atr_14": None, "sma_5": None, "ema_20": None, "ema_50": None,
-           "macd": None, "macd_signal": None, "macd_hist": None, "vol_ratio": None,
-           "high_5d": current_price, "low_5d": current_price}
+           "macd": None, "macd_signal": None, "macd_hist": None, "macd_state": None,
+           "vol_ratio": None, "avg_volume_20d": None, "high_5d": None, "low_5d": None}
     if len(df) >= 15:
         close = df["close"]
 
@@ -86,19 +115,32 @@ def compute_technicals(df: pd.DataFrame, current_price: float, volume: float) ->
             out["macd"] = round(float(macd.iloc[-1]), 2)
             out["macd_signal"] = round(float(signal.iloc[-1]), 2)
             out["macd_hist"] = round(out["macd"] - out["macd_signal"], 2)
-
-        # 5-day high/low (today included)
-        out["high_5d"] = float(df["high"].tail(5).max())
-        out["low_5d"] = float(df["low"].tail(5).min())
+            out["macd_state"] = macd_state_from(macd - signal)
 
         # Volume ratio: today's volume so far / 20-day average (today included)
         avg_vol = float(df["volume"].tail(20).mean()) if len(df) >= 20 else float(df["volume"].mean())
         if avg_vol > 0:
             out["vol_ratio"] = round(volume / avg_vol, 2)
 
-    out["dist_to_resistance_pct"] = round((out["high_5d"] - current_price) / current_price * 100, 2) if current_price else None
-    out["dist_to_support_pct"] = round((current_price - out["low_5d"]) / current_price * 100, 2) if current_price else None
+    # 5-day high/low (today included) from whatever history exists; with no past
+    # bar there is nothing to measure against, so res/sup stay None (n/a), not 0.0%.
+    if len(df) >= 2:
+        out["high_5d"] = float(df["high"].tail(5).max())
+        out["low_5d"] = float(df["low"].tail(5).min())
+    # Real average daily volume from past bars only (today's partial volume excluded)
+    if len(df) >= 2:
+        past_vol = df["volume"].iloc[:-1].tail(20)
+        if past_vol.mean() > 0:
+            out["avg_volume_20d"] = int(past_vol.mean())
+
+    ok = bool(current_price) and out["high_5d"] is not None
+    out["dist_to_resistance_pct"] = round((out["high_5d"] - current_price) / current_price * 100, 2) if ok else None
+    out["dist_to_support_pct"] = round((current_price - out["low_5d"]) / current_price * 100, 2) if ok else None
     return out
+
+
+def _vs_sma(price: float, sma_5: Optional[float]) -> str:
+    return "unknown" if not sma_5 else "above" if price > sma_5 else "below"
 
 
 class KiteMarketData:
@@ -113,9 +155,17 @@ class KiteMarketData:
         self._price_cache: Dict[str, float] = {}
         self._cache_time: Optional[datetime] = None
         self._cache_ttl = timedelta(seconds=30)  # 30s cache (much fresher than yfinance 5min)
+        self._instruments_tried_at = 0.0
+        self._holiday: Optional[tuple] = None        # (IST date, is_holiday) once probed
+        self._holiday_empty: Optional[tuple] = None  # (IST date, monotonic) of the last empty probe
+        self._holiday_probe_failed_at = -HOLIDAY_PROBE_RETRY_S
 
         if self.kite:
-            self._load_instruments()
+            for delay in (*INSTRUMENT_LOAD_DELAYS, None):
+                if self._load_instruments():
+                    break
+                if delay is not None:
+                    time.sleep(delay)
 
     def _is_auth_error(self, exc: Exception) -> bool:
         msg = str(exc).lower()
@@ -147,8 +197,9 @@ class KiteMarketData:
                     raise
             raise
 
-    def _load_instruments(self):
-        """Cache instrument tokens for quick lookup."""
+    def _load_instruments(self) -> bool:
+        """Cache instrument tokens for quick lookup. Returns True on success."""
+        self._instruments_tried_at = time.monotonic()
         try:
             instruments = self.kite.instruments("NSE")
             for i in instruments:
@@ -157,8 +208,10 @@ class KiteMarketData:
                 # Also map with .NS suffix for compatibility
                 self._instrument_map[f"{sym}.NS"] = i["instrument_token"]
             logger.info(f"📊 Loaded {len(instruments)} NSE instruments from Kite")
+            return bool(instruments)
         except Exception as e:
             logger.error(f"Failed to load Kite instruments: {e}")
+            return False
 
     def _strip_ns(self, ticker: str) -> str:
         """Remove .NS suffix: 'RELIANCE.NS' → 'RELIANCE'"""
@@ -170,6 +223,9 @@ class KiteMarketData:
 
     def _get_instrument_token(self, ticker: str) -> Optional[int]:
         """Get instrument token for a ticker."""
+        if (not self._instrument_map and self.kite
+                and time.monotonic() - self._instruments_tried_at >= INSTRUMENT_RELOAD_MIN_S):
+            self._load_instruments()   # startup load failed — don't stay blind all day
         return self._instrument_map.get(ticker) or self._instrument_map.get(self._strip_ns(ticker))
 
     # ── Core Data Methods (same interface as MarketData) ─────
@@ -274,7 +330,9 @@ class KiteMarketData:
                 "quote(stock_context)",
                 lambda k, s=kite_sym: k.quote([s]),
             ).get(kite_sym, {})
-            current_price = quote.get("last_price", 0)
+            if not quote.get("last_price"):
+                return {"ticker": ticker, "error": f"No quote available for {ticker}"}
+            current_price = quote["last_price"]
             ohlc = quote.get("ohlc", {})
             prev_close = ohlc.get("close", current_price)
             day_open = ohlc.get("open", current_price)
@@ -308,15 +366,7 @@ class KiteMarketData:
                 ema_trend = "bullish" if ema_20 > ema_50 else "bearish"
             price_vs_ema20 = "above" if (ema_20 and current_price > ema_20) else "below" if ema_20 else None
 
-            # MACD signal
-            macd_state = None
-            if macd_line is not None and macd_signal is not None:
-                if macd_line > macd_signal and macd_hist > 0:
-                    macd_state = "bullish_cross"
-                elif macd_line < macd_signal and macd_hist < 0:
-                    macd_state = "bearish_cross"
-                else:
-                    macd_state = "neutral"
+            macd_state = t["macd_state"]
 
             result = {
                 "ticker": ticker,
@@ -328,7 +378,7 @@ class KiteMarketData:
                 "dist_to_resistance_pct": dist_to_resistance,
                 "dist_to_support_pct": dist_to_support,
                 "sma_5": sma_5,
-                "price_vs_sma": "above" if (sma_5 and current_price > sma_5) else "below",
+                "price_vs_sma": _vs_sma(current_price, sma_5),
                 "ema_20": ema_20,
                 "ema_50": ema_50,
                 "ema_trend": ema_trend,
@@ -337,7 +387,8 @@ class KiteMarketData:
                 "macd_signal": macd_signal,
                 "macd_hist": macd_hist,
                 "macd_state": macd_state,
-                "avg_volume": int(volume),
+                "today_volume": int(volume),
+                "avg_volume_20d": t["avg_volume_20d"],
                 "rsi_14": rsi_14,
                 "atr_14": atr_14,
                 "vol_ratio": vol_ratio,
@@ -351,13 +402,7 @@ class KiteMarketData:
 
         except Exception as e:
             logger.error(f"Kite get_stock_context failed for {ticker}: {e}")
-            return {
-                "ticker": ticker, "current_price": 0, "prev_close": 0,
-                "change_pct": 0, "rsi_14": None, "atr_14": None,
-                "vol_ratio": None, "dist_to_resistance_pct": None,
-                "dist_to_support_pct": None, "sma_5": None,
-                "price_vs_sma": "unknown",
-            }
+            return {"ticker": ticker, "error": str(e)}
 
     def get_watchlist_summary(self) -> List[Dict[str, Any]]:
         """Batch fetch all watchlist stocks with technicals."""
@@ -414,7 +459,7 @@ class KiteMarketData:
                     "dist_to_resistance_pct": t.get("dist_to_resistance_pct"),
                     "dist_to_support_pct": t.get("dist_to_support_pct"),
                     "sma_5": t.get("sma_5"),
-                    "price_vs_sma": "above" if (vwap and current_price > vwap) else "below",
+                    "price_vs_sma": _vs_sma(current_price, t.get("sma_5")),
                     "vwap": round(vwap, 2) if vwap else None,
                     "vwap_dist_pct": round((current_price - vwap) / vwap * 100, 2) if vwap else None,
                     "from_day_high_pct": round((current_price - day_high) / day_high * 100, 2) if day_high and day_open else None,
@@ -475,4 +520,53 @@ class KiteMarketData:
         close_h, close_m = map(int, close_str.split(":"))
         market_open = now.replace(hour=open_h, minute=open_m, second=0)
         market_close = now.replace(hour=close_h, minute=close_m, second=0)
-        return market_open <= now <= market_close
+        if not (market_open <= now <= market_close):
+            return False
+        if self.kite and tz_str == "Asia/Kolkata" and self._is_exchange_holiday(now):
+            return False
+        return True
+
+    def _is_exchange_holiday(self, now: datetime) -> bool:
+        """True on a weekday NSE holiday: once per IST day, after 09:20, NIFTY 50
+        has no minute candles. Fail-OPEN: any error means 'open', never block
+        trading on a real trading day because a probe failed."""
+        day = now.date()
+        mono = time.monotonic()
+        if self._holiday and self._holiday[0] == day and not self._holiday[1]:
+            return False                                   # saw candles today: open
+        last_empty = self._holiday_empty[1] if self._holiday_empty and self._holiday_empty[0] == day else None
+        is_holiday = bool(self._holiday and self._holiday[0] == day)
+        if now.time() < HOLIDAY_PROBE_AFTER:
+            return False
+        # One empty answer could be late data, so a holiday needs a second empty
+        # probe HOLIDAY_CONFIRM_S later, and is re-checked every HOLIDAY_RECHECK_S.
+        wait = HOLIDAY_RECHECK_S if is_holiday else HOLIDAY_CONFIRM_S
+        if last_empty is not None and mono - last_empty < wait:
+            return is_holiday
+        if mono - self._holiday_probe_failed_at < HOLIDAY_PROBE_RETRY_S:
+            return is_holiday
+        try:
+            candles = self._call_with_retry(
+                "historical_data(holiday probe)",
+                lambda k: k.historical_data(
+                    instrument_token=NIFTY_TOKEN, from_date=day.isoformat(),
+                    to_date=day.isoformat(), interval="minute"),
+            )
+        except Exception as e:
+            self._holiday_probe_failed_at = mono
+            logger.warning(f"Holiday probe failed, assuming market open: {e}")
+            return is_holiday
+        if candles:
+            if is_holiday:
+                logger.warning(f"NIFTY candles appeared for {day}: market is open after all")
+            self._holiday = (day, False)
+            return False
+        if last_empty is None:                             # first empty probe: wait to confirm
+            self._holiday_empty = (day, mono)
+            logger.warning(f"No NIFTY candles yet for {day}; re-checking in {HOLIDAY_CONFIRM_S // 60} min")
+            return False
+        self._holiday_empty = (day, mono)
+        if not is_holiday:
+            logger.warning(f"No NIFTY candles for {day} on two probes: treating as an exchange holiday")
+        self._holiday = (day, True)
+        return True
