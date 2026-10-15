@@ -131,6 +131,11 @@ class RiskManager:
 
         close_str = self.config.market_close  # e.g. "15:30"
         buffer = preset.intraday_close_buffer_min if preset else 15
+        # Per-session override, e.g. nse_opus_live closes at 15:10 so real exits
+        # finish well before Groww's 15:20 MIS square-off.
+        override = getattr(getattr(self.config, "_session_config", None), "intraday_close_buffer_min", None)
+        if isinstance(override, int) and not isinstance(override, bool) and 0 <= override <= 120:
+            buffer = override
         close_h, close_m = map(int, close_str.split(":"))
         market_close = now.replace(hour=close_h, minute=close_m, second=0, microsecond=0)
         return market_close - timedelta(minutes=buffer)

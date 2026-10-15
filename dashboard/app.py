@@ -1507,7 +1507,10 @@ def liquidate_session(session_id: str, user: dict = Depends(current_user)):
     """
     import time as _time
 
-    # 1. Stop the agent first so it can't race new entries
+    # 1. Stop the agent first so it can't race new entries. For a real-money
+    #    session, leave a dated liquidation request first: the agent's SIGTERM
+    #    handler flattens real positions before it exits.
+    _request_live_liquidation(session_id)
     status = _is_agent_running(session_id)
     was_running = status["running"]
     if was_running:
@@ -1527,9 +1530,13 @@ def liquidate_session(session_id: str, user: dict = Depends(current_user)):
     portfolio = c["portfolio"]
     market_data = c["market_data"]
 
+    # Real-money session: flatten the real positions too (cancel protective
+    # orders, exit capped at Groww's net position), retrying in the background.
+    live = _liquidate_live(c.get("session"))
+
     open_positions = portfolio.get_open_positions()
     if not open_positions:
-        return {"status": "ok", "agent_stopped": was_running, "closed": 0, "trades": []}
+        return {"status": "ok", "agent_stopped": was_running, "closed": 0, "trades": [], "live": live}
 
     tickers = list({t.ticker for t in open_positions})
     try:
@@ -1572,7 +1579,34 @@ def liquidate_session(session_id: str, user: dict = Depends(current_user)):
         "closed": len(closed),
         "trades": closed,
         "errors": errors,
+        "live": live,
     }
+
+
+def _request_live_liquidation(session_id: str):
+    try:
+        from agent import live_mirror
+        from agent.session import load_session
+        sc = load_session(session_id)
+        if live_mirror.live_enabled_for(sc) or live_mirror.ledger_has_exposure(sc.session_dir):
+            live_mirror.request_liquidation(sc.session_dir)
+    except Exception as e:
+        logger.warning(f"liquidate: could not leave the real-side request for {session_id}: {e}")
+
+
+def _liquidate_live(session):
+    """Real side of the kill switch for a Groww live-mirror session; None otherwise.
+    Runs in the background: waits for the agent to release the live lock."""
+    if session is None:
+        return None
+    try:
+        from agent import live_mirror
+        if not (live_mirror.live_enabled_for(session) or live_mirror.ledger_has_exposure(session.session_dir)):
+            return None
+        return live_mirror.liquidate_from_dashboard(session)
+    except Exception as e:
+        logger.error(f"liquidate: real-side flatten failed for {getattr(session, 'session_id', '?')}: {e}")
+        return {"live": f"error: {e}"}
 
 
 # ── Backtest Endpoints ────────────────────────────────────────
