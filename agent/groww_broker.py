@@ -54,6 +54,7 @@ LOGIN_TIMEOUT_S = 20
 
 CATEGORIES = ("not_intraday_allowed", "circuit_limit", "insufficient_margin", "auth",
               "ip_not_whitelisted", "rate_limited", "invalid_price_tick", "invalid_sl_range",
+              "duplicate_reference",
               "market_closed", "unknown")
 
 # Real remarks (Groww, 2026-10-15): "RMS:Rule: Assigned basket  for entity …" (not intraday),
@@ -62,6 +63,7 @@ CATEGORIES = ("not_intraday_allowed", "circuit_limit", "insufficient_margin", "a
 # multiples of the tick size.", "16448 : Difference between limit price and trigger price is
 # beyond permissible range".
 _RULES = [  # (category, needles) — first match wins
+    ("duplicate_reference", ("duplicate order", "reference id already exists", "ga007")),
     ("invalid_sl_range", ("16448", "difference between limit price and trigger price")),
     ("ip_not_whitelisted", ("whitelist", "static ip", "ip address", "ip not", "unregistered ip")),
     ("auth", ("token", "authenticat", "authoris", "authoriz", "unauthor", "forbidden", "session expired",
@@ -91,6 +93,8 @@ def classify_error(exc_or_text) -> str:
     code = str(getattr(exc_or_text, "code", "") or "")
     name = type(exc_or_text).__name__
     text = error_text(exc_or_text).lower()
+    if code.upper() == "GA007":
+        return "duplicate_reference"
     if code == "429" or name == "GrowwAPIRateLimitException":
         return "rate_limited"
     for cat, needles in _RULES:

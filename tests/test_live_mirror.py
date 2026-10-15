@@ -419,7 +419,7 @@ def test_long_entry_fills_and_places_protective_stop(env):
     entry, stop = env.client.placed()
     assert entry["transaction_type"] == "BUY" and entry["order_type"] == "LIMIT" and entry["product"] == "MIS"
     assert entry["trading_symbol"] == "SBIN" and entry["quantity"] == 10 and entry["price"] == 942.85
-    assert entry["order_reference_id"] == f"261016-{t.id}-E1"
+    assert entry["order_reference_id"] == f"261016{env.mirror._salt}-{t.id}-E1"
     assert stop["order_type"] == "SL" and stop["transaction_type"] == "SELL" and stop["trigger_price"] == 930.0
     leg = _leg(env, t)
     assert leg["status"] == "open" and leg["filled_qty"] == 10 and leg["entry_fill"] == 942.85
@@ -1346,7 +1346,7 @@ def test_unknown_plain_stop_is_resolved_by_reference_and_cancelled(env):        
 def test_close_sweeps_a_leftover_stop_of_ours_but_not_the_users(env):          # [N1]
     t = _buy(env)
     ghost = env.client.add_manual("SBIN", -10, order_type="SL", status="TRIGGER_PENDING",
-                                  ref=f"261016-{t.id}-P9")                       # ours, forgotten
+                                  ref=env.mirror._ref(t.id, "P", 9))             # ours, forgotten
     users = env.client.add_manual("SBIN", -5, order_type="SL", status="TRIGGER_PENDING", ref="MYOWNSTOP1")
     env.pf.execute_sell(t.id, 950.0, "exit")
     assert _leg(env, t)["status"] == "closed"
@@ -1357,7 +1357,8 @@ def test_close_sweeps_a_leftover_stop_of_ours_but_not_the_users(env):          #
 def test_periodic_orphan_sweep_cancels_our_stop_on_a_flat_symbol(env):          # [N1]
     t = _buy(env)
     env.pf.execute_sell(t.id, 950.0, "exit")
-    ghost = env.client.add_manual("SBIN", -10, order_type="SL", status="TRIGGER_PENDING", ref="261016-77-P1")
+    ghost = env.client.add_manual("SBIN", -10, order_type="SL", status="TRIGGER_PENDING",
+                                  ref=env.mirror._ref(77, "P", 1))
     env.mirror.reconcile(force=True)
     assert env.client.orders[ghost]["order_status"] == "CANCELLED"
     assert any("leftover protective stop" in a for a in env.alerts)
@@ -2346,3 +2347,60 @@ def test_smoke_sell_alert_has_no_fake_paper_price(env):                         
     m.smoke_test("ITC.NS")
     closes = [a for a in env.alerts if "closed @" in a]
     assert closes and all("paper ₹0.00" not in a for a in closes)
+
+
+
+# ── Reference salt / GA007 (real e2e re-run on 5268b82) ───
+
+def test_reference_salt_is_persisted_and_replayed(env):
+    t = _buy(env)
+    salt = env.mirror._salt
+    assert salt and len(salt) == 3 and env.client.placed()[0]["order_reference_id"].startswith(f"261016{salt}-")
+    m2 = env.make()
+    assert m2._salt == salt and m2._ref(t.id, "E") == env.mirror._ref(t.id, "E")
+    assert m2.legs[str(t.id)]["entry_ref"] == m2._ref(t.id, "E")
+
+
+def test_two_ledgers_on_the_same_day_get_different_refs(tmp_path, monkeypatch):
+    import secrets
+    chars = iter("k7xq2p")                                    # deterministic "random" salts
+    monkeypatch.setattr(secrets, "choice", lambda alphabet: next(chars))
+    c = FakeGrowwClient()
+    mk = lambda d: LiveMirror(GrowwBroker(client=c), "nse_opus_live", tmp_path / d, alert=lambda s: None,
+                              now=lambda: NOW)
+    first, second = mk("run1"), mk("run2")
+    assert first._ref(1, "E") == "261016k7x-1-E1" and second._ref(1, "E") == "261016q2p-1-E1"
+
+
+def test_reference_length_worst_case(env):
+    ref = env.mirror._ref(123456789012, "X", 99)
+    assert len(ref) <= 20 and ref.count("-") == 2 and ref.replace("-", "").isalnum()
+    assert env.mirror._ref("smoke12-2026-10-16", "B", 1).count("-") == 2
+
+
+def _ga007_on_next_place(client, existing_kw=None):
+    real = client.place_order
+
+    def place(timeout=None, **kw):
+        if existing_kw is not None:                        # the order already exists at Groww
+            real(timeout=timeout, **{**kw, **existing_kw})
+            client.place_order = real
+        raise GErr("Duplicate order. Order with this reference id already exists.", "GA007")
+    client.place_order = place
+
+
+def test_ga007_adopts_our_own_earlier_order(env):
+    _ga007_on_next_place(env.client, existing_kw={})        # same symbol/side/qty, just created
+    t = _buy(env)
+    leg = _leg(env, t)
+    assert leg["status"] == "open" and leg["entry_order"] == "G1" and len(env.client.orders) == 2   # + SL
+    assert any(r.get("note") == "GA007 adopted" for r in _ledger(env) if r.get("event") == "order")
+
+
+def test_ga007_never_adopts_a_foreign_order(env):
+    _ga007_on_next_place(env.client, existing_kw={"quantity": 3})   # someone else's order, other qty
+    t = _buy(env)
+    leg = _leg(env, t)
+    assert leg["status"] == "rejected" and leg["category"] == "duplicate_reference"
+    assert any("NOT adopting" in a for a in env.alerts)
+    assert env.client.net("SBIN") == 3                                            # theirs, untouched

@@ -216,8 +216,25 @@ def _symbol(ticker: str) -> Optional[str]:
     return sym if sym and all(c.isalnum() or c in "-&" for c in sym) else None
 
 
+_B36 = "0123456789abcdefghijklmnopqrstuvwxyz"
+REF_SALT_LEN = 3
+
+
+def _b36(n: int) -> str:
+    out = ""
+    while True:
+        n, r = divmod(n, 36)
+        out = _B36[r] + out
+        if not n:
+            return out
+
+
 def _ref_part(x) -> str:
-    return "".join(c for c in str(x) if c.isalnum())[:8] or "X"
+    """≤ 6 alphanumerics for a trade id (numeric ids past 6 digits → base36)."""
+    s = str(x)
+    if s.isdigit() and len(s) > 6:
+        return _b36(int(s))[-6:]
+    return "".join(c for c in s if c.isalnum())[:6] or "X"
 
 
 def _parse_ts(s) -> Optional[datetime]:
@@ -273,13 +290,30 @@ class LiveMirror:
         return self._now().astimezone(IST).strftime("%y%m%d")
 
     def _ours(self, ref) -> bool:
-        return bool(ref) and str(ref).startswith(self._yymmdd() + "-")
+        return bool(ref) and bool(self._salt) and str(ref).startswith(self._ref_prefix())
+
+    def _ref_prefix(self) -> str:
+        return f"{self._yymmdd()}{self._ensure_salt()}-"
+
+    def _ensure_salt(self) -> str:
+        """Groww enforces reference uniqueness per account per day, across every
+        ledger (an e2e run, a restarted session...). A random salt per ledger-day,
+        persisted in the ledger so a replay rebuilds the same references."""
+        if not self._salt:
+            import secrets
+            self._salt = "".join(secrets.choice(_B36) for _ in range(REF_SALT_LEN))
+            self._write({"event": "salt", "salt": self._salt})
+        return self._salt
 
     def _ref(self, tid, kind: str, n: int = 1) -> str:
-        """Deterministic order_reference_id: 8–20 alphanumerics, ≤ 2 hyphens."""
-        return f"{self._yymmdd()}-{_ref_part(tid)}-{kind}{n}"[:20]
+        """order_reference_id like "261015k7x-123-E1": ≤ 20 alphanumerics with
+        two hyphens (6 date + 3 salt + 1 + 6 id + 1 + kind + n ≤ 99)."""
+        ref = f"{self._ref_prefix()}{_ref_part(tid)}-{kind}{n}"
+        assert 8 <= len(ref) <= 20 and ref.count("-") == 2, ref
+        return ref
 
     def _reset_day_state(self):
+        self._salt = None                         # reference salt for today's ledger
         self._orders_today = 0
         self._realized_today = 0.0
         self._disabled = None                    # (date, reason) → no new entries
@@ -354,6 +388,8 @@ class LiveMirror:
                 self.oco_ok = row.get("oco_ok", True) is not False and not self._force_plain_sl()
             elif ev == "smoke_start":
                 self._smoke_attempts += 1
+            elif ev == "salt" and not self._salt:
+                self._salt = row.get("salt")
         self._realized_today = sum((l.get("real_pnl") or 0.0) for l in self.legs.values()
                                    if l.get("status") == "closed" and not l.get("smoke"))
         for leg in self.legs.values():
@@ -589,6 +625,7 @@ class LiveMirror:
                "symbol": leg["symbol"], "side": side, "order_type": order_type, "req_qty": qty,
                "req_price": price, "trigger": trigger}
         self._write({**row, "status": "sending"})
+        sent_at = self._now()
         try:
             oid = self._b(f"{kind} {side} {qty} {leg['symbol']}", self.broker.place_order,
                           leg["symbol"], side, qty, order_type, reference_id=ref,
@@ -596,11 +633,33 @@ class LiveMirror:
         except Exception as e:
             amb = is_ambiguous(e)
             cat = getattr(e, "category", None) or classify_error(e)
+            if cat == "duplicate_reference":
+                adopted = self._adopt_duplicate(leg, ref, side, qty, sent_at)
+                if adopted:
+                    self._write({**row, "status": "placed", "groww_order_id": adopted, "note": "GA007 adopted"})
+                    return {"id": adopted, "ref": ref, "error": None, "category": None, "ambiguous": False}
+                amb = False
+                self._alert(f"{leg['symbol']}: Groww says reference {ref} already exists on another order "
+                            f"— NOT adopting it; this {kind} is treated as rejected")
             self._write({**row, "status": "ambiguous" if amb else "rejected", "category": cat,
                          "message": error_text(e)})
             return {"id": None, "ref": ref, "error": error_text(e), "category": cat, "ambiguous": amb}
         self._write({**row, "status": "placed", "groww_order_id": oid})
         return {"id": oid, "ref": ref, "error": None, "category": None, "ambiguous": False}
+
+    def _adopt_duplicate(self, leg: Dict, ref: str, side: str, qty: int, sent_at: datetime) -> Optional[str]:
+        """GA007 'reference id already exists': our earlier send of this very
+        attempt may have landed (lost reply). Adopt the existing order only if
+        it is ours: same symbol, side, quantity, created within 5s before this
+        send or after. Never a foreign order that happens to share the ref."""
+        res, st = self._read(None, ref, leg["symbol"], f"duplicate ref {leg['symbol']}")
+        if res != "ok" or not st:
+            return None
+        created = _parse_ts(st.get("created_at"))
+        if (st.get("symbol") == leg["symbol"] and st.get("side") == side and int(st.get("quantity") or 0) == int(qty)
+                and created is not None and (created - sent_at).total_seconds() >= -5):
+            return st["id"]
+        return None
 
     def _read(self, order_id: Optional[str], ref: Optional[str], symbol: str, where: str):
         """('ok', state) | ('missing', None) | ('error', None). A reference that

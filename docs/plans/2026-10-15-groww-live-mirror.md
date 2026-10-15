@@ -159,6 +159,7 @@ is replayed and any leg whose paper trade closed is exited.
 | NO protective stop at Groww [category] … paper stop sweep will trigger the real exit | The SL was rejected (twice for a 16448 range) | Watch the position, or place a stop in the app |
 | Protective stop … rejected (16448 …) — retrying with a 0.5% limit | Groww's limit/trigger band check | none |
 | Could not move the real stop … / couldn't confirm the old one is cancelled | Modify and replace both failed | Check the stop in the Groww app |
+| Groww says reference … already exists on another order — NOT adopting it | GA007: a reference collided with an order that isn't this attempt's | none; that order is rejected. References carry a random per-ledger-day salt, so collisions should not happen |
 | N of our M shares were closed outside the mirror … | You (or something else) squared off mirror shares in the app; the stop is shrunk or cancelled and the leg is closed | none |
 | the protective stop is CANCELLED/REJECTED at Groww — re-protecting | The stop died (e.g. cancelled in the app); a new capped stop is placed | none |
 | the protective stop filled at Groww … before the paper exit | The stop at Groww fired first; recorded as the real exit | none |
