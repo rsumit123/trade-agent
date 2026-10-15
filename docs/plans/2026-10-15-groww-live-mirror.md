@@ -140,7 +140,11 @@ for the live lock and finishes the job in the background until Groww is flat. Ne
 off for the rest of the day.
 If the dashboard is unavailable: write today's date into `/app/sessions/nse_opus_live/LIVE_LIQUIDATE`
 (e.g. `date +%F > …`). The running agent acts on it at its next tick. A file dated another day is ignored.
-Last resort: square off in the Groww app. The mirror reconciles and alerts on any mismatch.
+Squaring off in the Groww app is now safe. About once a minute, the mirror re-reads Groww's raw
+position for every open leg. If your shares are gone, it cancels or shrinks the protective stop and
+closes the leg as `closed_outside_mirror` (exit price unknown, flagged in the EOD report). Its exits
+are always capped at min(ledger, owned net, raw position), so it never sells a second time. Liquidate
+(above) is still preferred: it records real fills and prices.
 
 ### Stop / restart
 A plain stop (SIGTERM) lets in-flight orders settle. It then makes sure every open real position has a
@@ -155,6 +159,9 @@ is replayed and any leg whose paper trade closed is exited.
 | NO protective stop at Groww [category] … paper stop sweep will trigger the real exit | The SL was rejected (twice for a 16448 range) | Watch the position, or place a stop in the app |
 | Protective stop … rejected (16448 …) — retrying with a 0.5% limit | Groww's limit/trigger band check | none |
 | Could not move the real stop … / couldn't confirm the old one is cancelled | Modify and replace both failed | Check the stop in the Groww app |
+| N of our M shares were closed outside the mirror … | You (or something else) squared off mirror shares in the app; the stop is shrunk or cancelled and the leg is closed | none |
+| the protective stop is CANCELLED/REJECTED at Groww — re-protecting | The stop died (e.g. cancelled in the app); a new capped stop is placed | none |
+| the protective stop filled at Groww … before the paper exit | The stop at Groww fired first; recorded as the real exit | none |
 | Blocked real … not_intraday_allowed / buy_not_allowed / sell_not_allowed / eligibility_unknown | Groww doesn't allow that stock intraday (or the list couldn't load) | none; paper trade only |
 | Skipped real … (kill switch / exposure / daily real loss / order cap / smoke test / exit-only) | A guard stopped the entry | Expected; review if frequent |
 | Blocked real … manual_position_conflict | You have your own MIS orders or position in that stock today; the mirror stays out of it | none (close yours if you want the mirror to trade it) |

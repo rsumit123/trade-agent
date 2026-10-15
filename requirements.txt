@@ -35,6 +35,9 @@ pyotp>=2.9.0
 # (verified importing with protobuf 7.x / pandas 3.x in the prod container).
 colorama
 clint
+protobuf>=6,<8        # growwapi's REST client works with prod's 7.x; keep its <6 pin out
+pydantic>=2.10,<3
+requests>=2.32,<3
 nats-py
 nkeys
 pynacl

@@ -590,13 +590,19 @@ def test_exit_is_capped_at_what_we_own(env):                              # cros
     assert [k["quantity"] for k in sells] == [10, 6] and env.client.net("SBIN") == 0
 
 
-@pytest.mark.parametrize("manual", [-4, -10, -15, 15])
-def test_users_manual_trades_never_change_our_exit(env, manual):          # live check: shared account
+@pytest.mark.parametrize("manual,our_sell,final_net", [
+    (-4, 6, 0),        # the user sold 4 of ours in the app: we sell only the 6 left
+    (-10, None, 0),    # the user squared off all of it: we sell nothing (B1)
+    (-15, None, -5),   # ...and went short 5 on top: theirs stays untouched
+    (15, 10, 15),      # the user bought their own 15: we sell our 10 only
+])
+def test_manual_trades_after_entry_never_cause_a_second_exit(env, manual, our_sell, final_net):
     t = _buy(env)
-    env.client.add_manual("SBIN", manual)          # the user trades SBIN by hand after our entry
+    env.client.add_manual("SBIN", manual)
     env.pf.execute_sell(t.id, 950.0, "exit")
-    assert env.client.placed("LIMIT", "SELL")[0]["quantity"] == 10
-    assert _leg(env, t)["status"] == "closed" and env.client.net("SBIN") == manual   # theirs untouched
+    sells = [k["quantity"] for k in env.client.placed("LIMIT", "SELL")]
+    assert sells == ([our_sell] if our_sell else [])
+    assert _leg(env, t)["status"] == "closed" and env.client.net("SBIN") == final_net
 
 
 def test_exit_reprices_then_market_across_ticks(env):                   # [M4]
@@ -1134,7 +1140,7 @@ def test_long_at_lower_circuit_alerts_cant_exit(env):
 
 def test_reconcile_alerts_on_mismatch_once(env):
     _buy(env)
-    env.client.orders["G1"]["filled_quantity"] = 7
+    env.client.pos_offset["SBIN"] = -3                     # Groww's position disagrees with our fills
     env.mirror.reconcile(force=True)
     env.mirror.reconcile(force=True)
     assert sum("mismatch" in a for a in env.alerts) == 1
@@ -2095,6 +2101,7 @@ def test_owned_net_excludes_manual_fills(env):                                  
     assert view["raw"] == -15 and view["net"] == 10 and view["orders_net"] == 10 and view["foreign"]
     env.mirror.reconcile(force=True)
     assert not any("mismatch" in a for a in env.alerts)
+    assert _leg(env, t)["status"] == "closed" and _leg(env, t)["closed_outside_mirror"]   # B1
 
 
 # ── Real 1-share probe (Groww, 2026-10-15) ────────────────
@@ -2232,3 +2239,110 @@ def test_e2e_script_guards(monkeypatch, argv, msg):
         mod.main()
     assert msg in str(e.value)
     assert mod.QTY == 1 and mod.ALLOWED_SYMBOLS == {"ITC"}
+
+
+
+# ── B1 / M1 / M2 (repro6 on abdbc8e) ──────────────────────
+
+def _live_sls(client, sym="SBIN"):
+    return [o for o in client.orders.values() if o["trading_symbol"] == sym and o["order_type"] == "SL"
+            and o["order_status"] == "TRIGGER_PENDING"]
+
+
+@pytest.mark.parametrize("manual", [-10, -5])
+def test_manual_square_off_never_triggers_a_second_exit(env, manual):           # [B1] repro6
+    t = _buy(env)
+    env.client.add_manual("SBIN", manual)                                        # user sells in the app
+    env.pf.execute_sell(t.id, 950.0, "exit")
+    for _ in range(5):
+        env.later(2)
+        env.mirror.tick()
+    leg = _leg(env, t)
+    assert env.client.net("SBIN") == 0 and leg["status"] == "closed" and leg["closed_outside_mirror"]
+    assert _live_sls(env.client) == [] and leg["real_pnl"] is None
+    assert "closed_outside_mirror" in leg["note"]
+
+
+def test_full_manual_close_while_open_closes_the_leg_and_cancels_the_sl(env):   # [B1]
+    t = _buy(env)
+    env.client.add_manual("SBIN", -10)
+    env.later(61)
+    env.mirror.tick()
+    leg = _leg(env, t)
+    assert leg["status"] == "closed" and leg["closed_outside_mirror"] and _live_sls(env.client) == []
+    assert any("closed outside the mirror" in a for a in env.alerts)
+    env.pf.execute_sell(t.id, 950.0, "paper exit later")                         # paper catches up: nothing sent
+    assert env.client.placed("LIMIT", "SELL") == [] and env.client.net("SBIN") == 0
+
+
+def test_partial_manual_close_while_open_shrinks_the_sl(env):                  # [B1]
+    t = _buy(env)
+    env.client.add_manual("SBIN", -4)
+    env.later(61)
+    env.mirror.tick()
+    leg = _leg(env, t)
+    (sl,) = _live_sls(env.client)
+    assert sl["quantity"] == 6 and leg["status"] == "open" and env.mirror._held(leg) == 6
+    env.pf.execute_sell(t.id, 950.0, "exit")
+    assert [k["quantity"] for k in env.client.placed("LIMIT", "SELL")] == [6] and env.client.net("SBIN") == 0
+
+
+def test_restart_replay_after_a_manual_close(env):                              # [B1]
+    t = _buy(env)
+    env.client.add_manual("SBIN", -10)                                           # while the agent was down
+    m2 = env.make()
+    m2.tick()
+    assert m2.legs[str(t.id)]["status"] == "closed" and _live_sls(env.client) == []
+    pf2 = LivePortfolio(env.pf.db_path, 500_000, m2)
+    pf2.execute_sell(t.id, 950.0, "exit")
+    assert env.client.net("SBIN") == 0 and env.client.placed("LIMIT", "SELL") == []
+
+
+def test_dead_stop_is_detected_and_reprotected(env):                            # [M1]
+    t = _buy(env)
+    sl = _leg(env, t)["sl_order"]
+    env.client.orders[sl].update(order_status="CANCELLED")                       # cancelled in the app
+    env.later(61)
+    env.mirror.tick()
+    leg = _leg(env, t)
+    assert leg["sl_order"] and leg["sl_order"] != sl and len(_live_sls(env.client)) == 1
+    assert any("CANCELLED at Groww — re-protecting" in a for a in env.alerts)
+
+
+def test_executed_stop_is_recorded_as_the_exit(env):                            # [M1]
+    t = _buy(env)
+    env.client.fire_stop(_leg(env, t)["sl_order"], 929.0)                       # stop hit at Groww first
+    env.later(61)
+    env.mirror.tick()
+    leg = _leg(env, t)
+    assert leg["status"] == "closed" and leg["exit_fill"] == 929.0 and leg["real_pnl"] is not None
+    env.pf.execute_sell(t.id, 928.0, "paper stop")                               # paper sweep later: no-op
+    assert env.client.placed("LIMIT", "SELL") == [] and env.client.net("SBIN") == 0
+
+
+def test_stop_partly_filled_during_a_move_is_replaced_for_the_rest(env):        # [M2]
+    t = _buy(env)
+    sl = _leg(env, t)["sl_order"]
+    env.client.modify_mode = "fail"
+    real_cancel = env.client.cancel_order
+
+    def partial_then_cancel(groww_order_id, segment, timeout=None):
+        o = env.client.orders[groww_order_id]
+        if groww_order_id == sl:
+            o.update(filled_quantity=4, average_fill_price=929.0)                # 4 filled while moving
+        return real_cancel(groww_order_id, segment, timeout)
+    env.client.cancel_order = partial_then_cancel
+    env.pf.update_levels(t.id, stop_price=935.0)
+    leg = _leg(env, t)
+    new = leg["sl_order"]
+    assert new and new != sl and env.client.orders[new]["quantity"] == 6
+    assert env.client.orders[new]["order_status"] == "TRIGGER_PENDING" and not leg["protect_final"]
+    assert env.mirror._held(leg) == 6
+
+
+def test_smoke_sell_alert_has_no_fake_paper_price(env):                         # [minor]
+    m = env.make(smoke=False)
+    env.client.ltp = 400.0
+    m.smoke_test("ITC.NS")
+    closes = [a for a in env.alerts if "closed @" in a]
+    assert closes and all("paper ₹0.00" not in a for a in closes)

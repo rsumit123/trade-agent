@@ -93,6 +93,7 @@ PROTECT_VERIFY_S = 6             # SL rejections arrive asynchronously, 1–2s a
 SMOKE_SL_PCT, SMOKE_SL_MODIFY_PCT = 0.025, 0.03
 FALLBACK_STOP_PCT = 0.015        # re-protection when the paper stop is unknown
 RECONCILE_EVERY_S = 60
+VERIFY_OPEN_EVERY_S = 60         # re-check each open leg's position and protective SL this often
 EXIT_DEADLINE = dtime(15, 19)    # Groww's MIS auto square-off is 15:20 (₹50+GST per position)
 MARKET_OPEN, MARKET_CLOSE = dtime(9, 15), dtime(15, 30)
 SMOKE_SYMBOL_ENV = "GROWW_SMOKE_SYMBOL"
@@ -1075,13 +1076,18 @@ class LiveMirror:
                         f"cancelled — keeping it. Check the Groww app.")
             return "failed"
         if st["filled_qty"]:
+            # The old stop (partly) filled while we were moving it.
             leg["exit_fills"].append({"order": oid, "qty": st["filled_qty"], "price": st["avg_price"] or
                                       leg.get("protect_stop"), "source": "stop"})
-            leg.update(protect_final=True, protect_status=st["status"])
+            self._alert(f"{sym}: the stop filled {st['filled_qty']} while being moved")
+        leg.update(sl_order=None, protect_final=False, protect_status=st["status"])
+        qty = self._capped_qty(leg)
+        if self._held(leg) <= 0 or not qty:
+            if self._held(leg) <= 0 and leg.get("status") == "open":
+                leg["status"] = "exiting"               # all sold by the stop: let the exit engine close it
             self._save_leg(leg)
-            return "failed"
-        leg.update(sl_order=None, protect_final=False)
-        self._protect_plain_sl(leg, held, (leg.get("protect_n") or 1) + 1, trig, pad=pad)
+            return "failed" if self._held(leg) > 0 else "replaced"
+        self._protect_plain_sl(leg, qty, (leg.get("protect_n") or 1) + 1, trig, pad=pad)
         return "replaced" if leg.get("sl_order") else "failed"
 
     def _resolve_protection(self, leg: Dict):
@@ -1254,11 +1260,27 @@ class LiveMirror:
             return None
         sign = 1 if leg["direction"] == "long" else -1
         sources = [self._held(leg), sign * view["net"]]
+        raw_avail = self._raw_available(leg, view)
+        if raw_avail is not None:
+            sources.append(raw_avail)          # a manual square-off in the app shrinks this
         if not leg.get("protect_fired"):
             if view.get("orders_net") is None:
                 return None
             sources.append(sign * view["orders_net"])
         return max(0, min(sources))
+
+    def _raw_available(self, leg: Dict, view: Dict) -> Optional[int]:
+        """Shares on this leg's side that Groww's RAW position still shows,
+        after the other open legs of ours in the symbol take theirs. The user
+        selling our shares in the app shows up here (and not in the owned net)."""
+        raw = view.get("raw")
+        if raw is None:
+            return None
+        sign = 1 if leg["direction"] == "long" else -1
+        others = sum(self._held(l) for l in self.legs.values()
+                     if l is not leg and l.get("symbol") == leg["symbol"] and l.get("direction") == leg["direction"]
+                     and l.get("status") in ("open", "exiting", "stuck"))
+        return max(0, sign * raw - others)
 
     @staticmethod
     def _oco_linked_ids(raw: Dict) -> set:
@@ -1447,6 +1469,10 @@ class LiveMirror:
         owned = self._held(leg)
         same_side = net > 0 if long else net < 0
         cap = min(owned, abs(net)) if same_side else 0
+        raw_avail = self._raw_available(leg, view)
+        if raw_avail is not None and raw_avail < cap:
+            cap = raw_avail                     # the user closed (some of) it in the app: never re-sell
+            leg["closed_outside_mirror"] = True
 
         # Protection: cancel to a final state only now, with a good read in hand.
         if self._protection_active(leg):
@@ -1528,9 +1554,12 @@ class LiveMirror:
             self._save_leg(leg)
             return "wait"
         if owned > 0:
-            leg["note"] = (f"closed by the OCO; its order isn't in Groww's order list — exit price unknown for {owned}"
-                           if leg.get("closed_by_oco_unconfirmed")
-                           else f"exit fill unknown for {owned} (closed outside our orders)")
+            if leg.get("closed_by_oco_unconfirmed"):
+                leg["note"] = f"closed by the OCO; its order isn't in Groww's order list — exit price unknown for {owned}"
+            elif leg.get("closed_outside_mirror"):
+                leg["note"] = f"closed_outside_mirror: {owned} squared off outside the mirror (e.g. in the app)"
+            else:
+                leg["note"] = f"exit fill unknown for {owned} (closed outside our orders)"
             leg["exit_unknown_qty"] = owned
         self._settle(leg)
         leg["status"] = "closed"
@@ -1539,9 +1568,9 @@ class LiveMirror:
         self._save_leg(leg)
         long = leg["direction"] == "long"
         pnl = leg.get("real_pnl")
+        paper = f" (paper ₹{leg['paper_exit']:,.2f})" if leg.get("paper_exit") else ""
         self._alert(f"Real {'SELL' if long else 'BUY'} {leg.get('filled_qty')} {leg['symbol']} closed @ "
-                    f"{'₹%.2f' % leg['exit_fill'] if leg.get('exit_fill') else 'unknown price'} "
-                    f"(paper ₹{(leg.get('paper_exit') or 0):,.2f}); real net "
+                    f"{'₹%.2f' % leg['exit_fill'] if leg.get('exit_fill') else 'unknown price'}{paper}; real net "
                     f"{'₹%+.2f' % pnl if pnl is not None else 'unknown'}")
         return "done"
 
@@ -1685,11 +1714,78 @@ class LiveMirror:
                     elif (not leg.get("sl_order") and leg.get("stop") and not leg.get("protect_n")
                           and not leg.get("smoke")):
                         self._protect(leg)
+                    elif not leg.get("smoke"):
+                        self._verify_open_leg(leg)
                 elif st == "exiting" or (st == "stuck" and leg.get("stuck_reason") == "positions"
                                          and not self._past_deadline()):
                     self._advance_exit(leg)
             except Exception as e:                           # one bad leg must not stop the others
                 logger.exception(f"Live leg {leg.get('paper_trade_id')} step failed: {e}")
+
+    def _verify_open_leg(self, leg: Dict, force: bool = False):
+        """About once a minute per open leg (and right after a restart):
+        - the protective SL must still be alive: if it filled, the stop is the
+          exit; if it died (cancelled/rejected/failed), re-protect (capped)
+        - Groww's RAW position must still hold our shares: if the user squared
+          off in the app, shrink the SL or close the leg as closed_outside_mirror."""
+        now = self._mono()
+        if not force and leg.get("_vt") is not None and now - leg["_vt"] < VERIFY_OPEN_EVERY_S:
+            return
+        leg["_vt"] = now
+        sym = leg["symbol"]
+        if leg.get("sl_order") and leg.get("protect_kind") == "sl" and not leg.get("protect_final"):
+            res, st = self._read(leg["sl_order"], None, sym, f"verify stop {sym}")
+            if res == "ok" and st["final"]:
+                leg.update(protect_final=True, protect_status=st["status"])
+                if st["filled_qty"]:
+                    leg["exit_fills"].append({"order": st["id"], "qty": st["filled_qty"],
+                                              "price": st["avg_price"] or leg.get("protect_stop"), "source": "stop"})
+                    self._alert(f"{sym}: the protective stop filled at Groww ({st['filled_qty']} @ "
+                                f"₹{st['avg_price']}) before the paper exit")
+                else:
+                    self._alert(f"{sym}: the protective stop is {st['status']} at Groww — re-protecting")
+                leg["sl_order"] = None
+                self._save_leg(leg)
+        view = self._position_view(sym)
+        if view is None or view.get("net") is None:
+            return
+        held = self._held(leg)
+        consistent = view["net"] == view["orders_net"]          # not a lag/misread of our own fills
+        raw_avail = self._raw_available(leg, view)
+        if held > 0 and consistent and raw_avail is not None and raw_avail < held:
+            gone = held - raw_avail
+            self._alert(f"{sym}: {gone} of our {held} shares were closed outside the mirror (e.g. in the Groww "
+                        f"app){' — closing the leg' if raw_avail == 0 else f'; protecting the remaining {raw_avail}'}")
+            leg["closed_outside_mirror"] = True
+            if self._protection_active(leg):
+                st = self._cancel_to_final(leg["sl_order"], f"stop {sym}")
+                if st is None:
+                    self._save_leg(leg)
+                    return                                         # try again next minute
+                leg.update(protect_final=True, protect_status=st["status"], sl_order=None)
+                if st["filled_qty"]:
+                    leg["exit_fills"].append({"order": st["id"], "qty": st["filled_qty"],
+                                              "price": st["avg_price"] or leg.get("protect_stop"), "source": "stop"})
+            if raw_avail == 0:
+                leg["status"] = "exiting"
+                self._save_leg(leg)
+                self._advance_exit(leg)                            # cap 0 → closed_outside_mirror
+                return
+            leg["exit_fills"].append({"order": None, "qty": self._held(leg) - raw_avail, "price": None,
+                                      "source": "outside"})
+            leg["exit_unknown_qty"] = (leg.get("exit_unknown_qty") or 0) + (self._held(leg) - raw_avail)
+            leg.update(sl_order=None, protect_final=False)
+            self._save_leg(leg)
+        if self._held(leg) <= 0:
+            leg["status"] = "exiting"
+            self._save_leg(leg)
+            self._advance_exit(leg)
+            return
+        if not self._protection_active(leg) and not (leg.get("protect_kind") or "").endswith("_unknown"):
+            qty = self._capped_qty(leg, view)
+            if qty:
+                self._protect_plain_sl(leg, qty, (leg.get("protect_n") or 0) + 1, self._reprotect_stop(leg),
+                                       pad=leg.get("protect_pad") or SL_LIMIT_PAD)
 
     def liquidate(self, reason: str = "liquidate") -> int:
         """Flatten everything this mirror owns; no new entries today."""
@@ -1970,7 +2066,8 @@ class LiveMirror:
                 q = self._held(l)
                 expected[l["symbol"]] = expected.get(l["symbol"], 0) + (q if l["direction"] == "long" else -q)
         for sym in traded:
-            busy = any(l.get("symbol") == sym and l.get("status") in ACTIVE_STATES for l in self.legs.values())
+            busy = any(l.get("symbol") == sym and (l.get("status") in ACTIVE_STATES or l.get("closed_outside_mirror"))
+                       for l in self.legs.values())        # hand-traded symbols: nothing to reconcile
             if actual is not None and not busy:
                 want, got = expected.get(sym, 0), actual.get(sym, 0)
                 if want != got and (sym, got) not in self._mismatch_alerted:
