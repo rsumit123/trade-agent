@@ -48,7 +48,8 @@ from typing import Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from .groww_broker import (BUY, SELL, LIMIT, MARKET, SL, SL_M, GrowwAuthError, PositionAmbiguous,
-                           OCO_FINAL, classify_error, error_text, is_ambiguous, is_auth_error)
+                           OCO_CHILD_PREFIX, OCO_STOP_CHILD, PRODUCT_MIS, classify_error, error_text,
+                           is_ambiguous, is_auth_error, parse_ts, signed_fills)
 from .portfolio import Portfolio, Trade
 
 logger = logging.getLogger(__name__)
@@ -212,13 +213,10 @@ def _ref_part(x) -> str:
 
 
 def _parse_ts(s) -> Optional[datetime]:
-    if not s:
-        return None
-    try:
-        d = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return d if d.tzinfo else d.replace(tzinfo=IST)
+    return parse_ts(s)
+
+
+OCO_CHILD_WINDOW_S = 2           # a stop-leg child is created with its OCO (±2s)
 
 
 class LiveMirror:
@@ -497,19 +495,70 @@ class LiveMirror:
         return price
 
     def _position_view(self, sym: str) -> Optional[Dict]:
-        """{'net': positions net (None if its fields disagree), 'orders_net':
-        net from today's MIS fills}. None if either read failed."""
+        """What the mirror owns on `sym`:
+          net        Groww's position net minus the net of fills we don't own
+                     (the user's manual trades, other OCOs); None if Groww's
+                     position fields disagree
+          orders_net net of our own fills (our reference prefix + children of
+                     our OCOs)
+          foreign    True if the symbol has MIS activity today that isn't ours
+        None if either read failed."""
         try:
-            net = self._b(f"position {sym}", self.broker.net_position, sym)
+            raw = self._b(f"position {sym}", self.broker.net_position, sym)
         except PositionAmbiguous as e:
-            net = None
+            raw = None
             self._alert(f"Position fields for {sym} disagree ({e})", once_key=("pos_amb", sym))
         except Exception:
             return None
-        orders_net, err = self._try(f"orders {sym}", self.broker.orders_net, sym)
+        rows, err = self._try(f"orders {sym}", self.broker.order_list, sym)
         if err is not None:
             return None
-        return {"net": net, "orders_net": orders_net}
+        owned_ids = self._owned_order_ids(sym, rows)
+        mis = [o for o in rows or [] if o.get("product") in (None, "", PRODUCT_MIS)]
+        mine = [o for o in mis if o["id"] in owned_ids]
+        theirs = [o for o in mis if o["id"] not in owned_ids]
+        foreign_net = signed_fills(theirs)
+        return {"net": None if raw is None else raw - foreign_net, "orders_net": signed_fills(mine),
+                "raw": raw, "foreign_net": foreign_net,
+                "foreign": bool(theirs) or (not rows and bool(raw))}
+
+    def _all_ocos(self, sym: str = None) -> Dict[str, Dict]:
+        """Every OCO this mirror created today (any leg): id → meta."""
+        out = {}
+        for l in self.legs.values():
+            if sym is not None and l.get("symbol") != sym:
+                continue
+            for oid, meta in (l.get("ocos") or {}).items():
+                out[oid] = {**meta, "leg": l["paper_trade_id"], "direction": l["direction"]}
+        return out
+
+    def _is_child_of(self, o: Dict, meta: Dict) -> bool:
+        """Groww's OCO legs are real orders with MISOCO_* references whose
+        random suffix doesn't link to the smart_order_id: match by symbol,
+        exit side, quantity and time (stop leg: created with the OCO ±2s;
+        other legs: created at/after the trigger − 2s)."""
+        ref = o.get("ref") or ""
+        if not ref.startswith(OCO_CHILD_PREFIX) or "_OCO_PRIMARY" in ref:
+            return False
+        exit_side = SELL if meta["direction"] == "long" else BUY
+        if o.get("side") != exit_side or int(o.get("quantity") or 0) != int(meta.get("qty") or 0):
+            return False
+        created, oco_at = _parse_ts(o.get("created_at")), _parse_ts(meta.get("created_at"))
+        if created is None or oco_at is None:
+            return False
+        if OCO_STOP_CHILD in ref:
+            return abs((created - oco_at).total_seconds()) <= OCO_CHILD_WINDOW_S
+        trig = _parse_ts(meta.get("triggered_at"))
+        since = trig or oco_at
+        return (created - since).total_seconds() >= -OCO_CHILD_WINDOW_S
+
+    def _owned_order_ids(self, sym: str, rows) -> set:
+        ocos = self._all_ocos(sym)
+        out = set()
+        for o in rows or []:
+            if self._ours(o.get("ref")) or any(self._is_child_of(o, m) for m in ocos.values()):
+                out.add(o["id"])
+        return out
 
     # ── Order placement (ledger first, reference ids, ambiguity) ──
 
@@ -631,6 +680,25 @@ class LiveMirror:
             return f"order cap {MAX_ORDERS_PER_DAY}/day reached"
         return None
 
+    def _broker_entry_checks(self, leg: Dict, value: float):
+        """(blocking category or None, reason or None). The user trades this
+        account by hand too: never enter a symbol with their MIS activity
+        today, and never beyond the MIS balance Groww reports."""
+        sym = leg["symbol"]
+        view = self._position_view(sym)
+        if view is None:
+            return None, "couldn't read Groww positions/orders"
+        if view["foreign"]:
+            return "manual_position_conflict", (f"manual_position_conflict: {sym} has MIS orders/positions "
+                                                 f"today that aren't the mirror's")
+        mis, err = self._try("margin", self.broker.mis_balance_available)
+        if err is not None or mis is None:
+            return None, "couldn't read the MIS balance"
+        room = min(MAX_EXPOSURE - self._exposure_value(), mis)
+        if value > room:
+            return None, f"order value ₹{value:,.0f} > available ₹{room:,.0f} (MIS balance ₹{mis:,.0f})"
+        return None, None
+
     def _paper_is_open(self, tid) -> Optional[bool]:
         if self._paper_open_ids is None:
             return None
@@ -668,6 +736,13 @@ class LiveMirror:
             self._alert(f"Blocked real {direction.upper()} {trade.quantity} {trade.ticker}: {elig}")
             return
         block = self._entry_block(trade.ticker, trade.quantity, trade.entry_price)
+        if not block:
+            conflict, block = self._broker_entry_checks(leg, trade.quantity * trade.entry_price)
+            if conflict:
+                leg.update(status="blocked", category=conflict, note=block)
+                self._save_leg(leg)
+                self._alert(f"Blocked real {direction.upper()} {trade.quantity} {trade.ticker}: {block}")
+                return
         if block:
             leg.update(status="skipped", note=block)
             self._save_leg(leg)
@@ -809,20 +884,20 @@ class LiveMirror:
                          "symbol": leg["symbol"], "side": exit_side, "req_qty": held,
                          "target": t_trig, "trigger": s_trig, "status": "sending"})
             self._orders_today += 1
+            leg["protect_fp"] = {"qty": held, "target": t_trig, "stop": s_trig,
+                                 "since": self._now().isoformat()}
             try:
                 sid = self._b(f"oco {leg['symbol']}", self.broker.create_oco, leg["symbol"], held, exit_side,
                               held if long else -held, t_trig, s_trig, ref)
             except Exception as e:
                 if is_ambiguous(e):
-                    found, _ = self._try(f"find oco {leg['symbol']}", self.broker.find_oco, leg["symbol"], ref)
-                    if found:
-                        sid = found
-                    else:
+                    sid = self._find_oco_by_fingerprint(leg)
+                    if not sid:
                         leg.update(protect_kind="oco_unknown")
                         self._save_leg(leg)
                         self._alert(f"OCO for {leg['symbol']} may or may not exist (reply lost: {error_text(e)}). "
-                                    f"Resolving by reference; the leg can't close until it is found or swept.",
-                                    once_key=("oco_unknown", leg["paper_trade_id"], n))
+                                    f"Looking for it by symbol/qty/triggers; the leg can't close until it is "
+                                    f"found or confirmed gone.", once_key=("oco_unknown", leg["paper_trade_id"], n))
                         return
                 else:
                     cat = classify_error(e)
@@ -833,10 +908,35 @@ class LiveMirror:
                                 once_key=("oco_fail", leg["paper_trade_id"], n))
                     sid = None
             if sid:
-                leg.update(sl_order=sid, protect_stop=s_trig, protect_target=t_trig)
+                self._adopt_oco(leg, sid, held)
+                leg.update(protect_stop=s_trig, protect_target=t_trig)
                 self._save_leg(leg)
                 return
         self._protect_plain_sl(leg, held, n, s_trig)
+
+    def _adopt_oco(self, leg: Dict, sid: str, qty: int):
+        """Record an OCO of ours (by smart_order_id; Groww has no reference)."""
+        st, _ = self._try(f"oco status {leg['symbol']}", self.broker.oco_status, sid)
+        created = (st or {}).get("created_at") or leg.get("protect_created_at") or self._now().isoformat()
+        leg.setdefault("ocos", {})[sid] = {"qty": qty, "created_at": created,
+                                           "triggered_at": (st or {}).get("triggered_at")}
+        leg.update(sl_order=sid, protect_kind="oco", protect_created_at=created)
+
+    def _find_oco_by_fingerprint(self, leg: Dict) -> Optional[str]:
+        fp = leg.get("protect_fp") or {}
+        if not fp:
+            return None
+        known = set(self._all_ocos().keys())
+        ids, err = self._try(f"find oco {leg['symbol']}", self.broker.find_oco, leg["symbol"], fp["qty"],
+                             fp["target"], fp["stop"], _parse_ts(fp["since"]), known)
+        if err is not None or not ids:
+            return None
+        if len(ids) > 1:
+            self._alert(f"{leg['symbol']}: {len(ids)} OCOs match ours ({', '.join(ids)}) — can't tell which; "
+                        f"leaving protection UNKNOWN. Check the Groww app.",
+                        once_key=("oco_multi", leg["paper_trade_id"]))
+            return None
+        return ids[0]
 
     def _protect_plain_sl(self, leg: Dict, held: int, n: int, trigger: float):
         long = leg["direction"] == "long"
@@ -866,9 +966,9 @@ class LiveMirror:
             return
         ref = leg["protect_ref"]
         if kind == "oco_unknown":
-            sid, err = self._try(f"find oco {leg['symbol']}", self.broker.find_oco, leg["symbol"], ref)
+            sid = self._find_oco_by_fingerprint(leg)
             if sid:
-                leg.update(sl_order=sid, protect_kind="oco")
+                self._adopt_oco(leg, sid, (leg.get("protect_fp") or {}).get("qty") or self._held(leg))
                 self._save_leg(leg)
                 self._alert(f"Found the OCO for {leg['symbol']} ({sid})")
             return
@@ -1068,30 +1168,18 @@ class LiveMirror:
         return ids - {None}
 
     def _oco_children(self, leg: Dict) -> Optional[List[Dict]]:
-        """Orders this leg's fired OCO produced: ids Groww links to the OCO,
-        or a reference derived from the OCO's reference, or another order
-        carrying our prefix that no leg placed itself. Never the user's own
-        orders. None if the order list can't be read."""
+        """Real orders that this leg's OCOs produced (MISOCO_* references,
+        matched by symbol/side/qty/time). Never the user's own orders. None
+        if the order list can't be read."""
         rows, err = self._try(f"orders {leg['symbol']}", self.broker.order_list, leg["symbol"])
         if err is not None:
             return None
-        side = SELL if leg["direction"] == "long" else BUY
-        linked = set(leg.get("oco_child_ids") or [])
-        known = self._known_order_ids()
-        pref = leg.get("protect_ref") or "\0"
-        since = _parse_ts(leg.get("protect_created_at"))
+        metas = [{**m, "direction": leg["direction"]} for m in (leg.get("ocos") or {}).values()]
         out = []
         for o in rows or []:
-            ref = o.get("ref") or ""
-            is_kid = (o["id"] in linked or (ref.startswith(pref) and ref != pref)
-                      or (self._ours(ref) and o["id"] not in known and ref not in known))
-            if not is_kid or o["side"] != side:
-                continue
-            created = _parse_ts(o.get("created_at"))
-            o["_timed"] = bool(created and since) or o["id"] in linked
-            if created and since and created < since:
-                continue
-            out.append(o)
+            if any(self._is_child_of(o, m) for m in metas):
+                o["_timed"] = True
+                out.append(o)
         return out
 
     def _cancel_protection(self, leg: Dict) -> str:
@@ -1102,28 +1190,31 @@ class LiveMirror:
             st, err = self._try(f"oco status {sym}", self.broker.oco_status, leg["sl_order"])
             if err is not None:
                 return "wait"
-            linked = self._oco_linked_ids(st.get("raw"))
-            if linked:
-                leg["oco_child_ids"] = sorted(set(leg.get("oco_child_ids") or []) | linked)
-            if st["status"] == "TRIGGERED":
-                # A leg fired: its child order must be final (or cancelled) first.
-                leg.setdefault("_trig_t", self._mono())
-                kids = self._oco_children(leg)
-                if kids is None:
-                    return "wait"
-                live = [k for k in kids if not k["final"]]
-                for k in live:
-                    self._cancel(k["id"], f"oco child {sym}")
-                if live:
-                    return "wait"
-                if not kids and self._mono() - leg["_trig_t"] < OCO_TRIGGER_WAIT_S:
-                    leg["note"] = "OCO triggered — waiting for its order"
-                    return "wait"
-                leg.update(protect_status="TRIGGERED", protect_fired=True, protect_final=True)
-                return "final"
-            if not st["final"]:
+            meta = (leg.get("ocos") or {}).get(leg["sl_order"])
+            if meta is not None and st.get("triggered_at"):
+                meta["triggered_at"] = st["triggered_at"]
+            if not st["final"] and st["status"] != "TRIGGERED":
                 leg["note"] = "waiting for the OCO to reach a final state"
                 return "wait"
+            # Its legs are real orders (the stop rests as SL_M). Never cancel them
+            # ourselves: Groww removes them with the OCO; wait until they're final.
+            kids = self._oco_children(leg)
+            if kids is None:
+                return "wait"
+            if any(not k["final"] for k in kids):
+                leg["note"] = "waiting for the OCO's own orders to finish"
+                leg.setdefault("_kid_t", self._mono())
+                if self._mono() - leg["_kid_t"] >= OCO_TRIGGER_WAIT_S:
+                    self._alert(f"{sym}: the OCO's own order is still working "
+                                f"{OCO_TRIGGER_WAIT_S}s after we cancelled/it triggered — not sending an exit "
+                                f"next to it. Check the Groww app.", once_key=("kid_live", leg["paper_trade_id"]))
+                return "wait"
+            if st["status"] == "TRIGGERED":
+                leg.setdefault("_trig_t", self._mono())
+                acted = [k for k in kids if k["filled_qty"] or not k["final"]]   # the leg that fired
+                if not acted and self._mono() - leg["_trig_t"] < OCO_TRIGGER_WAIT_S:
+                    leg["note"] = "OCO triggered — waiting for its order"
+                    return "wait"
             leg.update(protect_status=st["status"], protect_fired=bool(st["fired"]), protect_final=True)
             return "final"
         self._cancel(leg["sl_order"], f"stop {sym}")
@@ -1288,7 +1379,7 @@ class LiveMirror:
         """The broker (positions AND fills) shows nothing left for this leg.
         Attribute unexplained shares (fired OCO), sweep every protective order
         of ours on the symbol, and only then close."""
-        if owned > 0 and leg.get("protect_kind") == "oco" and leg.get("protect_fired"):
+        if owned > 0 and leg.get("ocos"):                 # a filled OCO leg is the exit, whatever the status says
             kids = self._oco_children(leg)
             if kids is None:
                 return "wait"
@@ -1378,8 +1469,9 @@ class LiveMirror:
         ocos, err = self._try(f"ocos {sym}", self.broker.smart_orders, sym)
         if err is not None:
             return False
+        ours = set(self._all_ocos(sym).keys())
         for s in ocos or []:
-            if not self._ours(s.get("ref")) or s["id"] in keep or s.get("ref") in keep:
+            if s["id"] not in ours or s["id"] in keep:      # never the user's OCOs
                 continue
             if s["status"] != "ACTIVE":             # TRIGGERED/final ones can't fire again
                 continue
@@ -1656,18 +1748,24 @@ class LiveMirror:
                                  round_to_tick(price * (1 + SMOKE_OCO_PCT), tick, True),
                                  round_to_tick(price * (1 - SMOKE_OCO_PCT), tick, False), oref)
         if err is not None and is_ambiguous(err):
-            sid, _ = self._try("smoke find oco", self.broker.find_oco, sym, oref)
+            leg["protect_fp"] = {"qty": 1, "target": round_to_tick(price * (1 + SMOKE_OCO_PCT), tick, True),
+                                 "stop": round_to_tick(price * (1 - SMOKE_OCO_PCT), tick, False),
+                                 "since": self._now().isoformat()}
+            sid = self._find_oco_by_fingerprint(leg)
         if not sid and not self._force_plain_sl():
             oco_fail.append(f"create returned no smart_order_id ({error_text(err) if err else 'none'})")
             if err is not None and is_ambiguous(err):
                 leg.update(protect_kind="oco_unknown", protect_ref=oref)
         else:
-            leg.update(sl_order=sid, protect_kind="oco", protect_ref=oref, protect_final=False,
-                       protect_created_at=self._now().isoformat(), protect_qty=1)
+            leg.update(protect_ref=oref, protect_final=False, protect_qty=1)
+            self._adopt_oco(leg, sid, 1)
             listed, lerr = self._try("smoke list ocos", self.broker.smart_orders, sym)
-            if lerr is not None or not any(r.get("ref") == oref for r in listed or []):
-                oco_fail.append(f"smart_orders({sym}) did not show the OCO by reference_id {oref} "
+            row = next((r for r in listed or [] if r.get("id") == sid), None)
+            if lerr is not None or row is None:
+                oco_fail.append(f"smart_orders({sym}) did not list smart_order_id {sid} "
                                 f"({error_text(lerr) if lerr else 'not listed'}) — can't find or sweep OCOs")
+            elif row.get("stop_trigger") is None or row.get("target_trigger") is None:
+                oco_fail.append(f"OCO {sid} listed without target/stop triggerPrice: {row.get('raw')}")
             st0, e0 = self._try("smoke oco status", self.broker.oco_status, sid)
             if e0 is not None or st0["status"] not in KNOWN_OCO_STATUSES:
                 oco_fail.append(f"unexpected OCO status field: {st0 and st0.get('raw')}")
@@ -1768,13 +1866,13 @@ class LiveMirror:
         if not traded:
             return
         self._last_reconcile = now_m
-        try:
-            actual = self._b("positions", self.broker.positions)
-        except PositionAmbiguous as e:
-            self._alert(f"Groww position fields disagree ({e}) — reconcile skipped", once_key=("pos_amb", str(e)))
-            actual = None
-        except Exception:
-            actual = None
+        actual = {}
+        for sym in traded:
+            view = self._position_view(sym)                # owned net: the user's own trades excluded
+            if view is None or view["net"] is None:
+                actual = None
+                break
+            actual[sym] = view["net"]
         expected: Dict[str, int] = {}
         for l in self.legs.values():
             if l.get("status") in ("open", "exiting", "stuck"):

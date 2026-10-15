@@ -190,6 +190,60 @@ def norm_order(d: Dict) -> Dict:
     }
 
 
+OCO_CHILD_PREFIX = "MISOCO_"                 # Groww's refs for OCO legs, e.g. MISOCO_MIS_CASH_OCO_STOP_LOSS-<30>
+OCO_STOP_CHILD = "_OCO_STOP_LOSS-"
+
+
+def parse_ts(s) -> Optional[datetime]:
+    """Groww timestamps: naive IST ISO with 0–6 fractional digits
+    ("2026-10-15T10:05:20.44"). Aware strings are honoured."""
+    if not s:
+        return None
+    txt = str(s).strip().replace("Z", "+00:00").replace(" ", "T", 1)
+    try:
+        d = datetime.fromisoformat(txt)
+    except ValueError:
+        import re
+        m = re.match(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(.*)$", txt)
+        if not m:
+            return None
+        frac = (m.group(2) or "0")[:6].ljust(6, "0")
+        try:
+            d = datetime.fromisoformat(f"{m.group(1)}.{frac}{m.group(3)}")
+        except ValueError:
+            return None
+    return d if d.tzinfo else d.replace(tzinfo=IST)
+
+
+def _trigger(sub) -> Optional[str]:
+    if not isinstance(sub, dict):
+        return None
+    v = sub.get("triggerPrice", sub.get("trigger_price"))
+    f = _f(v)
+    return f"{f:.2f}" if f is not None else None
+
+
+def norm_smart_order(r: Dict) -> Dict:
+    r = r or {}
+    status = str(r.get("status") or "").upper()
+    return {"id": r.get("smart_order_id"), "symbol": r.get("trading_symbol"),
+            "quantity": int(_f(r.get("quantity")) or 0), "product": r.get("product_type"),
+            "status": status, "final": status in OCO_FINAL, "fired": status in OCO_FIRED,
+            "created_at": r.get("created_at"), "triggered_at": r.get("triggered_at"),
+            "target_trigger": _trigger(r.get("target")), "stop_trigger": _trigger(r.get("stop_loss")),
+            "raw": r}
+
+
+def signed_fills(orders) -> int:
+    net = 0
+    for o in orders or []:
+        if o.get("product") not in (None, "", PRODUCT_MIS):
+            continue
+        q = o.get("filled_qty") or 0
+        net += q if o.get("side") == BUY else -q
+    return net
+
+
 class GrowwBroker:
     """Orders, OCOs, status and positions for NSE cash intraday (MIS) only."""
 
@@ -371,15 +425,9 @@ class GrowwBroker:
         return None
 
     def orders_net(self, symbol: str) -> int:
-        """Signed net MIS quantity implied by today's filled orders on a symbol
-        (all orders, ours and the user's) — the cross-check for positions()."""
-        net = 0
-        for o in self.order_list(symbol):
-            if o.get("product") not in (None, "", PRODUCT_MIS):
-                continue
-            q = o.get("filled_qty") or 0
-            net += q if o.get("side") == BUY else -q
-        return net
+        """Signed net MIS quantity of today's filled orders on a symbol (every
+        order; the mirror splits owned vs not-owned itself)."""
+        return signed_fills(self.order_list(symbol))
 
     # ── OCO (target + stop, one cancels the other) ─────────
 
@@ -414,38 +462,53 @@ class GrowwBroker:
     def oco_status(self, smart_order_id: str) -> Dict:
         d = self._call("get_smart_order", segment=SEGMENT_CASH, smart_order_type=OCO,
                        smart_order_id=smart_order_id) or {}
-        status = str(d.get("status") or "").upper()
-        return {"id": smart_order_id, "status": status, "final": status in OCO_FINAL,
-                "fired": status in OCO_FIRED, "raw": d}
+        out = norm_smart_order(d)
+        out["id"] = out["id"] or smart_order_id
+        return out
 
     def supports_oco(self) -> bool:
         return hasattr(self.client, "get_smart_order_list")
 
     def smart_orders(self, symbol: str = None) -> List[Dict]:
-        """OCO smart orders (ASSUMED list key and row fields: reference_id,
-        trading_symbol, smart_order_id, status)."""
-        out = []
+        """OCO smart orders, normalised. Real shape (live check 2026-10-15): list
+        key "orders"; no reference_id; nested target/stop_loss use camelCase
+        (triggerPrice, orderType)."""
+        out, seen = [], set()
         for page in range(10):
             resp = self._call("get_smart_order_list", smart_order_type=OCO, segment=SEGMENT_CASH,
                               page=page, page_size=50) or {}
-            rows = resp.get("smart_orders") or resp.get("order_list") or resp.get("data") or []
-            if not rows:
+            rows = resp.get("orders") or resp.get("smart_orders") or resp.get("order_list") or []
+            new = [r for r in rows if r.get("smart_order_id") not in seen]
+            if not new:
                 break
-            for r in rows:
+            for r in new:
+                seen.add(r.get("smart_order_id"))
                 if symbol is None or r.get("trading_symbol") == symbol:
-                    out.append({"id": r.get("smart_order_id"), "ref": r.get("reference_id"),
-                                "symbol": r.get("trading_symbol"),
-                                "status": str(r.get("status") or "").upper(), "raw": r})
+                    out.append(norm_smart_order(r))
             if len(rows) < 50:
                 break
         return out
 
-    def find_oco(self, symbol: str, reference_id: str) -> Optional[str]:
-        """Smart order id for an OCO whose create call was ambiguous."""
+    def find_oco(self, symbol: str, quantity: int, target_trigger: float, stop_trigger: float,
+                 since: datetime, exclude: set = frozenset()) -> List[str]:
+        """Smart order ids matching an OCO we may have created (ambiguous reply):
+        same symbol, quantity, MIS, both triggers (2dp), created at/after
+        `since` − 2s, not already known. Groww returns no reference_id."""
+        want_t, want_s = f"{float(target_trigger):.2f}", f"{float(stop_trigger):.2f}"
+        lo = since.timestamp() - 2 if since else None
+        out = []
         for r in self.smart_orders(symbol):
-            if r["ref"] == reference_id:
-                return r["id"]
-        return None
+            if r["id"] in exclude or r["quantity"] != int(quantity):
+                continue
+            if (r.get("product") or PRODUCT_MIS) != PRODUCT_MIS:
+                continue
+            if r["target_trigger"] != want_t or r["stop_trigger"] != want_s:
+                continue
+            created = parse_ts(r.get("created_at"))
+            if lo is not None and (created is None or created.timestamp() < lo):
+                continue
+            out.append(r["id"])
+        return out
 
     # ── Positions / quotes / margin ─────────────────────────
 
@@ -489,6 +552,11 @@ class GrowwBroker:
 
     def margin(self) -> Dict:
         return self._call("get_available_margin_details") or {}
+
+    def mis_balance_available(self) -> Optional[float]:
+        """equity_margin_details.mis_balance_available (real shape, live check)."""
+        d = self.margin() or {}
+        return _f((d.get("equity_margin_details") or {}).get("mis_balance_available"))
 
 
 # ── Instrument master (intraday eligibility, tick size) ───

@@ -62,7 +62,7 @@ class FakeGrowwClient:
         self.upper = self.lower = None
         self.pos_offset = {}             # symbol → qty added to positions only (lag / misread)
         self.clock = lambda: NOW
-        self.link_children = True        # smart order detail exposes the child order id
+        self.mis_balance = 1_000_000.0
         if oco:
             self.create_smart_order = self._create_smart_order
             self.modify_smart_order = self._modify_smart_order
@@ -96,8 +96,8 @@ class FakeGrowwClient:
              "trading_symbol": kw["trading_symbol"], "quantity": kw["quantity"],
              "transaction_type": kw["transaction_type"], "order_type": kw["order_type"],
              "price": kw.get("price"), "trigger_price": kw.get("trigger_price"), "product": kw.get("product"),
-             "created_at": self.clock().isoformat(),
-             "filled_quantity": 0, "average_fill_price": None, "order_status": "OPEN", "remark": ""}
+             "created_at": self.ts(),
+             "filled_quantity": 0, "average_fill_price": 0.0, "order_status": "OPEN", "remark": ""}
         px = kw.get("price") if kw["order_type"] != "MARKET" else self.ltp
         if how == "fill" or (isinstance(how, tuple) and how[0] == "fill"):
             o.update(order_status="EXECUTED", filled_quantity=kw["quantity"],
@@ -145,7 +145,7 @@ class FakeGrowwClient:
         filled = abs(qty) if status == "EXECUTED" else 0
         self.orders[oid] = {"groww_order_id": oid, "order_reference_id": ref, "trading_symbol": sym,
                             "quantity": abs(qty), "transaction_type": "BUY" if qty > 0 else "SELL",
-                            "order_type": order_type, "product": "MIS", "created_at": self.clock().isoformat(),
+                            "order_type": order_type, "product": "MIS", "created_at": self.ts(),
                             "filled_quantity": filled, "average_fill_price": price if filled else None,
                             "order_status": status, "remark": "", "trigger_price": None, "price": price}
         return oid
@@ -173,13 +173,34 @@ class FakeGrowwClient:
         o.update(order_status="EXECUTED", filled_quantity=o["quantity"], average_fill_price=price)
 
     # smart orders (OCO)
+    def ts(self):
+        """Groww's created_at: naive IST, millis sometimes 2 digits."""
+        t = self.clock()
+        return t.strftime("%Y-%m-%dT%H:%M:%S.") + f"{t.microsecond // 10000:02d}"
+
     def _create_smart_order(self, timeout=None, **kw):
+        """Real shape: the response carries smart_order_id; the stop leg rests at
+        once as an SL_M order with a MISOCO_ reference (the target leg doesn't)."""
         self.calls.append(("oco_create", kw))
         how = self.oco_script.pop(0) if self.oco_script else "ok"
         if how == "reject":
             raise GErr("OCO not allowed for this instrument")
         sid = f"oco_{len(self.smart) + 1}"
-        self.smart[sid] = {**kw, "smart_order_id": sid, "status": "ACTIVE"}
+        trig = lambda leg: {"price": None, "triggerPrice": kw[leg]["trigger_price"], "orderType": None}
+        self.n += 1
+        child = f"G{self.n}"
+        self.orders[child] = {
+            "groww_order_id": child, "order_reference_id": f"MISOCO_MIS_CASH_OCO_STOP_LOSS-{sid}x{self.n:026d}",
+            "trading_symbol": kw["trading_symbol"], "quantity": kw["quantity"], "product": "MIS",
+            "transaction_type": kw["transaction_type"], "order_type": "SL_M", "order_status": "TRIGGER_PENDING",
+            "trigger_price": float(kw["stop_loss"]["trigger_price"]) + 4.6,   # live: child trigger ≠ OCO's
+            "price": 0.0, "filled_quantity": 0, "average_fill_price": 0.0, "remark": "", "created_at": self.ts()}
+        self.smart[sid] = {"smart_order_id": sid, "trading_symbol": kw["trading_symbol"], "exchange": "NSE",
+                           "quantity": kw["quantity"], "product_type": "MIS", "duration": "DAY",
+                           "status": "ACTIVE", "is_cancellation_allowed": True, "is_modification_allowed": True,
+                           "created_at": self.ts(), "expire_at": None, "triggered_at": None,
+                           "updated_at": self.ts(), "target": trig("target"), "stop_loss": trig("stop_loss"),
+                           "smart_order_type": "OCO", "_side": kw["transaction_type"], "_stop_child": child}
         if how == "timeout_after":
             raise TimeoutError("read timed out")
         return {"smart_order_id": sid, "status": "ACTIVE"}
@@ -187,37 +208,62 @@ class FakeGrowwClient:
     def _modify_smart_order(self, timeout=None, **kw):
         self.calls.append(("oco_modify", kw))
         s = self.smart[kw["smart_order_id"]]
-        s.update(target={**s["target"], **kw["target"]}, stop_loss={**s["stop_loss"], **kw["stop_loss"]},
-                 quantity=kw.get("quantity", s["quantity"]))
+        for leg in ("target", "stop_loss"):
+            if kw.get(leg):
+                s[leg]["triggerPrice"] = kw[leg].get("trigger_price", kw[leg].get("triggerPrice"))
+        if kw.get("quantity"):
+            s["quantity"] = kw["quantity"]
         return {"smart_order_id": kw["smart_order_id"], "status": s["status"]}
 
     def _cancel_smart_order(self, segment=None, smart_order_type=None, smart_order_id=None, timeout=None):
         self.calls.append(("oco_cancel", smart_order_id))
         s = self.smart[smart_order_id]
-        if s["status"] == "ACTIVE":
-            s["status"] = "ACTIVE" if self.oco_cancel_mode == "stuck" else "CANCELLED"
+        if s["status"] == "ACTIVE" and self.oco_cancel_mode != "stuck":
+            s["status"] = "CANCELLED"
+            kid = self.orders.get(s["_stop_child"])
+            if kid and kid["order_status"] == "TRIGGER_PENDING":
+                kid["order_status"] = "CANCELLED"                  # Groww removes its legs
         return {"smart_order_id": smart_order_id, "status": s["status"]}
 
+    def _public(self, sm):
+        return {k: (dict(v) if isinstance(v, dict) else v) for k, v in sm.items() if not k.startswith("_")}
+
     def _get_smart_order(self, segment=None, smart_order_type=None, smart_order_id=None, timeout=None):
-        return dict(self.smart[smart_order_id])
+        return self._public(self.smart[smart_order_id])
 
     def _get_smart_order_list(self, timeout=None, **kw):
-        return {"smart_orders": [dict(s) for s in self.smart.values()]}
+        return {"orders": [self._public(sm) for sm in self.smart.values()]}
 
     def fire_oco(self, sid, leg="stop_loss", price=None):
+        """A leg fires: the stop leg's resting SL_M executes, or (target) a new
+        MISOCO target order executes and the stop leg is cancelled."""
         s = self.smart[sid]
+        s.update(status="COMPLETED", triggered_at=self.ts())
+        px = price or float(s[leg]["triggerPrice"])
+        stop_kid = self.orders[s["_stop_child"]]
+        if leg == "stop_loss":
+            stop_kid.update(order_status="EXECUTED", filled_quantity=stop_kid["quantity"], average_fill_price=px)
+            return stop_kid["groww_order_id"]
+        stop_kid["order_status"] = "CANCELLED"
         self.n += 1
         oid = f"G{self.n}"
-        self.orders[oid] = {"groww_order_id": oid, "order_reference_id": "OCOCHILD1",
-                            "product": "MIS", "created_at": self.clock().isoformat(),
+        self.orders[oid] = {"groww_order_id": oid, "order_reference_id": f"MISOCO_MIS_CASH_OCO_TARGET-{self.n:030d}",
+                            "product": "MIS", "created_at": self.ts(),
                             "trading_symbol": s["trading_symbol"], "quantity": s["quantity"],
-                            "transaction_type": s["transaction_type"], "order_type": "MARKET",
+                            "transaction_type": s["_side"], "order_type": "MARKET",
                             "filled_quantity": s["quantity"], "order_status": "EXECUTED",
-                            "average_fill_price": price or float(s[leg]["trigger_price"]), "remark": ""}
-        s["status"] = "COMPLETED"
-        if self.link_children:
-            s["triggered_order_id"] = oid               # how Groww links the child (ASSUMED field)
+                            "average_fill_price": px, "remark": ""}
         return oid
+
+    def stop_child(self, sid):
+        return self.smart[sid]["_stop_child"]
+
+    def get_available_margin_details(self, timeout=None):
+        return {"clear_cash": self.mis_balance, "net_margin_used": 0.0, "brokerage_and_charges": 0.0,
+                "equity_margin_details": {"mis_balance_available": self.mis_balance,
+                                          "cnc_balance_available": self.mis_balance,
+                                          "mis_margin_used": 0.0, "net_equity_margin_used": 0.0},
+                "fno_margin_details": {}, "commodity_margin_details": {}}
 
     # positions / quotes
     def net(self, sym):
@@ -491,28 +537,23 @@ def test_stop_already_filled_means_no_second_exit(env):
     assert env.client.net("SBIN") == 0
 
 
-def test_exit_is_capped_at_the_broker_position(env):                    # cross-cutting
+def test_exit_is_capped_at_what_we_own(env):                              # cross-cutting
     t = _buy(env)
-    env.client.add_manual("SBIN", -4)              # 4 shares already sold in the Groww app
+    env.client.script = [("partial", 4), "fill"]   # the first exit only fills 4
     env.pf.execute_sell(t.id, 950.0, "exit")
-    assert env.client.placed("LIMIT", "SELL")[0]["quantity"] == 6
-    assert env.client.net("SBIN") == 0
+    env.later(11)
+    env.mirror.tick()
+    sells = env.client.placed("LIMIT", "SELL")
+    assert [k["quantity"] for k in sells] == [10, 6] and env.client.net("SBIN") == 0
 
 
-@pytest.mark.parametrize("external", [-10, -15])
-def test_no_exit_when_broker_is_flat_or_opposite(env, external):
+@pytest.mark.parametrize("manual", [-4, -10, -15, 15])
+def test_users_manual_trades_never_change_our_exit(env, manual):          # live check: shared account
     t = _buy(env)
-    env.client.add_manual("SBIN", external)
+    env.client.add_manual("SBIN", manual)          # the user trades SBIN by hand after our entry
     env.pf.execute_sell(t.id, 950.0, "exit")
-    assert env.client.placed("LIMIT", "SELL") == [] and _leg(env, t)["status"] == "closed"
-    assert "unknown" in _leg(env, t)["note"]
-
-
-def test_manual_position_in_same_symbol_is_never_touched(env):
-    env.client.add_manual("SBIN", 15)             # user's own shares
-    t = _buy(env)
-    env.pf.execute_sell(t.id, 950.0, "exit")
-    assert env.client.placed("LIMIT", "SELL")[0]["quantity"] == 10 and env.client.net("SBIN") == 15
+    assert env.client.placed("LIMIT", "SELL")[0]["quantity"] == 10
+    assert _leg(env, t)["status"] == "closed" and env.client.net("SBIN") == manual   # theirs untouched
 
 
 def test_exit_reprices_then_market_across_ticks(env):                   # [M4]
@@ -1193,7 +1234,7 @@ def test_sigterm_with_liquidation_request_flattens(env, monkeypatch):
 # ── Re-review blockers (repro2.py / repro3.py on c95397b) ─────────────────
 
 def _no_live_protection(client, sym):
-    sl = [o for o in client.orders.values() if o["trading_symbol"] == sym and o["order_type"] == "SL"
+    sl = [o for o in client.orders.values() if o["trading_symbol"] == sym and o["order_type"] in ("SL", "SL_M")
           and o["order_status"] in ("OPEN", "TRIGGER_PENDING")]
     oco = [s for s in client.smart.values() if s["trading_symbol"] == sym and s["status"] == "ACTIVE"]
     return not sl and not oco
@@ -1263,6 +1304,7 @@ def test_periodic_orphan_sweep_cancels_our_stop_on_a_flat_symbol(env):          
 def test_oco_triggered_without_its_order_waits_then_exits(oco):                  # [Major 1] repro G
     t = _buy(oco, stop=930.0, target=960.0)
     oco.client.smart["oco_1"]["status"] = "TRIGGERED"
+    oco.client.orders[oco.client.stop_child("oco_1")]["order_status"] = "CANCELLED"   # Groww removed it
     oco.pf.execute_sell(t.id, 950.0, "exit")
     assert oco.client.placed(side="SELL") == [] and _leg(oco, t)["status"] == "exiting"
     for _ in range(4):
@@ -1272,15 +1314,21 @@ def test_oco_triggered_without_its_order_waits_then_exits(oco):                 
     assert len(oco.client.placed("LIMIT", "SELL")) == 1
 
 
-def test_oco_triggered_child_still_working_is_cancelled_before_exit(oco):
+def test_triggered_oco_child_is_never_cancelled_we_wait_for_it(oco):          # live check
     t = _buy(oco, stop=930.0, target=960.0)
-    child = oco.client.fire_oco("oco_1", "stop_loss", price=929.0)
-    oco.client.orders[child].update(order_status="OPEN", filled_quantity=0, average_fill_price=None)
+    child = oco.client.stop_child("oco_1")
+    oco.client.orders[child]["order_status"] = "OPEN"                           # triggered, working
     oco.client.smart["oco_1"]["status"] = "TRIGGERED"
     oco.pf.execute_sell(t.id, 931.0, "stop")
+    for _ in range(5):
+        oco.later(6)
+        oco.mirror.tick()
+    assert ("cancel", child) not in oco.client.calls and oco.client.placed(side="SELL") == []
+    assert _leg(oco, t)["status"] == "exiting" and any("OCO's own order" in a for a in oco.alerts)
+    oco.client.fire_stop(child, 929.0)                                           # it fills
     oco.mirror.tick()
-    assert oco.client.orders[child]["order_status"] == "CANCELLED"
-    assert _leg(oco, t)["status"] == "closed" and oco.client.net("SBIN") == 0
+    assert _leg(oco, t)["status"] == "closed" and _leg(oco, t)["exit_fill"] == 929.0
+    assert oco.client.net("SBIN") == 0
 
 
 def test_entry_lookup_lag_is_resolved_from_the_order_list(env):                 # [Major 3] repro H
@@ -1486,7 +1534,7 @@ def test_smoke_unknown_oco_status_disables_oco_only(oco):
 
     def odd_first(**kw):                       # an unexpected status value on the first read
         calls.append(1)
-        return {**real(**kw), "status": "LIVE?"} if len(calls) == 1 else real(**kw)
+        return {**real(**kw), "status": "LIVE?"} if len(calls) <= 2 else real(**kw)
     oco.client.get_smart_order = odd_first
     r = m.smoke_test("ITC.NS")
     assert r["passed"] and r["oco_ok"] is False and any("status" in f for f in r["oco_failures"])
@@ -1515,25 +1563,23 @@ def test_orders_are_counted_once_on_replay(env):                                
 
 
 def test_oco_fill_attribution_ignores_older_and_manual_orders(oco):            # [minor]
-    early = oco.client.add_manual("SBIN", -10, price=900.0)                     # user's sell, before the OCO
-    oco.client.orders[early]["created_at"] = NOW.replace(hour=9, minute=30).isoformat()
     t = _buy(oco, stop=930.0, target=960.0)
+    oco.client.add_manual("SBIN", -10, price=900.0)                             # user's sell, not an OCO leg
     oco.client.fire_oco("oco_1", "target", price=960.4)
     oco.pf.execute_sell(t.id, 960.0, "target")
     leg = _leg(oco, t)
     assert leg["exit_fill"] == 960.4 and leg["real_pnl"] is not None
 
 
-def test_unlinked_oco_fill_is_never_guessed_from_the_users_orders(oco):      # [minor]
-    oco.client.link_children = False                                            # Groww doesn't expose the child
+def test_oco_target_fill_is_attributed_and_users_orders_ignored(oco):         # [minor]
     t = _buy(oco, stop=930.0, target=960.0)
     oco.client.fire_oco("oco_1", "target", price=960.4)
     oco.client.add_manual("SBIN", -10, price=961.0)                             # user's own round trip
     oco.client.add_manual("SBIN", 10, price=961.0)
     oco.pf.execute_sell(t.id, 960.0, "target")
     leg = _leg(oco, t)
-    assert leg["status"] == "closed" and leg["real_pnl"] is None and leg["exit_unknown_qty"] == 10
-    assert not leg["exit_fills"] and oco.client.placed(side="SELL") == []
+    assert leg["status"] == "closed" and leg["exit_fill"] == 960.4 and len(leg["exit_fills"]) == 1
+    assert oco.client.placed(side="SELL") == []
 
 
 def test_entry_for_an_already_closed_paper_trade_is_dropped(env):              # [minor]
@@ -1710,7 +1756,8 @@ def test_smoke_passes_with_ga004_not_found(oco):
 def test_oco_fired_child_missing_from_order_list_closes_without_reprotect(oco):  # [Major 1] repro4 Q
     t = _buy(oco, stop=930.0, target=960.0)
     oco.client.smart["oco_1"]["status"] = "COMPLETED"
-    oco.client.pos_offset["SBIN"] = -10                                        # child filled, not listed
+    oco.client.orders.pop(oco.client.stop_child("oco_1"))                      # child filled, not listed
+    oco.client.pos_offset["SBIN"] = -10
     oco.pf.execute_sell(t.id, 950.0, "exit")
     assert _leg(oco, t)["status"] == "exiting"                                 # one flat read is not enough
     oco.later(2)
@@ -1726,6 +1773,7 @@ def test_oco_firing_during_cancel_closes_without_reprotect(oco):                
 
     def fire_on_cancel(segment=None, smart_order_type=None, smart_order_id=None, timeout=None):
         oco.client.smart[smart_order_id]["status"] = "COMPLETED"
+        oco.client.orders.pop(oco.client.stop_child(smart_order_id), None)
         oco.client.pos_offset["SBIN"] = -10
         return {"smart_order_id": smart_order_id, "status": "COMPLETED"}
     oco.client.cancel_smart_order = fire_on_cancel
@@ -1744,7 +1792,7 @@ def test_shutdown_reprotects_only_what_groww_shows(env, monkeypatch):           
     env.mirror.market_ok = False
     env.client.script = ["open"] * 30
     env.pf.execute_sell(t.id, 950.0, "exit")
-    env.client.add_manual("SBIN", -6)                                            # user sold 6 in the app
+    env.client.pos_offset["SBIN"] = -6                                           # Groww shows only 4
     env.mirror.prepare_shutdown(budget_s=5)
     assert env.client.placed("SL")[-1]["quantity"] == 4
 
@@ -1754,7 +1802,7 @@ def test_shutdown_places_nothing_when_groww_is_flat(env):
     env.mirror.market_ok = False
     env.client.script = ["open"] * 30
     env.pf.execute_sell(t.id, 950.0, "exit")
-    env.client.add_manual("SBIN", -10)
+    env.client.pos_offset["SBIN"] = -10                                          # Groww shows flat
     env.mirror.prepare_shutdown(budget_s=5)
     assert len(env.client.placed("SL")) == 1
 
@@ -1764,7 +1812,7 @@ def test_smoke_requires_the_oco_to_be_listed_by_reference(oco):                 
     oco.client.ltp = 400.0
     oco.client.get_smart_order_list = lambda **kw: {"smart_orders": []}
     r = m.smoke_test("ITC.NS")
-    assert r["passed"] and r["oco_ok"] is False and any("reference_id" in f for f in r["oco_failures"])
+    assert r["passed"] and r["oco_ok"] is False and any("smart_order_id" in f for f in r["oco_failures"])
     assert any("OCOs OFF" in a for a in oco.alerts)
 
 
@@ -1814,6 +1862,7 @@ def test_sweep_spares_another_legs_inflight_oco_child(oco):                     
 def test_flat_reads_must_be_two_seconds_apart(oco):                              # final review
     t = _buy(oco, stop=930.0, target=960.0)
     oco.client.smart["oco_1"]["status"] = "COMPLETED"
+    oco.client.orders.pop(oco.client.stop_child("oco_1"))
     oco.client.pos_offset["SBIN"] = -10
     oco.pf.execute_sell(t.id, 950.0, "exit")
     for _ in range(3):
@@ -1828,9 +1877,170 @@ def test_flat_reads_must_be_two_seconds_apart(oco):                             
 def test_a_non_flat_read_resets_the_flat_confirmation(oco):
     t = _buy(oco, stop=930.0, target=960.0)
     oco.client.smart["oco_1"]["status"] = "COMPLETED"
+    oco.client.orders.pop(oco.client.stop_child("oco_1"))
     oco.client.pos_offset["SBIN"] = -10
     oco.pf.execute_sell(t.id, 950.0, "exit")
     oco.client.pos_offset["SBIN"] = -5                                          # positions show 5 again
     oco.later(3)
     oco.mirror.tick()
     assert _leg(oco, t)["status"] in ("exiting", "stuck") and "_flat_n" not in _leg(oco, t)
+
+
+# ── Real Groww payloads from the read-only live check (2026-10-15), ids anonymised ──
+
+REAL_POSITION_BHEL = {"trading_symbol": "BHEL", "segment": "CASH", "credit_quantity": 0, "credit_price": 0.0,
+                      "debit_quantity": 200, "debit_price": 444.0, "carry_forward_credit_quantity": 0,
+                      "carry_forward_credit_price": 0.0, "carry_forward_debit_quantity": 0,
+                      "carry_forward_debit_price": 0.0, "exchange": "NSE", "symbol_isin": "INE257A01026",
+                      "quantity": -200, "product": "MIS", "net_carry_forward_quantity": 0, "net_price": 444.0,
+                      "net_carry_forward_price": 0.0, "realised_pnl": 0.0}
+REAL_ORDER_ROW = {"groww_order_id": "GMK0000000000000001", "trading_symbol": "BHEL", "isin": "INE257A01026",
+                  "order_status": "TRIGGER_PENDING", "quantity": 200, "price": 0.0, "trigger_price": 456.0,
+                  "filled_quantity": 0, "remaining_quantity": 200, "average_fill_price": 0.0, "amo_status": "NA",
+                  "validity": "DAY", "exchange": "NSE", "order_type": "SL_M", "transaction_type": "BUY",
+                  "segment": "CASH", "product": "MIS", "created_at": "2026-10-15T10:05:20.44",
+                  "exchange_time": "2026-10-15T10:05:20", "trade_date": "2026-10-15",
+                  "order_reference_id": "MISOCO_MIS_CASH_OCO_STOP_LOSS-" + "a" * 30, "remark": ""}
+REAL_PRIMARY_ROW = {**REAL_ORDER_ROW, "groww_order_id": "GMK0000000000000000", "order_status": "EXECUTED",
+                    "order_type": "MARKET", "transaction_type": "SELL", "trigger_price": 0.0,
+                    "filled_quantity": 200, "remaining_quantity": 0, "average_fill_price": 444.0,
+                    "created_at": "2026-10-15T10:05:20.517",
+                    "order_reference_id": "MISOCO_MIS_CASH_OCO_PRIMARY-" + "b" * 30}
+REAL_SMART_ORDER = {"smart_order_id": "VRay28rN0g" + "c" * 20, "trading_symbol": "BHEL", "exchange": "NSE",
+                    "quantity": 200, "product_type": "MIS", "duration": "DAY", "status": "ACTIVE",
+                    "is_cancellation_allowed": True, "is_modification_allowed": True,
+                    "cancellation_not_allowed_reason": None, "modification_not_allowed_reason": None,
+                    "created_at": "2026-10-15T10:05:20.49", "expire_at": "2026-10-15T15:30:00",
+                    "triggered_at": None, "updated_at": "2026-10-15T10:05:20.517",
+                    "target": {"price": None, "triggerPrice": "430.00", "orderType": None},
+                    "stop_loss": {"price": None, "triggerPrice": "451.40", "orderType": None},
+                    "smart_order_type": "OCO"}
+REAL_MARGIN = {"clear_cash": 50210.5, "net_margin_used": 17760.0, "brokerage_and_charges": 0.0,
+               "equity_margin_details": {"mis_balance_available": 32450.5, "cnc_balance_available": 32450.5,
+                                         "mis_margin_used": 17760.0, "net_equity_margin_used": 17760.0},
+               "fno_margin_details": {}, "commodity_margin_details": {}}
+
+
+def test_real_position_payload_short_is_negative():
+    assert GrowwBroker._net(REAL_POSITION_BHEL) == -200
+
+
+def test_real_order_row_parses():
+    o = norm_order(REAL_ORDER_ROW)
+    assert o["avg_price"] is None and not o["final"] and o["order_type"] == "SL_M" and o["product"] == "MIS"
+    from agent.groww_broker import parse_ts
+    t = parse_ts(o["created_at"])
+    assert (t.hour, t.minute, t.microsecond, t.utcoffset().total_seconds()) == (10, 5, 440000, 19800)
+
+
+def test_real_smart_order_list_shape():
+    from agent.groww_broker import norm_smart_order
+    c = FakeGrowwClient()
+    c.get_smart_order_list = lambda **kw: {"orders": [REAL_SMART_ORDER]}
+    (r,) = GrowwBroker(client=c).smart_orders("BHEL")
+    assert r["id"] == REAL_SMART_ORDER["smart_order_id"] and r["product"] == "MIS" and r["status"] == "ACTIVE"
+    assert (r["target_trigger"], r["stop_trigger"]) == ("430.00", "451.40")
+    assert norm_smart_order({"target": {"trigger_price": "1.5"}})["target_trigger"] == "1.50"   # either case
+
+
+def test_real_margin_payload():
+    c = FakeGrowwClient()
+    c.get_available_margin_details = lambda timeout=None: REAL_MARGIN
+    assert GrowwBroker(client=c).mis_balance_available() == 32450.5
+
+
+def test_real_ga004_not_found_messages():
+    from agent.groww_broker import is_not_found
+    assert is_not_found(GErr("Order status is available only for orders placed today. Please check your "
+                             "order reference id.", "GA004"))
+    assert is_not_found(GErr("Order details are available only for orders placed today.", "GA004"))
+
+
+def _bhel_manual_short(client):
+    """The user's own BHEL MIS short 200 with its own OCO (as seen live)."""
+    client.orders[REAL_PRIMARY_ROW["groww_order_id"]] = dict(REAL_PRIMARY_ROW)
+    client.orders[REAL_ORDER_ROW["groww_order_id"]] = dict(REAL_ORDER_ROW)
+    client.smart[REAL_SMART_ORDER["smart_order_id"]] = {**REAL_SMART_ORDER, "_side": "BUY",
+                                                         "_stop_child": REAL_ORDER_ROW["groww_order_id"]}
+
+
+def test_manual_bhel_short_blocks_mirror_entries_in_bhel_only(oco, inst):       # live check 4c
+    _bhel_manual_short(oco.client)
+    m = oco.make()
+    pf = LivePortfolio(str(oco.tmp / "b.db"), 500_000, m)
+    t = pf.execute_buy("BHEL.NS", 10, 445.0, "intraday", stop_price=440.0, target_price=455.0)
+    leg = m.legs[str(t.id)]
+    assert leg["status"] == "blocked" and leg["category"] == "manual_position_conflict"
+    assert any("manual_position_conflict" in a for a in oco.alerts)
+    assert oco.client.placed() == []
+    t2 = _buy(oco, stop=930.0, target=960.0, pf=pf)                              # SBIN is fine
+    assert m.legs[str(t2.id)]["status"] == "open"
+
+
+def test_users_oco_and_child_are_never_touched(oco):                              # live check 4a
+    _bhel_manual_short(oco.client)
+    t = _buy(oco, stop=930.0, target=960.0)
+    oco.pf.execute_sell(t.id, 950.0, "exit")
+    oco.mirror.reconcile(force=True)
+    sid = REAL_SMART_ORDER["smart_order_id"]
+    assert oco.client.smart[sid]["status"] == "ACTIVE"
+    assert oco.client.orders[REAL_ORDER_ROW["groww_order_id"]]["order_status"] == "TRIGGER_PENDING"
+    assert all(c[1] != sid for c in oco.client.calls if c[0] == "oco_cancel")
+    assert _leg(oco, t)["status"] == "closed"
+
+
+def test_users_oco_in_our_symbol_is_not_ours_to_sweep(oco):                     # live check 2
+    t = _buy(oco, stop=930.0, target=960.0)
+    user_oco = {**REAL_SMART_ORDER, "smart_order_id": "USEROCO" + "d" * 23, "trading_symbol": "SBIN",
+                "quantity": 10, "_side": "SELL", "_stop_child": None,
+                "target": {"price": None, "triggerPrice": "960.00", "orderType": None},
+                "stop_loss": {"price": None, "triggerPrice": "930.00", "orderType": None}}
+    oco.client.smart[user_oco["smart_order_id"]] = user_oco                       # same fingerprint even
+    oco.pf.execute_sell(t.id, 950.0, "exit")
+    oco.mirror.reconcile(force=True)
+    assert oco.client.smart[user_oco["smart_order_id"]]["status"] == "ACTIVE"
+
+
+def test_ambiguous_oco_with_two_fingerprint_matches_stays_unknown(oco):          # live check 2
+    oco.client.oco_script = ["timeout_after"]
+    real_create = oco.client.create_smart_order
+
+    def create_twice(timeout=None, **kw):                                        # a twin appears too
+        try:
+            real_create(timeout=timeout, **kw)
+        except TimeoutError:
+            pass
+        oco.client.oco_script = ["timeout_after"]
+        return real_create(timeout=timeout, **kw)
+    oco.client.create_smart_order = create_twice
+    t = _buy(oco, stop=930.0, target=960.0)
+    assert _leg(oco, t)["protect_kind"] == "oco_unknown"
+    assert any("can't tell which" in a for a in oco.alerts)
+
+
+def test_entry_limited_by_mis_balance(env):                                      # live check 4d
+    env.client.mis_balance = 20_000.0
+    t = _buy(env)                                                                # ₹9,400 fits
+    assert _leg(env, t)["status"] == "open"
+    t2 = _buy(env, qty=25)                                                       # ₹23,500 > ₹20,000
+    assert _leg(env, t2)["status"] == "skipped" and "MIS balance" in _leg(env, t2)["note"]
+
+
+def test_oco_stop_child_with_a_different_trigger_is_still_ours(oco):            # live check 3
+    t = _buy(oco, stop=930.0, target=960.0)
+    child = oco.client.stop_child("oco_1")
+    assert oco.client.orders[child]["trigger_price"] != 930.0                    # as seen live
+    view = oco.mirror._position_view("SBIN")
+    assert view["net"] == 10 and view["orders_net"] == 10 and not view["foreign"]
+    oco.client.fire_stop(child, 929.0)
+    oco.pf.execute_sell(t.id, 929.0, "stop")
+    assert _leg(oco, t)["status"] == "closed" and _leg(oco, t)["exit_fill"] == 929.0
+
+
+def test_owned_net_excludes_manual_fills(env):                                   # live check 4b
+    t = _buy(env)
+    env.client.add_manual("SBIN", -25)
+    view = env.mirror._position_view("SBIN")
+    assert view["raw"] == -15 and view["net"] == 10 and view["orders_net"] == 10 and view["foreign"]
+    env.mirror.reconcile(force=True)
+    assert not any("mismatch" in a for a in env.alerts)

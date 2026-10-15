@@ -134,6 +134,10 @@ is replayed and any leg whose paper trade closed is exited.
 | OCOs OFF for today (plain stops) | The smoke test couldn't verify the OCO API shapes | none; plain SL protection is used |
 | Blocked real … not_intraday_allowed / buy_not_allowed / sell_not_allowed / eligibility_unknown | Groww doesn't allow that stock intraday (or the list couldn't load) | none; paper trade only |
 | Skipped real … (kill switch / exposure / daily real loss / order cap / smoke test / exit-only) | A guard stopped the entry | Expected; review if frequent |
+| Blocked real … manual_position_conflict | You have your own MIS orders or position in that stock today; the mirror stays out of it | none (close yours if you want the mirror to trade it) |
+| Skipped real … > available ₹… (MIS balance ₹…) | The order is larger than Groww's mis_balance_available (or the ₹50K cap left) | Add funds, or ignore |
+| the OCO's own order is still working … | A triggered or cancelled OCO's leg order (MISOCO_*) hasn't finished. The mirror never cancels Groww's OCO legs and won't send an exit next to one | Check the app; it usually clears by itself |
+| … OCOs match ours — can't tell which | An OCO create reply was lost and more than one OCO with the same symbol, qty and triggers exists | Cancel the extra OCO in the app |
 | Real BUY/SELL … filled @ … / MISSED / REJECTED [category] | Entry outcome; the category and raw Groww message are in the ledger and EOD report | Check circuit/margin rejections |
 | Can't read the real … order — status UNKNOWN | A status read failed; it retries every tick | Only act if it persists for minutes |
 | OCO/Protective stop … may or may not exist | A protective order's reply was lost; the leg can't close until it's found | Check the Groww app for an extra OCO/SL on that stock |
@@ -149,3 +153,10 @@ is replayed and any leg whose paper trade closed is exited.
 ### Force plain stops
 Set `GROWW_FORCE_PLAIN_SL=1` in the VM `.env` and restart. The smoke test then skips the OCO steps and all
 protection uses plain SL orders.
+
+### Sharing the account with manual trades
+The mirror only owns orders carrying its own reference prefix (`YYMMDD-…`), plus the MISOCO_* leg
+orders of OCOs it created. Those are matched by symbol, side, quantity and time, because Groww's OCOs have
+no reference id and their leg refs are random. Everything else is yours: your orders, OCOs and positions
+are never cancelled or squared off by the mirror. Its position math subtracts your fills. It won't enter
+a stock where you have MIS activity that day.
