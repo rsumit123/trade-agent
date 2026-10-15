@@ -53,16 +53,23 @@ LOGIN_TIMEOUT_S = 20
 # ── Failure classification ────────────────────────────────
 
 CATEGORIES = ("not_intraday_allowed", "circuit_limit", "insufficient_margin", "auth",
-              "ip_not_whitelisted", "rate_limited", "invalid_price_tick", "market_closed", "unknown")
+              "ip_not_whitelisted", "rate_limited", "invalid_price_tick", "invalid_sl_range",
+              "market_closed", "unknown")
 
+# Real remarks (Groww, 2026-10-15): "RMS:Rule: Assigned basket  for entity …" (not intraday),
+# "RMS:Rule: Check circuit limit … Circuit breach, Order Price :234.35,  Low Price Range:235.35
+# High Price Range:287.65 …", "RMS:Margin Exceeds,Required:…, Available:…", "Choose price in
+# multiples of the tick size.", "16448 : Difference between limit price and trigger price is
+# beyond permissible range".
 _RULES = [  # (category, needles) — first match wins
+    ("invalid_sl_range", ("16448", "difference between limit price and trigger price")),
     ("ip_not_whitelisted", ("whitelist", "static ip", "ip address", "ip not", "unregistered ip")),
     ("auth", ("token", "authenticat", "authoris", "authoriz", "unauthor", "forbidden", "session expired",
               "login")),
     ("rate_limited", ("rate limit", "too many", "throttl")),
     ("not_intraday_allowed", ("intraday", "mis not", "mis is not", "product not allowed",
                               "product type not", "not allowed for mis", "square off only", "t2t",
-                              "trade to trade", "asm", "gsm", "blocked for trading")),
+                              "trade to trade", "asm", "gsm", "blocked for trading", "assigned basket")),
     ("circuit_limit", ("circuit", "price band", "price range", "dpr", "outside the band")),
     ("insufficient_margin", ("margin", "insufficient", "funds", "balance")),
     ("invalid_price_tick", ("tick", "multiple of")),
@@ -110,7 +117,7 @@ def is_ambiguous(exc) -> bool:
     rejection response is definitive: a Groww error code that isn't internal,
     or an HTTP 4xx. Timeouts, SSL/proxy/OS errors, 5xx, internal GA codes,
     unreadable JSON and unknown exception types all need a reference lookup."""
-    if isinstance(exc, GrowwAuthError):
+    if isinstance(exc, (GrowwAuthError, OrderRejected)):
         return False
     # Raised in our process before any request goes out (SDK method missing,
     # bad arguments): nothing can have reached Groww.
@@ -187,7 +194,25 @@ def norm_order(d: Dict) -> Dict:
         "created_at": d.get("created_at") or "",
         "order_type": d.get("order_type"),
         "product": d.get("product"),
+        "price": _f(d.get("price")),
+        "trigger_price": _f(d.get("trigger_price")),
     }
+
+
+def circuit_band(remark: str):
+    """(low, high) from an RMS circuit rejection remark, else None."""
+    import re
+    m = re.search(r"Low Price Range\s*:\s*([\d.]+)\s*High Price Range\s*:\s*([\d.]+)", remark or "")
+    return (float(m.group(1)), float(m.group(2))) if m else None
+
+
+class OrderRejected(Exception):
+    """Groww answered the place call itself with order_status FAILED
+    (no groww_order_id): a definitive, synchronous rejection."""
+
+    def __init__(self, msg, reference_id=None):
+        super().__init__(msg)
+        self.msg, self.code, self.reference_id = msg, "FAILED", reference_id
 
 
 OCO_CHILD_PREFIX = "MISOCO_"                 # Groww's refs for OCO legs, e.g. MISOCO_MIS_CASH_OCO_STOP_LOSS-<30>
@@ -371,6 +396,10 @@ class GrowwBroker:
             kwargs["trigger_price"] = float(trigger_price)
         resp = self._call("place_order", **kwargs) or {}
         order_id = resp.get("groww_order_id")
+        if str(resp.get("order_status") or "").upper() in ("FAILED", "REJECTED") and not order_id:
+            # e.g. {"groww_order_id": null, "order_status": "FAILED", "remark": "Choose price in
+            # multiples of the tick size."} — no exception from the SDK.
+            raise OrderRejected(resp.get("remark") or "order FAILED", resp.get("order_reference_id"))
         if not order_id:
             err = ValueError(f"json: place_order returned no order id: {resp}")
             raise err                                     # ambiguous: look it up by reference
@@ -514,19 +543,21 @@ class GrowwBroker:
 
     @staticmethod
     def _net(p: Dict) -> int:
-        """Signed net intraday quantity of one position row. credit − debit is
-        the primary source (credit = bought, ASSUMED); `quantity` must agree in
-        size. If only `quantity` is present it is taken as signed (ASSUMED)."""
+        """Signed net quantity of one position row. Live: `quantity` is the
+        signed net (short = negative); credit/debit are CUMULATIVE day totals
+        (buy, sell, short, cover → credit 2, debit 2, quantity 0), so
+        credit − debit (+ carry-forward) must equal quantity."""
         credit, debit, qty = p.get("credit_quantity"), p.get("debit_quantity"), p.get("quantity")
-        if credit is not None or debit is not None:
-            net = int(_f(credit) or 0) - int(_f(debit) or 0)
-            if qty is not None and abs(int(_f(qty) or 0)) != abs(net):
-                raise PositionAmbiguous(
-                    f"{p.get('trading_symbol')}: credit−debit={net} but quantity={qty}")
-            return net
         if qty is None:
-            raise PositionAmbiguous(f"{p.get('trading_symbol')}: no quantity fields")
-        return int(_f(qty) or 0)
+            raise PositionAmbiguous(f"{p.get('trading_symbol')}: no quantity field")
+        net = int(_f(qty) or 0)
+        if credit is not None or debit is not None:
+            implied = (int(_f(credit) or 0) - int(_f(debit) or 0)
+                       + int(_f(p.get("net_carry_forward_quantity")) or 0))
+            if implied != net:
+                raise PositionAmbiguous(
+                    f"{p.get('trading_symbol')}: credit−debit={implied} but quantity={qty}")
+        return net
 
     def positions(self) -> Dict[str, int]:
         """Net MIS quantity per NSE symbol (+long / −short). Raises

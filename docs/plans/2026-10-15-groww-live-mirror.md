@@ -96,13 +96,34 @@ VM `.env` (never in git; the user adds these themselves):
 - `GROWW_LIVE_SESSIONS=nse_opus_live`: gate 2. Remove it to stop real entries; positions still open
   today are then managed in exit-only mode.
 - `GROWW_SMOKE_SYMBOL=ITC.NS` (optional): the 1-share stock for the daily smoke test.
-- `GROWW_FORCE_PLAIN_SL=1` (optional): never use OCOs; protect with plain SL orders only.
+- `GROWW_ENABLE_OCO=1` (optional, experimental, off by default): allow OCO protection. Leave it off in v1.
+  The live probe on 2026-10-15 found that Groww's OCO modify cancels the OCO's stop order and leaves a
+  zombie OCO, and that OCO status is unreliable. Even when enabled, the mirror never modifies an OCO; it
+  cancels and re-creates it.
+- `GROWW_FORCE_PLAIN_SL=1` (optional): force plain SL orders even if `GROWW_ENABLE_OCO=1`.
 Gate 1 is hard-coded: only `nse_opus_live` can ever trade real money.
 Static IP `34.139.217.34` must be whitelisted in Groww Cloud. Env changes need a container restart.
 
 ### Daily flow
-- The first tick after 09:15 runs the smoke test (about ₹10–15 in charges). It buys 1 share, checks the
-  API shapes, places, modifies and cancels an OCO, and sells. No real entries happen before it passes.
+- The first tick after 09:15 runs the smoke test (about ₹15–25 in charges). It runs:
+  1. BUY 1 (LIMIT)
+  2. lookup by reference, plus an unknown-reference lookup that must return GA004
+  3. a fill-price sanity check
+  4. positions and fills both at +1
+  5. place a protective SL, verify TRIGGER_PENDING
+  6. modify it (price + trigger), verify
+  7. cancel it, verify CANCELLED
+  8. SELL 1 (MARKET), verify flat
+  9. order-type labels LIMIT/SL/MARKET
+
+  No real entries happen before it passes.
+- Protection (v1): one plain SL (limit) order per position. Trigger = the paper stop (tick-rounded
+  toward safety), limit 1% beyond. It is verified after placement, because the exchange rejects
+  asynchronously. A "16448 … limit price and trigger price" rejection is retried once with a 0.5% limit.
+  Any other rejection raises an alert, and the paper stop sweep (every 15s) triggers the exit.
+  Stop moves modify the order with both price and trigger, then verify it. If that fails, the
+  order is cancelled to a final state and replaced. The target is not placed at Groww: the paper
+  target sweep triggers the real exit.
 - Paper trades are mirrored automatically. The forced close is at 15:10. A stuck exit raises an
   alert at 15:19.
 - The EOD paper-vs-real report goes to Telegram after the daily review. The ledger is
@@ -131,7 +152,9 @@ is replayed and any leg whose paper trade closed is exited.
 |---|---|---|
 | Smoke test passed … Real orders are ON | Daily check OK; says whether MARKET orders and OCOs are in use | none |
 | Real ENTRIES DISABLED for today: … | Smoke test failed, auth/IP failure, 3 broker errors in a row, untrusted positions, or liquidation | Read the reason. Auth/IP: check keys and the IP whitelist. Exits keep working |
-| OCOs OFF for today (plain stops) | The smoke test couldn't verify the OCO API shapes | none; plain SL protection is used |
+| NO protective stop at Groww [category] … paper stop sweep will trigger the real exit | The SL was rejected (twice for a 16448 range) | Watch the position, or place a stop in the app |
+| Protective stop … rejected (16448 …) — retrying with a 0.5% limit | Groww's limit/trigger band check | none |
+| Could not move the real stop … / couldn't confirm the old one is cancelled | Modify and replace both failed | Check the stop in the Groww app |
 | Blocked real … not_intraday_allowed / buy_not_allowed / sell_not_allowed / eligibility_unknown | Groww doesn't allow that stock intraday (or the list couldn't load) | none; paper trade only |
 | Skipped real … (kill switch / exposure / daily real loss / order cap / smoke test / exit-only) | A guard stopped the entry | Expected; review if frequent |
 | Blocked real … manual_position_conflict | You have your own MIS orders or position in that stock today; the mirror stays out of it | none (close yours if you want the mirror to trade it) |
@@ -151,8 +174,23 @@ is replayed and any leg whose paper trade closed is exited.
 | Liquidation incomplete / couldn't get the live lock | The flatten didn't finish | Square off in the Groww app |
 
 ### Force plain stops
-Set `GROWW_FORCE_PLAIN_SL=1` in the VM `.env` and restart. The smoke test then skips the OCO steps and all
-protection uses plain SL orders.
+This is the default in v1: OCOs are only used with `GROWW_ENABLE_OCO=1`. `GROWW_FORCE_PLAIN_SL=1` overrides
+that setting.
+
+### Installing the Groww SDK
+`growwapi==1.5.0` pins protobuf<6, pandas<3 and certifi<2026, which would downgrade what tracing and
+yfinance use. The Dockerfile therefore installs it with `pip install --no-deps growwapi==1.5.0`, and
+its runtime deps (colorama, clint, nats-py, nkeys, pynacl, aiohttp) are in requirements.txt. Don't add
+growwapi to requirements.txt. `tests/test_live_mirror.py::test_growwapi_imports_against_installed_deps`
+guards the import wherever the SDK is installed.
+
+### End-to-end test with real money (1 share of ITC)
+`docker exec -it alphaagent-backend python scripts/live_mirror_e2e.py --yes-real-orders --smoke`
+It drives LivePortfolio → LiveMirror → Groww with a throwaway ledger (not nse_opus_live):
+paper BUY 1, then real entry and protective SL, then a level change (SL modify, verified), then paper
+SELL, then the real exit and the EOD report.
+Hard guards: ITC only, quantity 1, 09:20–15:00 IST, and the `--yes-real-orders` flag. Ctrl-C flattens.
+Use `--skip-smoke` to skip the smoke test (not recommended) and `--telegram` to mirror alerts there.
 
 ### Sharing the account with manual trades
 The mirror only owns orders carrying its own reference prefix (`YYMMDD-…`), plus the MISOCO_* leg

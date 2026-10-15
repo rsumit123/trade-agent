@@ -47,9 +47,9 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-from .groww_broker import (BUY, SELL, LIMIT, MARKET, SL, SL_M, GrowwAuthError, PositionAmbiguous,
-                           OCO_CHILD_PREFIX, OCO_STOP_CHILD, PRODUCT_MIS, classify_error, error_text,
-                           is_ambiguous, is_auth_error, parse_ts, signed_fills)
+from .groww_broker import (BUY, SELL, LIMIT, MARKET, SL, SL_M, DEAD_STATUSES, GrowwAuthError,
+                           PositionAmbiguous, OCO_CHILD_PREFIX, OCO_STOP_CHILD, PRODUCT_MIS, circuit_band,
+                           classify_error, error_text, is_ambiguous, is_auth_error, parse_ts, signed_fills)
 from .portfolio import Portfolio, Trade
 
 logger = logging.getLogger(__name__)
@@ -84,6 +84,13 @@ OCO_TRIGGER_WAIT_S = 20          # a TRIGGERED OCO's child order gets this long 
 FLAT_READS_APART_S = 2           # the two "flat" reads behind closed_by_oco_unconfirmed, at least this far apart
 UNRESOLVED_REPROTECT_S = 30      # an exit order we can't resolve this long → protect what we still hold
 FORCE_PLAIN_SL_ENV = "GROWW_FORCE_PLAIN_SL"   # "1" → never use OCOs (plain stops only)
+# v1: protection is a plain SL (limit) order. Groww's OCO modify is broken (live 2026-10-15: it
+# cancels the OCO's stop order and leaves a zombie OCO, the position unprotected) and its status
+# is unreliable, so the OCO path stays off unless this is set to "1". Even then it is never modified.
+ENABLE_OCO_ENV = "GROWW_ENABLE_OCO"
+SL_LIMIT_PAD_NARROW = 0.005      # retry pad after "16448 … limit price and trigger price … range"
+PROTECT_VERIFY_S = 6             # SL rejections arrive asynchronously, 1–2s after NEW
+SMOKE_SL_PCT, SMOKE_SL_MODIFY_PCT = 0.025, 0.03
 FALLBACK_STOP_PCT = 0.015        # re-protection when the paper stop is unknown
 RECONCILE_EVERY_S = 60
 EXIT_DEADLINE = dtime(15, 19)    # Groww's MIS auto square-off is 15:20 (₹50+GST per position)
@@ -286,7 +293,8 @@ class LiveMirror:
 
     @staticmethod
     def _force_plain_sl() -> bool:
-        return os.environ.get(FORCE_PLAIN_SL_ENV, "").strip() == "1"
+        return (os.environ.get(FORCE_PLAIN_SL_ENV, "").strip() == "1"
+                or os.environ.get(ENABLE_OCO_ENV, "").strip() != "1")
 
     def _roll_day(self):
         today = self._today()
@@ -470,7 +478,12 @@ class LiveMirror:
 
     def _quote(self, symbol: str) -> Dict:
         q, _ = self._try(f"quote {symbol}", self.broker.quote, symbol)
-        return q or {}
+        q = dict(q or {})
+        band = getattr(self, "_bands", {}).get(symbol)
+        if band:                                  # learned from an RMS circuit rejection
+            q.setdefault("lower", band[0]) if q.get("lower") else q.__setitem__("lower", band[0])
+            q.setdefault("upper", band[1]) if q.get("upper") else q.__setitem__("upper", band[1])
+        return q
 
     def _ltp(self, leg: Dict, fallback: float) -> float:
         q = self._quote(leg["symbol"])
@@ -501,7 +514,8 @@ class LiveMirror:
                      position fields disagree
           orders_net net of our own fills (our reference prefix + children of
                      our OCOs)
-          foreign    True if the symbol has MIS activity today that isn't ours
+          foreign    True if the user holds an MIS position or has a working
+                     order in the symbol (anything not ours)
         None if either read failed."""
         try:
             raw = self._b(f"position {sym}", self.broker.net_position, sym)
@@ -520,7 +534,9 @@ class LiveMirror:
         foreign_net = signed_fills(theirs)
         return {"net": None if raw is None else raw - foreign_net, "orders_net": signed_fills(mine),
                 "raw": raw, "foreign_net": foreign_net,
-                "foreign": bool(theirs) or (not rows and bool(raw))}
+                # The user's own open position or working order (a closed-out manual
+                # round trip earlier in the day doesn't count)
+                "foreign": foreign_net != 0 or any(not o["final"] for o in theirs) or (not rows and bool(raw))}
 
     def _all_ocos(self, sym: str = None) -> Dict[str, Dict]:
         """Every OCO this mirror created today (any leg): id → meta."""
@@ -625,6 +641,11 @@ class LiveMirror:
 
     def _reject_note(self, leg: Dict, category: str, message: str, what: str):
         leg.setdefault("failures", []).append({"what": what, "category": category, "message": message})
+        band = circuit_band(message)
+        if band:
+            if not hasattr(self, "_bands"):
+                self._bands = {}
+            self._bands[leg["symbol"]] = band
         self._alert(f"{what} {leg['symbol']} REJECTED [{category}]: {message}")
 
     # ── Guards ─────────────────────────────────────────────
@@ -938,13 +959,53 @@ class LiveMirror:
             return None
         return ids[0]
 
-    def _protect_plain_sl(self, leg: Dict, held: int, n: int, trigger: float):
+    def _await_order(self, oid: str, where: str, timeout_s: float = PROTECT_VERIFY_S,
+                     expect_trigger: float = None) -> Optional[Dict]:
+        """Poll an order until it rests as TRIGGER_PENDING (with the expected
+        trigger, if given) or reaches a final state. None if it can't be read."""
+        deadline = self._mono() + timeout_s
+        st = None
+        while True:
+            res, st = self._read(oid, None, "", where)
+            if res == "ok":
+                resting = st["status"] == "TRIGGER_PENDING" and (
+                    expect_trigger is None or (st.get("trigger_price") is not None
+                                               and abs(st["trigger_price"] - expect_trigger) < 1e-6))
+                if resting or st["final"]:
+                    return st
+            if self._mono() >= deadline:
+                return st if res == "ok" else None
+            self._sleep(1)
+
+    def _cancel_to_final(self, oid: str, where: str, timeout_s: float = PROTECT_VERIFY_S) -> Optional[Dict]:
+        """Cancel and read until final (CANCELLATION_REQUESTED isn't). Cancelling an
+        already-cancelled order 'succeeds' and an executed one errors: the read decides."""
+        self._cancel(oid, where)
+        deadline = self._mono() + timeout_s
+        while True:
+            res, st = self._read(oid, None, "", where)
+            if res == "ok" and st["final"]:
+                return st
+            if self._mono() >= deadline:
+                return None
+            self._sleep(1)
+
+    def _sl_limit(self, leg: Dict, trigger: float, pad: float) -> float:
         long = leg["direction"] == "long"
         tick = self._tick_size(leg["ticker"], trigger)
-        limit = round_to_tick(trigger * (1 - SL_LIMIT_PAD) if long else trigger * (1 + SL_LIMIT_PAD), tick, up=not long)
+        return round_to_tick(trigger * (1 - pad) if long else trigger * (1 + pad), tick, up=not long)
+
+    def _protect_plain_sl(self, leg: Dict, held: int, n: int, trigger: float, pad: float = SL_LIMIT_PAD,
+                          retried: bool = False):
+        """Plain SL (limit) protective order: trigger = the stop, limit 1% beyond.
+        Verified after placement (the exchange rejects asynchronously); a
+        16448 range rejection is retried once with a 0.5% limit; any other
+        rejection alerts, and the paper stop sweep stays the exit trigger."""
+        long = leg["direction"] == "long"
+        limit = self._sl_limit(leg, trigger, pad)
         ref = self._ref(leg["paper_trade_id"], "P", n)
-        leg.update(protect_ref=ref, protect_kind="sl", protect_final=False, sl_order=None,
-                   protect_created_at=self._now().isoformat(), protect_qty=held, _pt=self._mono())
+        leg.update(protect_ref=ref, protect_kind="sl", protect_final=False, sl_order=None, protect_n=n,
+                   protect_created_at=self._now().isoformat(), protect_qty=held, protect_pad=pad, _pt=self._mono())
         self._save_leg(leg)
         r = self._place(leg, "stop", ref, SELL if long else BUY, held, SL, price=limit, trigger=trigger)
         if r["ambiguous"]:
@@ -952,12 +1013,76 @@ class LiveMirror:
             r["id"] = st["id"] if res == "ok" else None
             if not r["id"]:
                 leg["protect_kind"] = "sl_unknown"
+                self._save_leg(leg)
                 self._alert(f"Protective stop for {leg['symbol']} may or may not exist — resolving by reference",
                             once_key=("sl_unknown", leg["paper_trade_id"], n))
+                return
+        if not r["id"]:
+            return self._protective_rejected(leg, held, n, trigger, pad, retried, r["category"], r["error"])
         leg.update(sl_order=r["id"], protect_stop=trigger)
+        leg.setdefault("sl_history", []).append(r["id"])
         self._save_leg(leg)
-        if not r["id"] and not r["ambiguous"]:
-            self._reject_note(leg, r["category"], r["error"], "Protective stop")
+        st = self._await_order(r["id"], f"stop {leg['symbol']}")
+        if st is not None and st["dead"]:
+            cat = classify_error(st["remark"] or st["status"])
+            self._write({"event": "error", "where": f"stop {leg['symbol']} (exchange)", "category": cat,
+                         "message": st["remark"] or st["status"]})
+            leg.update(sl_order=None)
+            return self._protective_rejected(leg, held, n, trigger, pad, retried, cat, st["remark"] or st["status"])
+        if st is not None:
+            leg["protect_status"] = st["status"]
+        self._save_leg(leg)
+
+    def _protective_rejected(self, leg, held, n, trigger, pad, retried, category, message):
+        leg.update(protect_kind="rejected", sl_order=None)
+        self._save_leg(leg)
+        if category == "invalid_sl_range" and not retried and pad > SL_LIMIT_PAD_NARROW:
+            self._alert(f"Protective stop for {leg['symbol']} rejected ({message}) — retrying with a 0.5% limit")
+            return self._protect_plain_sl(leg, held, n + 1, trigger, pad=SL_LIMIT_PAD_NARROW, retried=True)
+        self._reject_note(leg, category, message, "Protective stop")
+        self._alert(f"{leg['symbol']}: NO protective stop at Groww [{category}]. The paper stop sweep "
+                    f"(every 15s) will trigger the real exit.", once_key=("noprotect", leg["paper_trade_id"], n))
+
+    def _modify_sl(self, leg: Dict, new_stop: float) -> str:
+        """Move the plain SL: modify with BOTH price and trigger (trigger-only is
+        rejected live), then verify it rests with the new trigger. On failure:
+        cancel to final and place a fresh SL. Returns 'modified', 'replaced'
+        or 'failed'."""
+        sym = leg["symbol"]
+        oid = leg["sl_order"]
+        trig = self._triggers(leg, new_stop, None)[0]
+        pad = leg.get("protect_pad") or SL_LIMIT_PAD
+        limit = self._sl_limit(leg, trig, pad)
+        held = self._held(leg)
+        ok = False
+        try:
+            self._b(f"modify stop {sym}", self.broker.modify_order, oid, SL, held, price=limit, trigger_price=trig)
+            st = self._await_order(oid, f"stop {sym}", expect_trigger=trig)
+            ok = bool(st and st["status"] == "TRIGGER_PENDING" and st.get("trigger_price") is not None
+                      and abs(st["trigger_price"] - trig) < 1e-6)
+        except Exception as e:
+            logger.warning(f"Modify stop {sym} failed: {error_text(e)}")
+        if ok:
+            leg["protect_stop"] = trig
+            self._write({"event": "modify", "paper_trade_id": leg["paper_trade_id"], "id": oid, "stop": trig,
+                         "limit": limit})
+            self._save_leg(leg)
+            return "modified"
+        # Replace: the old stop must be final first, or we'd hold two stops.
+        st = self._cancel_to_final(oid, f"stop {sym}")
+        if st is None:
+            self._alert(f"{sym}: couldn't move the real stop to ₹{trig} and couldn't confirm the old one is "
+                        f"cancelled — keeping it. Check the Groww app.")
+            return "failed"
+        if st["filled_qty"]:
+            leg["exit_fills"].append({"order": oid, "qty": st["filled_qty"], "price": st["avg_price"] or
+                                      leg.get("protect_stop"), "source": "stop"})
+            leg.update(protect_final=True, protect_status=st["status"])
+            self._save_leg(leg)
+            return "failed"
+        leg.update(sl_order=None, protect_final=False)
+        self._protect_plain_sl(leg, held, (leg.get("protect_n") or 1) + 1, trig, pad=pad)
+        return "replaced" if leg.get("sl_order") else "failed"
 
     def _resolve_protection(self, leg: Dict):
         """*_unknown protection: look its reference up every tick."""
@@ -1008,25 +1133,21 @@ class LiveMirror:
         if not (stop_changed or target_changed):
             self._save_leg(leg)
             return                                                   # nothing changed at the broker
-        held = self._held(leg)
-        try:
-            if kind == "oco":
-                self._b(f"modify oco {leg['symbol']}", self.broker.modify_oco, leg["sl_order"], held,
-                        t_trig, s_trig)
-                leg.update(protect_stop=s_trig, protect_target=t_trig)
-            else:
-                long = leg["direction"] == "long"
-                tick = self._tick_size(leg["ticker"], s_trig)
-                limit = round_to_tick(s_trig * (1 - SL_LIMIT_PAD) if long else s_trig * (1 + SL_LIMIT_PAD),
-                                      tick, up=not long)
-                self._b(f"modify stop {leg['symbol']}", self.broker.modify_order, leg["sl_order"], SL, held,
-                        price=limit, trigger_price=s_trig)
-                leg["protect_stop"] = s_trig
-            self._write({"event": "modify", "paper_trade_id": leg["paper_trade_id"],
-                         "id": leg["sl_order"], "stop": s_trig, "target": t_trig})
-        except Exception as e:
-            self._alert(f"Could not move the real stop/target for {leg['symbol']} "
-                        f"(stop ₹{s_trig}, target ₹{t_trig}): {error_text(e)}")
+        if kind == "oco":
+            # Never modify_smart_order (live: it kills the OCO's stop order). Cancel + re-create.
+            deadline = self._mono() + PROTECT_VERIFY_S
+            while self._cancel_protection(leg) == "wait" and self._mono() < deadline:
+                self._sleep(1)
+            if not leg.get("protect_final"):
+                self._alert(f"{leg['symbol']}: couldn't replace the OCO for new levels — old one kept")
+            elif not leg.get("protect_fired"):
+                leg.update(sl_order=None, protect_final=False)
+                self._protect(leg)
+            self._save_leg(leg)
+            return
+        if self._modify_sl(leg, new_stop) == "failed":
+            self._alert(f"Could not move the real stop for {leg['symbol']} to ₹{s_trig}",
+                        once_key=("modify_fail", leg["paper_trade_id"], s_trig))
         self._save_leg(leg)
 
     def on_exit(self, trade: Trade):
@@ -1736,61 +1857,33 @@ class LiveMirror:
             core.append(f"positions after BUY: positions {view and view['net']}, fills {view and view['orders_net']} "
                         f"(expected +1) — position semantics untrusted")
 
-        # OCO: create near the price, modify both triggers, cancel to a final state.
-        oref = self._ref(tid, "O")
+        # Protective SL: place → verify TRIGGER_PENDING → modify (price + trigger) → verify →
+        # cancel → verify CANCELLED. (OCOs aren't used in v1; see ENABLE_OCO_ENV.)
         tick = self._tick_size(ticker, price)
-        sid, err = None, None
-        if self._force_plain_sl():
-            oco_fail.append(f"{FORCE_PLAIN_SL_ENV}=1 (plain stops forced)")
+        stop = round_to_tick(price * (1 - SMOKE_SL_PCT), tick, False)
+        leg["stop"] = stop
+        self._write({"event": "smoke_step", "step": "sl_place", "trigger": stop})
+        self._protect_plain_sl(leg, 1, 1, stop)
+        if not leg.get("sl_order"):
+            last = (leg.get("failures") or [{}])[-1]
+            core.append(f"protective SL not accepted [{last.get('category')}]: {last.get('message')}")
         else:
-            self._write({"event": "smoke_step", "step": "oco_create", "ref": oref})
-            sid, err = self._try("smoke oco", self.broker.create_oco, sym, 1, SELL, 1,
-                                 round_to_tick(price * (1 + SMOKE_OCO_PCT), tick, True),
-                                 round_to_tick(price * (1 - SMOKE_OCO_PCT), tick, False), oref)
-        if err is not None and is_ambiguous(err):
-            leg["protect_fp"] = {"qty": 1, "target": round_to_tick(price * (1 + SMOKE_OCO_PCT), tick, True),
-                                 "stop": round_to_tick(price * (1 - SMOKE_OCO_PCT), tick, False),
-                                 "since": self._now().isoformat()}
-            sid = self._find_oco_by_fingerprint(leg)
-        if not sid and not self._force_plain_sl():
-            oco_fail.append(f"create returned no smart_order_id ({error_text(err) if err else 'none'})")
-            if err is not None and is_ambiguous(err):
-                leg.update(protect_kind="oco_unknown", protect_ref=oref)
-        else:
-            leg.update(protect_ref=oref, protect_final=False, protect_qty=1)
-            self._adopt_oco(leg, sid, 1)
-            listed, lerr = self._try("smoke list ocos", self.broker.smart_orders, sym)
-            row = next((r for r in listed or [] if r.get("id") == sid), None)
-            if lerr is not None or row is None:
-                oco_fail.append(f"smart_orders({sym}) did not list smart_order_id {sid} "
-                                f"({error_text(lerr) if lerr else 'not listed'}) — can't find or sweep OCOs")
-            elif row.get("stop_trigger") is None or row.get("target_trigger") is None:
-                oco_fail.append(f"OCO {sid} listed without target/stop triggerPrice: {row.get('raw')}")
-            st0, e0 = self._try("smoke oco status", self.broker.oco_status, sid)
-            if e0 is not None or st0["status"] not in KNOWN_OCO_STATUSES:
-                oco_fail.append(f"unexpected OCO status field: {st0 and st0.get('raw')}")
-            self._write({"event": "smoke_step", "step": "oco_modify", "id": sid})
-            _, merr = self._try("smoke modify oco", self.broker.modify_oco, sid, 1,
-                                round_to_tick(price * (1 + SMOKE_OCO_MODIFY_PCT), tick, True),
-                                round_to_tick(price * (1 - SMOKE_OCO_MODIFY_PCT), tick, False))
-            if merr is not None:
-                oco_fail.append(f"modify failed: {error_text(merr)}")
-            self._write({"event": "smoke_step", "step": "oco_cancel", "id": sid})
-            final = None
-            for _ in range(6):
-                self._try("smoke cancel oco", self.broker.cancel_oco, sid)
-                stx, _e = self._try("smoke oco status", self.broker.oco_status, sid)
-                if stx and stx["final"]:
-                    final = stx
-                    break
-                self._sleep(POLL_S)
-            if final is None:
-                oco_fail.append("OCO did not reach a final state after cancel")
-            else:
-                leg.update(protect_final=True, protect_status=final["status"], protect_fired=final["fired"])
-                if final["fired"]:
-                    oco_fail.append("OCO fired during the test")
-        self.oco_ok = not oco_fail
+            st = self._await_order(leg["sl_order"], f"smoke stop {sym}")
+            if not st or st["status"] != "TRIGGER_PENDING":
+                core.append(f"protective SL is {st and st['status']}, expected TRIGGER_PENDING")
+            new_stop = round_to_tick(price * (1 - SMOKE_SL_MODIFY_PCT), tick, False)
+            self._write({"event": "smoke_step", "step": "sl_modify", "trigger": new_stop})
+            moved = self._modify_sl(leg, new_stop)
+            if moved != "modified":
+                core.append(f"moving the SL (price + trigger) didn't verify ({moved})")
+            if leg.get("sl_order"):
+                self._write({"event": "smoke_step", "step": "sl_cancel", "id": leg["sl_order"]})
+                st = self._cancel_to_final(leg["sl_order"], f"smoke stop {sym}")
+                if not st or st["status"] != "CANCELLED":
+                    core.append(f"cancelled SL is {st and st['status']}, expected CANCELLED")
+                else:
+                    leg.update(protect_final=True, protect_status="CANCELLED")
+        self.oco_ok = not self._force_plain_sl()
         self._save_leg(leg)
 
         # SELL 1: MARKET first (tests MARKET acceptance), then the normal exit engine.
@@ -1814,17 +1907,15 @@ class LiveMirror:
         rows, lerr = self._try("smoke order list", self.broker.order_list, sym)
         by_id = {o["id"]: o for o in rows or []}
         want = {leg.get("entry_order"): LIMIT}
+        want.update({oid: SL for oid in leg.get("sl_history") or []})
         want.update({a["order"]: MARKET for a in leg["exit_attempts"] if a.get("kind") == "market" and a.get("order")})
         for oid, label in want.items():
             if oid and (by_id.get(oid) or {}).get("order_type") != label:
-                oco_fail.append(f"order list shows order_type {(by_id.get(oid) or {}).get('order_type')!r} for "
-                                f"{oid}, expected {label!r} — stop/OCO sweeps can't be trusted")
+                core.append(f"order list shows order_type {(by_id.get(oid) or {}).get('order_type')!r} for "
+                            f"{oid}, expected {label!r} — stop sweeps can't be trusted")
                 break
         if lerr is not None:
-            oco_fail.append(f"order list unreadable: {error_text(lerr)}")
-        self.oco_ok = not oco_fail and not self._force_plain_sl()
-        if oco_fail:
-            self._alert("OCOs OFF for today (plain stops): " + "; ".join(oco_fail))
+            core.append(f"order list unreadable: {error_text(lerr)}")
         if leg["status"] != "closed":
             core.append(f"could not close the 1-share test position ({leg['status']})")
         else:
@@ -1837,8 +1928,8 @@ class LiveMirror:
     def _smoke_result(self, passed: bool, core: List[str], oco_fail: List[str]) -> Dict:
         self._smoke = (self._day, passed)
         reason = "; ".join(core) if core else (
-            f"ok (MARKET {'ok' if self.market_ok else 'not accepted — limit exits only'}; "
-            f"OCO {'ok' if not oco_fail else 'disabled — plain stops: ' + '; '.join(oco_fail)})")
+            f"ok (MARKET {'ok' if self.market_ok else 'not accepted — limit exits only'}; protection: "
+            f"{'OCO (experimental)' if self.oco_ok else 'plain SL'})")
         self._write({"event": "smoke", "passed": passed, "reason": reason, "core_failures": core,
                      "oco_failures": oco_fail, "market_ok": self.market_ok, "oco_ok": self.oco_ok})
         if passed:

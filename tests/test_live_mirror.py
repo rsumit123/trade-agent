@@ -63,6 +63,7 @@ class FakeGrowwClient:
         self.pos_offset = {}             # symbol → qty added to positions only (lag / misread)
         self.clock = lambda: NOW
         self.mis_balance = 1_000_000.0
+        self.modify_mode = "ok"          # ok | fail | ignored
         if oco:
             self.create_smart_order = self._create_smart_order
             self.modify_smart_order = self._modify_smart_order
@@ -90,6 +91,19 @@ class FakeGrowwClient:
             raise GErr("Invalid access token", code="GA005")
         if how == "timeout_before":
             raise TimeoutError("read timed out")
+        if how == "failed_sync":                     # live: no exception, FAILED in the response
+            self.n += 1
+            oid = f"G{self.n}"
+            self.orders[oid] = {"groww_order_id": oid, "order_reference_id": kw.get("order_reference_id"),
+                                "trading_symbol": kw["trading_symbol"], "quantity": kw["quantity"],
+                                "transaction_type": kw["transaction_type"], "order_type": kw["order_type"],
+                                "price": kw.get("price"), "trigger_price": kw.get("trigger_price"),
+                                "product": kw.get("product"), "created_at": self.ts(), "filled_quantity": 0,
+                                "average_fill_price": 0.0, "order_status": "FAILED",
+                                "remark": "Choose price in multiples of the tick size."}
+            return {"groww_order_id": None, "order_status": "FAILED",
+                    "order_reference_id": kw.get("order_reference_id"),
+                    "remark": "Choose price in multiples of the tick size."}
         self.n += 1
         oid = f"G{self.n}"
         o = {"groww_order_id": oid, "order_reference_id": kw.get("order_reference_id"),
@@ -110,6 +124,8 @@ class FakeGrowwClient:
             o.update(order_status="REJECTED", remark="Insufficient margin available")
         elif how == "open" and kw["order_type"] == "SL":
             o.update(order_status="TRIGGER_PENDING")
+        elif isinstance(how, tuple) and how[0] == "reject_async":   # NEW now, REJECTED on the next read
+            o.update(order_status="NEW", _next=("REJECTED", how[1]))
         self.orders[oid] = o
         if lost == "timeout":
             raise TimeoutError("read timed out")
@@ -117,26 +133,40 @@ class FakeGrowwClient:
             raise json.JSONDecodeError("Expecting value", "<html>502</html>", 0)
         if lost == "conn":
             raise ConnectionError("connection reset")
-        return {"groww_order_id": oid, "order_status": o["order_status"]}
+        return {"groww_order_id": oid, "order_status": "NEW", "order_reference_id": kw.get("order_reference_id"),
+                "remark": None}
+
+    def _settle(self, o):
+        nxt = o.pop("_next", None)
+        if nxt:
+            o["order_status"] = nxt[0]
+            if len(nxt) > 1 and nxt[1] is not None:
+                o["remark"] = nxt[1]
+        return o
 
     def get_order_detail(self, **kw):
         if self.status_fail:
             self.status_fail -= 1
             raise ConnectionError("reset")
-        return dict(self.orders[kw["groww_order_id"]])
+        if kw["groww_order_id"] not in self.orders:
+            raise GErr("Order details are available only for orders placed today.", "GA004")
+        return {k: v for k, v in self._settle(self.orders[kw["groww_order_id"]]).items() if not k.startswith("_")}
 
     def get_order_status_by_reference(self, segment=None, order_reference_id=None, timeout=None):
         for o in self.orders.values():
             if o.get("order_reference_id") == order_reference_id:
-                return {k: o[k] for k in ("groww_order_id", "order_status", "filled_quantity",
-                                          "order_reference_id")}
-        raise GErr("Order not found", code="404")
+                self._settle(o)
+                return {"groww_order_id": o["groww_order_id"], "order_status": o["order_status"],
+                        "remark": o.get("remark"), "filled_quantity": o["filled_quantity"],
+                        "reference_id": o["order_reference_id"]}       # live: "reference_id"
+        raise GErr("Order status is available only for orders placed today. Please check your order "
+                   "reference id.", code="GA004")
 
     PAGE = 25                         # the server's page size; the SDK never sends page_size
 
     def get_order_list(self, page=0, segment=None, timeout=None):
         rows = list(self.orders.values())[page * self.PAGE:(page + 1) * self.PAGE]
-        return {"order_list": [dict(r) for r in rows]}
+        return {"order_list": [{k: v for k, v in r.items() if not k.startswith("_")} for r in rows]}
 
     def add_manual(self, sym, qty, price=100.0, order_type="MARKET", status="EXECUTED", ref=None):
         """An order the user placed in the Groww app (no reference of ours)."""
@@ -155,8 +185,12 @@ class FakeGrowwClient:
         o = self.orders[groww_order_id]
         if self.cancel_mode == "raise":
             raise GErr("GA000 internal error", code="GA000")
-        if o["order_status"] in ("EXECUTED", "REJECTED", "CANCELLED") and o["filled_quantity"] >= o["quantity"]:
-            raise GErr("Order is not open")
+        self._settle(o)
+        if o["order_status"] in ("REJECTED", "FAILED") or (o["order_status"] == "EXECUTED"
+                                                           and o["filled_quantity"] >= o["quantity"]):
+            raise GErr("Cancellation not allowed", "GA001")                # live
+        if o["order_status"] == "CANCELLED":                                 # live: no error
+            return {"groww_order_id": groww_order_id, "order_status": "CANCELLATION_REQUESTED"}
         if self.cancel_mode == "stuck":
             o["order_status"] = "CANCELLATION_REQUESTED"
         else:
@@ -165,8 +199,17 @@ class FakeGrowwClient:
 
     def modify_order(self, timeout=None, **kw):
         self.calls.append(("modify", kw))
-        self.orders[kw["groww_order_id"]].update(price=kw.get("price"), trigger_price=kw.get("trigger_price"))
-        return {"groww_order_id": kw["groww_order_id"], "order_status": "OPEN"}
+        o = self.orders[kw["groww_order_id"]]
+        if self.modify_mode == "fail":
+            raise GErr("Order already terminated", "GA001")
+        if o["order_type"] == "SL" and kw.get("price") is None:
+            raise GErr("Order was rejected due to invalid limit price.", "GA001")      # live
+        o.update(price=kw.get("price"), trigger_price=kw.get("trigger_price"), order_status="MODIFICATION_REQUESTED")
+        if self.modify_mode != "ignored":                    # "ignored": accepted but never applied
+            o["_next"] = ("TRIGGER_PENDING" if o["order_type"] in ("SL", "SL_M") else "APPROVED", None)
+        else:
+            o.update(trigger_price=o.get("_orig_trigger"), _next=("TRIGGER_PENDING", None))
+        return {"groww_order_id": kw["groww_order_id"], "order_status": "MODIFICATION_REQUESTED"}
 
     def fire_stop(self, oid, price):
         o = self.orders[oid]
@@ -603,7 +646,10 @@ def test_paper_exit_during_working_entry_exits_once_filled(env):
 # ── OCO ───────────────────────────────────────────────────
 
 @pytest.fixture
-def oco(env):
+def oco(env, monkeypatch):
+    """The experimental OCO path (off in v1 unless GROWW_ENABLE_OCO=1)."""
+    monkeypatch.setenv("GROWW_ENABLE_OCO", "1")
+    env.mirror.oco_ok = True
     env.client.create_smart_order = env.client._create_smart_order
     env.client.modify_smart_order = env.client._modify_smart_order
     env.client.cancel_smart_order = env.client._cancel_smart_order
@@ -628,16 +674,15 @@ def test_short_oco_buys_back_with_negative_net(oco):
     assert kw["transaction_type"] == "BUY" and kw["net_position_quantity"] == -5
 
 
-def test_update_levels_modifies_both_oco_triggers(oco):
+def test_update_levels_replaces_the_oco_and_never_modifies_it(oco):           # live: OCO modify is broken
     t = _buy(oco, stop=930.0, target=960.0)
     oco.pf.update_levels(t.id, stop_price=936.0, target_price=965.0)
-    (mod,) = oco.client.ccalls("oco_modify")
-    assert mod["stop_loss"] == {"trigger_price": "936.00"} and mod["target"] == {"trigger_price": "965.00"}
-    oco.pf.update_levels(t.id, stop_price=936.0)                     # unchanged → no call
-    assert len(oco.client.ccalls("oco_modify")) == 1
-    oco.pf.update_levels(t.id, stop_price=938.5)                     # trail the stop only
-    assert oco.client.ccalls("oco_modify")[-1]["stop_loss"] == {"trigger_price": "938.50"}
-    assert oco.client.ccalls("oco_modify")[-1]["target"] == {"trigger_price": "965.00"}
+    assert oco.client.ccalls("oco_modify") == []
+    assert oco.client.smart["oco_1"]["status"] == "CANCELLED" and _leg(oco, t)["sl_order"] == "oco_2"
+    kw = oco.client.ccalls("oco_create")[-1]
+    assert kw["stop_loss"]["trigger_price"] == "936.00" and kw["target"]["trigger_price"] == "965.00"
+    oco.pf.update_levels(t.id, stop_price=936.0)                     # unchanged → nothing sent
+    assert len(oco.client.ccalls("oco_create")) == 2
 
 
 def test_oco_fired_before_exit_is_recorded_without_a_second_exit(oco):
@@ -797,12 +842,18 @@ def test_classification():
 
 # ── Positions ─────────────────────────────────────────────
 
-def test_short_with_unsigned_quantity_uses_credit_debit(env):             # [M2]
+def test_unsigned_quantity_that_disagrees_with_credit_debit_is_refused(env):    # [M2]
     env.client.qty_mode = "abs"
-    t = env.pf.execute_short("SBIN.NS", 5, 940.0, stop_price=950.0)
-    assert env.mirror.broker.net_position("SBIN") == -5
-    env.pf.execute_cover(t.id, 935.0, "cover")
-    assert env.client.placed("LIMIT", "BUY")[0]["quantity"] == 5 and env.client.net("SBIN") == 0
+    env.pf.execute_short("SBIN.NS", 5, 940.0, stop_price=950.0)
+    with pytest.raises(lm.PositionAmbiguous):
+        env.mirror.broker.net_position("SBIN")
+
+
+def test_signed_quantity_and_cumulative_credit_debit_from_the_probe():          # live probe S6/END
+    after_short = {"trading_symbol": "ITC", "quantity": -1, "credit_quantity": 1, "debit_quantity": 2,
+                   "product": "MIS", "net_price": 264.4}
+    after_cover = {**after_short, "quantity": 0, "credit_quantity": 2}
+    assert GrowwBroker._net(after_short) == -1 and GrowwBroker._net(after_cover) == 0
 
 
 def test_position_sign_disagreement_refuses_to_act(env):                  # [M2]
@@ -1015,18 +1066,23 @@ def test_worker_runs_broker_calls_off_the_agent_thread(env):            # [M8]
 
 # ── Smoke test ────────────────────────────────────────────
 
-def test_smoke_test_full_sequence(oco):
-    m = oco.make(smoke=False)
-    oco.client.ltp = 400.0
+def test_smoke_test_v1_sequence(env):                                           # v1: plain SL
+    m = env.make(smoke=False)
+    env.client.ltp = 264.45
     r = m.smoke_test("ITC.NS")
-    assert r["passed"] and r["oco_ok"] and r["market_ok"]
-    assert [kw["order_type"] for kw in oco.client.placed()] == ["LIMIT", "MARKET"]
-    assert len(oco.client.ccalls("oco_create")) == 1 and len(oco.client.ccalls("oco_modify")) == 1
-    assert len(oco.client.ccalls("oco_cancel")) >= 1 and oco.client.net("ITC") == 0
-    steps = [r["step"] for r in _ledger(oco) if r.get("event") == "smoke_step"]
-    assert steps == ["lookup_by_reference", "lookup_unknown_reference", "positions_after_buy", "oco_create",
-                     "oco_modify", "oco_cancel"]
-    assert oco.make(smoke=False).smoke_done_today()
+    assert r["passed"] and r["market_ok"] and r["oco_ok"] is False, r["reason"]
+    assert [kw["order_type"] for kw in env.client.placed()] == ["LIMIT", "SL", "MARKET"]
+    sl = env.client.placed("SL")[0]
+    assert sl["trigger_price"] == 257.8 and sl["price"] == 255.2                 # 2.5% below, limit 1% beyond
+    (mod,) = env.client.ccalls("modify")
+    assert mod["price"] is not None and mod["trigger_price"] == 256.5           # both price and trigger
+    assert env.client.ccalls("oco_create") == [] and env.client.net("ITC") == 0
+    steps = [x["step"] for x in _ledger(env) if x.get("event") == "smoke_step"]
+    assert steps == ["lookup_by_reference", "lookup_unknown_reference", "positions_after_buy",
+                     "sl_place", "sl_modify", "sl_cancel"]
+    sl_id = next(o for o in env.client.orders.values() if o["order_type"] == "SL")
+    assert sl_id["order_status"] == "CANCELLED"
+    assert env.make(smoke=False).smoke_done_today()
 
 
 def test_smoke_oco_unsupported_still_passes_with_plain_stop_fallback(env):
@@ -1039,7 +1095,7 @@ def test_smoke_oco_unsupported_still_passes_with_plain_stop_fallback(env):
 def test_smoke_market_rejected_falls_back_to_limit(env):
     m = env.make(smoke=False)
     env.client.ltp = 400.0
-    env.client.script = ["fill", "reject", "fill"]
+    env.client.script = ["fill", "open", "reject", "fill"]                      # buy, SL, MARKET, limit
     r = m.smoke_test("ITC.NS")
     assert r["passed"] and r["market_ok"] is False and env.client.net("ITC") == 0
 
@@ -1051,11 +1107,11 @@ def test_failed_smoke_buy_disables_the_day(env):
     assert not r["passed"] and m.disabled_reason().startswith("smoke test failed")
 
 
-def test_market_ok_resets_next_day(env):
-    env.mirror.market_ok = env.mirror.oco_ok = False
+def test_market_ok_resets_next_day_and_ocos_stay_off(env):
+    env.mirror.market_ok = False
     env.clock["now"] = datetime(2026, 10, 19, 10, 0, tzinfo=IST)
     env.mirror._roll_day()
-    assert env.mirror.market_ok and env.mirror.oco_ok
+    assert env.mirror.market_ok and env.mirror.oco_ok is False
 
 
 # ── Circuit limits ────────────────────────────────────────
@@ -1503,12 +1559,11 @@ def test_triggers_are_tick_rounded_toward_safety(oco):                          
     assert kw["stop_loss"]["trigger_price"] == "950.05" and kw["target"]["trigger_price"] == "920.00"
 
 
-def test_smoke_oco_triggers_are_near_the_price(oco):                            # [Major 4]
+def test_smoke_never_touches_ocos_even_if_enabled(oco):
     m = oco.make(smoke=False)
     oco.client.ltp = 400.0
-    m.smoke_test("ITC.NS")
-    kw = oco.client.ccalls("oco_create")[0]
-    assert kw["target"]["trigger_price"] == "410.00" and kw["stop_loss"]["trigger_price"] == "390.00"
+    r = m.smoke_test("ITC.NS")
+    assert r["passed"] and oco.client.ccalls("oco_create") == [] and oco.client.ccalls("oco_modify") == []
 
 
 def test_smoke_validates_reference_lookup_and_fill_units(env):                  # [Major 5]
@@ -1527,17 +1582,13 @@ def test_smoke_flags_fill_price_in_wrong_units(env):
     assert not r["passed"] and "units" in r["reason"]
 
 
-def test_smoke_unknown_oco_status_disables_oco_only(oco):
-    m = oco.make(smoke=False)
-    oco.client.ltp = 400.0
-    real, calls = oco.client.get_smart_order, []
-
-    def odd_first(**kw):                       # an unexpected status value on the first read
-        calls.append(1)
-        return {**real(**kw), "status": "LIVE?"} if len(calls) <= 2 else real(**kw)
-    oco.client.get_smart_order = odd_first
+def test_smoke_fails_when_the_sl_modify_does_not_verify(env):
+    m = env.make(smoke=False)
+    env.client.ltp = 400.0
+    env.client.modify_mode = "fail"                                             # → replace path
     r = m.smoke_test("ITC.NS")
-    assert r["passed"] and r["oco_ok"] is False and any("status" in f for f in r["oco_failures"])
+    assert not r["passed"] and "didn't verify" in r["reason"] and env.client.net("ITC") == 0
+    assert len(env.client.placed("SL")) == 2                                    # cancelled + replaced
 
 
 def test_smoke_buy_that_fills_late_is_sold(env):                                # [minor]
@@ -1807,22 +1858,22 @@ def test_shutdown_places_nothing_when_groww_is_flat(env):
     assert len(env.client.placed("SL")) == 1
 
 
-def test_smoke_requires_the_oco_to_be_listed_by_reference(oco):                  # [Major 2]
-    m = oco.make(smoke=False)
-    oco.client.ltp = 400.0
-    oco.client.get_smart_order_list = lambda **kw: {"smart_orders": []}
+def test_smoke_fails_when_the_protective_sl_is_rejected(env):
+    m = env.make(smoke=False)
+    env.client.ltp = 400.0
+    env.client.script = ["fill", ("reject_async", "RMS:Rule: Assigned basket  for entity account-X")]
     r = m.smoke_test("ITC.NS")
-    assert r["passed"] and r["oco_ok"] is False and any("smart_order_id" in f for f in r["oco_failures"])
-    assert any("OCOs OFF" in a for a in oco.alerts)
+    assert not r["passed"] and "protective SL not accepted [not_intraday_allowed]" in r["reason"]
+    assert env.client.net("ITC") == 0
 
 
-def test_smoke_requires_order_type_labels(oco):                                  # [Major 2]
-    m = oco.make(smoke=False)
-    oco.client.ltp = 400.0
-    real = oco.client.get_order_list
-    oco.client.get_order_list = lambda **kw: {"order_list": [{**r, "order_type": "L"} for r in real(**kw)["order_list"]]}
+def test_smoke_requires_order_type_labels(env):                                 # [Major 2]
+    m = env.make(smoke=False)
+    env.client.ltp = 400.0
+    real = env.client.get_order_list
+    env.client.get_order_list = lambda **kw: {"order_list": [{**r, "order_type": "L"} for r in real(**kw)["order_list"]]}
     r = m.smoke_test("ITC.NS")
-    assert r["passed"] and r["oco_ok"] is False and any("order_type" in f for f in r["oco_failures"])
+    assert not r["passed"] and "order_type" in r["reason"]
 
 
 def test_force_plain_sl_switch(oco, monkeypatch):                                # [Major 2]
@@ -2044,3 +2095,140 @@ def test_owned_net_excludes_manual_fills(env):                                  
     assert view["raw"] == -15 and view["net"] == 10 and view["orders_net"] == 10 and view["foreign"]
     env.mirror.reconcile(force=True)
     assert not any("mismatch" in a for a in env.alerts)
+
+
+# ── Real 1-share probe (Groww, 2026-10-15) ────────────────
+
+def test_sl_rejected_async_with_16448_is_retried_with_a_narrow_limit(env):     # probe S2b
+    env.client.script = ["fill", ("reject_async", "16448 : Difference between limit price and trigger "
+                                                  "price is beyond permissible range"), "open"]
+    t = _buy(env, stop=930.0)
+    sls = env.client.placed("SL")
+    assert len(sls) == 2 and sls[0]["price"] == 920.7 and sls[1]["price"] == 925.35   # 1% then 0.5%
+    leg = _leg(env, t)
+    assert leg["sl_order"] and leg["protect_kind"] == "sl" and leg["protect_status"] == "TRIGGER_PENDING"
+    assert any(r.get("category") == "invalid_sl_range" for r in _ledger(env) if r.get("event") == "error")
+
+
+def test_sl_rejected_for_another_reason_alerts_and_relies_on_the_paper_sweep(env):
+    env.client.script = ["fill", ("reject_async", "RMS:Margin Exceeds,Required:247740.10, Available:114999.09")]
+    t = _buy(env, stop=930.0)
+    leg = _leg(env, t)
+    assert leg["sl_order"] is None and leg["protect_kind"] == "rejected" and len(env.client.placed("SL")) == 1
+    assert any("NO protective stop" in a and "insufficient_margin" in a for a in env.alerts)
+    env.pf.execute_sell(t.id, 929.0, "stop", exit_type="stop_hit")             # the paper sweep exits
+    assert _leg(env, t)["status"] == "closed" and env.client.net("SBIN") == 0
+
+
+def test_level_change_modifies_sl_with_price_and_trigger_and_verifies(env):    # probe S2
+    t = _buy(env, stop=930.0)
+    env.pf.update_levels(t.id, stop_price=935.0)
+    (mod,) = env.client.ccalls("modify")
+    assert mod["trigger_price"] == 935.0 and mod["price"] == 925.65
+    o = env.client.orders[_leg(env, t)["sl_order"]]
+    assert o["order_status"] == "TRIGGER_PENDING" and o["trigger_price"] == 935.0
+    assert _leg(env, t)["protect_stop"] == 935.0 and len(env.client.placed("SL")) == 1
+
+
+def test_level_change_that_fails_replaces_the_sl(env):
+    t = _buy(env, stop=930.0)
+    old = _leg(env, t)["sl_order"]
+    env.client.modify_mode = "fail"
+    env.pf.update_levels(t.id, stop_price=935.0)
+    assert env.client.orders[old]["order_status"] == "CANCELLED"
+    new = _leg(env, t)["sl_order"]
+    assert new != old and env.client.orders[new]["trigger_price"] == 935.0
+    assert env.client.orders[new]["order_status"] == "TRIGGER_PENDING"
+
+
+def test_level_change_not_applied_is_detected_and_replaced(env):
+    t = _buy(env, stop=930.0)
+    old = _leg(env, t)["sl_order"]
+    env.client.orders[old]["_orig_trigger"] = 930.0
+    env.client.modify_mode = "ignored"                                          # accepted, never applied
+    env.pf.update_levels(t.id, stop_price=935.0)
+    new = _leg(env, t)["sl_order"]
+    assert new != old and env.client.orders[old]["order_status"] == "CANCELLED"
+    assert env.client.orders[new]["trigger_price"] == 935.0
+
+
+def test_synchronous_failed_place_is_a_definitive_rejection(env):              # probe R2
+    env.client.script = ["failed_sync"]
+    t = _buy(env)
+    leg = _leg(env, t)
+    assert leg["status"] == "rejected" and leg["category"] == "invalid_price_tick"
+    assert len(env.client.placed()) == 1                                        # no lookup-and-retry loop
+
+
+def test_cancelling_a_cancelled_order_is_decided_by_the_read(env):             # probe S2 "cancel again"
+    t = _buy(env)
+    sl = _leg(env, t)["sl_order"]
+    env.client.orders[sl]["order_status"] = "CANCELLED"                         # gone already
+    env.pf.execute_sell(t.id, 950.0, "exit")
+    assert _leg(env, t)["status"] == "closed" and env.client.net("SBIN") == 0
+
+
+@pytest.mark.parametrize("remark,cat", [
+    ("RMS:Rule: Assigned basket  for entity account-4407512387 across exchange across segment across product ",
+     "not_intraday_allowed"),
+    ("RMS:Rule: Check circuit limit including square off order exceeds : Circuit breach, Order Price :234.35,  "
+     "Low Price Range:235.35 High Price Range:287.65  for entity account-4407512387", "circuit_limit"),
+    ("RMS:Margin Exceeds,Required:247740.10, Available:114999.09 for entity account-4407512387",
+     "insufficient_margin"),
+    ("Choose price in multiples of the tick size.", "invalid_price_tick"),
+    ("16448 : Difference between limit price and trigger price is beyond permissible range", "invalid_sl_range"),
+])
+def test_probe_remarks_classify(remark, cat):                                    # probe R1-R3, M1, S2b
+    assert classify_error(remark) == cat
+
+
+def test_circuit_band_is_parsed_and_used_to_clamp(env):                         # probe R3
+    from agent.groww_broker import circuit_band
+    rem = ("RMS:Rule: Check circuit limit including square off order exceeds : Circuit breach, Order Price "
+           ":234.35,  Low Price Range:235.35 High Price Range:287.65  for entity account-X")
+    assert circuit_band(rem) == (235.35, 287.65)
+    env.client.script = [("reject_async", rem)]
+    env.client.ltp = None
+    env.md.prices["ITC.NS"] = 250.0
+    _buy(env, ticker="ITC.NS", qty=1, price=250.0, stop=245.0)                  # entry rejected: circuit
+    env.later(31)
+    env.mirror.tick()
+    assert env.mirror._quote("ITC")["upper"] == 287.65
+
+
+def test_probe_lookup_shapes(env):                                               # probe S1
+    t = _buy(env)
+    st = env.mirror.broker.order_by_reference(_leg(env, t)["entry_ref"])
+    assert st["id"] == _leg(env, t)["entry_order"] and st["status"] == "EXECUTED"
+    assert env.mirror.broker.order_by_reference("261016-Z-Z1") is None          # GA004
+
+
+def test_growwapi_imports_against_installed_deps():                               # Docker: --no-deps install
+    gw = pytest.importorskip("growwapi")
+    assert hasattr(gw.GrowwAPI, "place_order") and hasattr(gw.GrowwAPI, "get_order_status_by_reference")
+
+
+# ── e2e script guards ─────────────────────────────────────
+
+def _e2e():
+    import importlib.util
+    from pathlib import Path
+    path = Path(__file__).resolve().parent.parent / "scripts" / "live_mirror_e2e.py"
+    spec = importlib.util.spec_from_file_location("live_mirror_e2e", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.mark.parametrize("argv,msg", [
+    (["--yes-real-orders", "--smoke", "--symbol", "RELIANCE"], "not in"),
+    (["--smoke"], "--yes-real-orders"),
+    (["--yes-real-orders"], "exactly one"),
+])
+def test_e2e_script_guards(monkeypatch, argv, msg):
+    mod = _e2e()
+    monkeypatch.setattr(sys, "argv", ["live_mirror_e2e.py"] + argv)
+    with pytest.raises(SystemExit) as e:
+        mod.main()
+    assert msg in str(e.value)
+    assert mod.QTY == 1 and mod.ALLOWED_SYMBOLS == {"ITC"}

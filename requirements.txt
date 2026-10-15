@@ -29,8 +29,16 @@ pyyaml>=6.0
 kiteconnect>=5.0.0
 pyotp>=2.9.0
 
-# Groww Trade API (real orders for the live-mirror session only; data stays on Kite)
-growwapi>=1.5.0
+# Groww Trade API (real orders for the live-mirror session only; data stays on Kite).
+# growwapi itself is installed in the Dockerfile with --no-deps: it pins protobuf<6, pandas<3 and
+# certifi<2026, which would downgrade what tracing/yfinance use. These are its runtime deps
+# (verified importing with protobuf 7.x / pandas 3.x in the prod container).
+colorama
+clint
+nats-py
+nkeys
+pynacl
+aiohttp
 
 # Auth (Google OAuth + JWT + per-user API key encryption)
 google-auth>=2.30.0

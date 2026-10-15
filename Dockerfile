@@ -9,6 +9,8 @@ WORKDIR /app
 # Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+# Groww SDK without its pins (protobuf<6, pandas<3, certifi<2026); deps are in requirements.txt
+RUN pip install --no-cache-dir --no-deps growwapi==1.5.0
 
 # Copy application code
 COPY agent/ ./agent/
