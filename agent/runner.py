@@ -389,7 +389,7 @@ class TradingAgent:
 
             # Risk check (reuse buy limits — same capital at risk)
             approved, risk_msg = self.risk_manager.check_buy(
-                ticker, quantity, price, prices
+                ticker, quantity, price, prices, action="SHORT"
             )
             if not approved:
                 logger.warning(f"❌ Short rejected: {risk_msg}")

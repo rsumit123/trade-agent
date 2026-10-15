@@ -70,13 +70,10 @@ class PreMarketScanner:
         self._auth = auth  # KiteAuth handle for token-refresh-on-401
 
     def _is_auth_error(self, exc: Exception) -> bool:
-        msg = str(exc).lower()
-        return (
-            ("incorrect" in msg and ("api_key" in msg or "access_token" in msg))
-            or "tokenexception" in msg
-            or "token expired" in msg
-            or "just a moment" in msg  # Kite returning Cloudflare challenge on stale auth
-        )
+        # Not Cloudflare's "Just a moment" page: that's a WAF block on a symbol combination
+        # (bisected below), and re-logging in for it revoked every other agent's token.
+        from .kite_data import is_token_error
+        return is_token_error(exc)
 
     def _refresh_kite(self) -> bool:
         if not self._auth:

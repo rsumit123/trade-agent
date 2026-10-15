@@ -118,3 +118,45 @@ def test_scan_phase1_all_symbols_present(fast, monkeypatch, tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger=ps.logger.name):
         PreMarketScanner(k).scan_phase1()
     assert not any("incomplete" in r.getMessage() for r in caplog.records)
+
+
+class CountingAuth:
+    def __init__(self, client):
+        self.client, self.calls = client, 0
+
+    def refresh_client(self, rejected_token=None):
+        self.calls += 1
+        return self.client
+
+
+def test_cloudflare_block_never_relogs_in(fast):
+    auth = CountingAuth(CloudflareKite())
+    scanner = PreMarketScanner(CloudflareKite(), auth=auth)
+    got = scanner._fetch_ohlc_batch(1, [f"NSE:{sym(i)}" for i in range(40)])
+    assert len(got) == 40 and auth.calls == 0
+
+
+def test_token_exception_reauths_once(fast):
+    class TokenException(Exception):
+        pass
+
+    class Expired:
+        def ohlc(self, syms):
+            raise TokenException("Incorrect `api_key` or `access_token`.")
+
+    good = CloudflareKite()
+    auth = CountingAuth(good)
+    scanner = PreMarketScanner(Expired(), auth=auth)
+    got = scanner._fetch_ohlc_batch(1, ["NSE:ABAA", "NSE:ABAB"])
+    assert len(got) == 2 and auth.calls == 1 and scanner.kite is good
+
+
+def test_token_error_detection():
+    from agent.kite_data import is_token_error
+
+    class TokenException(Exception):
+        pass
+    assert is_token_error(TokenException("anything"))
+    assert is_token_error(Exception("Incorrect `api_key` or `access_token`."))
+    assert not is_token_error(Exception("Unknown Content-Type (text/html) with response: Just a moment..."))
+    assert not is_token_error(TimeoutError("read timed out"))

@@ -28,7 +28,7 @@ class RiskManager:
         return self.config.currency_symbol
 
     def check_buy(self, ticker: str, quantity: int, price: float,
-                  current_prices: Dict[str, float] = None) -> Tuple[bool, str]:
+                  current_prices: Dict[str, float] = None, action: str = "BUY") -> Tuple[bool, str]:
         """
         Validate a BUY order against all risk limits.
         Returns (approved: bool, reason: str)
@@ -78,7 +78,7 @@ class RiskManager:
                 f"exceeds -{self._sym}{daily_loss_limit:.0f}"
             )
 
-        logger.info(f"✅ BUY approved: {quantity}x {ticker} @ {self._sym}{price:.2f} ({self._sym}{trade_value:.0f})")
+        logger.info(f"✅ {action} approved: {quantity}x {ticker} @ {self._sym}{price:.2f} ({self._sym}{trade_value:.0f})")
         return True, "Approved"
 
     def check_sell(self, trade_id: int) -> Tuple[bool, str]:

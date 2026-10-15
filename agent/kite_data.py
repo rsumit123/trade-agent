@@ -35,6 +35,17 @@ HOLIDAY_CONFIRM_S = 600             # a holiday needs two empty probes this far 
 HOLIDAY_RECHECK_S = 1800            # and is re-checked this often, in case candles were just late
 
 
+def is_token_error(exc: Exception) -> bool:
+    """True only when Kite rejected the access token. Anything else (Cloudflare's
+    'Just a moment' HTML page, timeouts, 5xx) must not trigger a re-login: every
+    fresh login revokes the token every other agent is using."""
+    if any(c.__name__ == "TokenException" for c in type(exc).__mro__):
+        return True
+    msg = str(exc).lower()
+    return ("incorrect" in msg and ("api_key" in msg or "access_token" in msg)) \
+        or "tokenexception" in msg or "token expired" in msg
+
+
 def macd_state_from(hist: pd.Series) -> Optional[str]:
     """Honest MACD label from the histogram series (MACD - signal). A *cross* is
     the histogram changing sign: 'bullish_cross'/'bearish_cross' on the latest bar,
@@ -168,9 +179,7 @@ class KiteMarketData:
                     time.sleep(delay)
 
     def _is_auth_error(self, exc: Exception) -> bool:
-        msg = str(exc).lower()
-        return ("incorrect" in msg and ("api_key" in msg or "access_token" in msg)) \
-            or "tokenexception" in msg or "token expired" in msg
+        return is_token_error(exc)
 
     def _refresh_kite(self) -> bool:
         """Force a re-auth and swap in the new client. Returns True on success."""
