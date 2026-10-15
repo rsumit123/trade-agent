@@ -1,5 +1,12 @@
-"""Real-money mirror on Groww: every paper event becomes a real order, safely."""
+"""Real-money mirror on Groww: every paper event becomes a real order, safely.
+
+The fake broker is adversarial on purpose: lost replies, failed status reads,
+cancels that hang, partial EXECUTED fills, OCOs firing mid-exit, ambiguous
+position signs. Scenarios marked [B*]/[M*] reproduce the review findings on
+commit 1f5c864 and fail on that code."""
 import json
+import os
+import stat
 import sys
 import types
 from datetime import datetime
@@ -10,8 +17,10 @@ import pytest
 
 import agent.live_mirror as lm
 from agent.config import AgentConfig
-from agent.groww_broker import GrowwAuthError, GrowwBroker
-from agent.live_mirror import LiveMirror, LivePortfolio, live_enabled_for, order_charges, round_to_tick
+from agent.groww_broker import (GrowwBroker, GrowwInstruments, classify_error, is_ambiguous,
+                                is_auth_error, norm_order)
+from agent.live_mirror import (LiveMirror, LivePortfolio, LiveWorker, band_tick, live_enabled_for,
+                               order_charges, round_to_tick)
 from agent.market_presets import get_preset
 from agent.portfolio import Portfolio
 from agent.risk_manager import RiskManager
@@ -22,23 +31,43 @@ IST = ZoneInfo("Asia/Kolkata")
 
 # ── Fakes ─────────────────────────────────────────────────
 
-class AuthExc(Exception):
-    code = "401"
+class GErr(Exception):
+    """growwapi GrowwAPIException-shaped."""
+
+    def __init__(self, msg, code="GA001"):
+        super().__init__(msg)
+        self.msg, self.code = msg, code
 
 
 class FakeGrowwClient:
-    """growwapi.GrowwAPI-shaped. `script` holds per-order behaviours consumed in
-    placement order: 'fill', ('fill', price), ('partial', n), 'open', 'reject',
-    'reject_status', 'auth'. Unscripted: SL orders rest (TRIGGER_PENDING),
-    everything else fills at its limit (or `ltp` for MARKET)."""
+    """growwapi.GrowwAPI-shaped and adversarial. `script` holds per-order
+    behaviours consumed in placement order:
+      'fill' | ('fill', px) | ('partial', n) [OPEN, n filled] | ('exec_partial', n)
+      [EXECUTED but n < qty] | 'open' | 'reject' | ('reject_msg', msg) |
+      'reject_status' | 'auth' | ('after', how, exc) [accepted, then the reply
+      is lost: exc in 'timeout' | 'json' | 'conn'] | 'timeout_before'.
+    Unknown strings leave the order OPEN. Unscripted: SL orders rest
+    (TRIGGER_PENDING), everything else fills at its limit (MARKET at `ltp`)."""
 
-    def __init__(self, ltp=100.0):
+    def __init__(self, ltp=100.0, oco=False):
         self.ltp = ltp
-        self.orders = {}
-        self.calls = []
-        self.script = []
+        self.orders, self.smart = {}, {}
+        self.calls, self.script, self.oco_script = [], [], []
         self.n = 0
+        self.status_fail = 0             # next N order reads raise ConnectionError
+        self.cancel_mode = "ok"          # ok | stuck | raise
+        self.oco_cancel_mode = "ok"
+        self.qty_mode = "signed"         # signed | abs | only_signed | disagree
+        self.upper = self.lower = None
+        self.external = {}               # symbol → qty held outside the mirror (user's own trades)
+        if oco:
+            self.create_smart_order = self._create_smart_order
+            self.modify_smart_order = self._modify_smart_order
+            self.cancel_smart_order = self._cancel_smart_order
+            self.get_smart_order = self._get_smart_order
+            self.get_smart_order_list = self._get_smart_order_list
 
+    # orders
     def _next(self, order_type):
         if self.script:
             return self.script.pop(0)
@@ -47,64 +76,168 @@ class FakeGrowwClient:
     def place_order(self, timeout=None, **kw):
         self.calls.append(("place", kw))
         how = self._next(kw["order_type"])
+        lost = None
+        if isinstance(how, tuple) and how[0] == "after":
+            how, lost = how[1], how[2]
         if how == "reject":
-            raise RuntimeError("RMS: MIS not allowed for this scrip")
+            raise GErr("RMS: MIS product not allowed for this scrip")
+        if isinstance(how, tuple) and how[0] == "reject_msg":
+            raise GErr(how[1])
         if how == "auth":
-            raise AuthExc("401")
+            raise GErr("Invalid access token", code="GA005")
+        if how == "timeout_before":
+            raise TimeoutError("read timed out")
         self.n += 1
         oid = f"G{self.n}"
-        o = {"groww_order_id": oid, "trading_symbol": kw["trading_symbol"], "quantity": kw["quantity"],
+        o = {"groww_order_id": oid, "order_reference_id": kw.get("order_reference_id"),
+             "trading_symbol": kw["trading_symbol"], "quantity": kw["quantity"],
              "transaction_type": kw["transaction_type"], "order_type": kw["order_type"],
              "price": kw.get("price"), "trigger_price": kw.get("trigger_price"),
-             "filled_quantity": 0, "average_fill_price": None, "order_status": "OPEN"}
-        fill_px = kw.get("price") if kw["order_type"] != "MARKET" else self.ltp
+             "filled_quantity": 0, "average_fill_price": None, "order_status": "OPEN", "remark": ""}
+        px = kw.get("price") if kw["order_type"] != "MARKET" else self.ltp
         if how == "fill" or (isinstance(how, tuple) and how[0] == "fill"):
-            px = how[1] if isinstance(how, tuple) else fill_px
-            o.update(order_status="EXECUTED", filled_quantity=kw["quantity"], average_fill_price=px)
+            o.update(order_status="EXECUTED", filled_quantity=kw["quantity"],
+                     average_fill_price=how[1] if isinstance(how, tuple) else px)
         elif isinstance(how, tuple) and how[0] == "partial":
-            o.update(filled_quantity=how[1], average_fill_price=fill_px)
+            o.update(filled_quantity=how[1], average_fill_price=px)
+        elif isinstance(how, tuple) and how[0] == "exec_partial":
+            o.update(order_status="EXECUTED", filled_quantity=how[1], average_fill_price=px)
         elif how == "reject_status":
-            o.update(order_status="REJECTED", remark="Insufficient margin")
+            o.update(order_status="REJECTED", remark="Insufficient margin available")
         elif how == "open" and kw["order_type"] == "SL":
             o.update(order_status="TRIGGER_PENDING")
         self.orders[oid] = o
+        if lost == "timeout":
+            raise TimeoutError("read timed out")
+        if lost == "json":
+            raise json.JSONDecodeError("Expecting value", "<html>502</html>", 0)
+        if lost == "conn":
+            raise ConnectionError("connection reset")
         return {"groww_order_id": oid, "order_status": o["order_status"]}
 
-    def get_order_detail(self, groww_order_id, segment, timeout=None):
-        return dict(self.orders[groww_order_id])
+    def get_order_detail(self, **kw):
+        if self.status_fail:
+            self.status_fail -= 1
+            raise ConnectionError("reset")
+        return dict(self.orders[kw["groww_order_id"]])
+
+    def get_order_status_by_reference(self, segment=None, order_reference_id=None, timeout=None):
+        for o in self.orders.values():
+            if o.get("order_reference_id") == order_reference_id:
+                return {k: o[k] for k in ("groww_order_id", "order_status", "filled_quantity",
+                                          "order_reference_id")}
+        raise GErr("Order not found", code="404")
+
+    def get_order_list(self, page=0, page_size=25, segment=None, timeout=None):
+        rows = list(self.orders.values())[page * page_size:(page + 1) * page_size]
+        return {"order_list": [dict(r) for r in rows]}
 
     def cancel_order(self, groww_order_id, segment, timeout=None):
         self.calls.append(("cancel", groww_order_id))
         o = self.orders[groww_order_id]
-        if o["order_status"] in ("EXECUTED", "REJECTED", "CANCELLED"):
-            raise RuntimeError("order not open")
-        o["order_status"] = "CANCELLED"
+        if self.cancel_mode == "raise":
+            raise GErr("GA000 internal error", code="GA000")
+        if o["order_status"] in ("EXECUTED", "REJECTED", "CANCELLED") and o["filled_quantity"] >= o["quantity"]:
+            raise GErr("Order is not open")
+        if self.cancel_mode == "stuck":
+            o["order_status"] = "CANCELLATION_REQUESTED"
+        else:
+            o["order_status"] = "CANCELLED"
         return {"groww_order_id": groww_order_id, "order_status": "CANCELLATION_REQUESTED"}
 
     def modify_order(self, timeout=None, **kw):
         self.calls.append(("modify", kw))
-        o = self.orders[kw["groww_order_id"]]
-        o.update(price=kw.get("price"), trigger_price=kw.get("trigger_price"))
+        self.orders[kw["groww_order_id"]].update(price=kw.get("price"), trigger_price=kw.get("trigger_price"))
         return {"groww_order_id": kw["groww_order_id"], "order_status": "OPEN"}
 
     def fire_stop(self, oid, price):
         o = self.orders[oid]
         o.update(order_status="EXECUTED", filled_quantity=o["quantity"], average_fill_price=price)
 
-    def get_positions_for_user(self, segment=None, timeout=None):
-        net = {}
-        for o in self.orders.values():
-            q = o["filled_quantity"] * (1 if o["transaction_type"] == "BUY" else -1)
-            net[o["trading_symbol"]] = net.get(o["trading_symbol"], 0) + q
-        return {"positions": [{"trading_symbol": s, "quantity": q, "exchange": "NSE", "product": "MIS"}
-                              for s, q in net.items()]}
+    # smart orders (OCO)
+    def _create_smart_order(self, timeout=None, **kw):
+        self.calls.append(("oco_create", kw))
+        how = self.oco_script.pop(0) if self.oco_script else "ok"
+        if how == "reject":
+            raise GErr("OCO not allowed for this instrument")
+        sid = f"oco_{len(self.smart) + 1}"
+        self.smart[sid] = {**kw, "smart_order_id": sid, "status": "ACTIVE"}
+        if how == "timeout_after":
+            raise TimeoutError("read timed out")
+        return {"smart_order_id": sid, "status": "ACTIVE"}
 
-    def placed(self, order_type=None):
-        return [kw for c, kw in self.calls if c == "place" and (order_type is None or kw["order_type"] == order_type)]
+    def _modify_smart_order(self, timeout=None, **kw):
+        self.calls.append(("oco_modify", kw))
+        s = self.smart[kw["smart_order_id"]]
+        s.update(target={**s["target"], **kw["target"]}, stop_loss={**s["stop_loss"], **kw["stop_loss"]},
+                 quantity=kw.get("quantity", s["quantity"]))
+        return {"smart_order_id": kw["smart_order_id"], "status": s["status"]}
+
+    def _cancel_smart_order(self, segment=None, smart_order_type=None, smart_order_id=None, timeout=None):
+        self.calls.append(("oco_cancel", smart_order_id))
+        s = self.smart[smart_order_id]
+        if s["status"] == "ACTIVE":
+            s["status"] = "ACTIVE" if self.oco_cancel_mode == "stuck" else "CANCELLED"
+        return {"smart_order_id": smart_order_id, "status": s["status"]}
+
+    def _get_smart_order(self, segment=None, smart_order_type=None, smart_order_id=None, timeout=None):
+        return dict(self.smart[smart_order_id])
+
+    def _get_smart_order_list(self, timeout=None, **kw):
+        return {"smart_orders": [dict(s) for s in self.smart.values()]}
+
+    def fire_oco(self, sid, leg="stop_loss", price=None):
+        s = self.smart[sid]
+        self.n += 1
+        oid = f"G{self.n}"
+        self.orders[oid] = {"groww_order_id": oid, "order_reference_id": "OCOCHILD1",
+                            "trading_symbol": s["trading_symbol"], "quantity": s["quantity"],
+                            "transaction_type": s["transaction_type"], "order_type": "MARKET",
+                            "filled_quantity": s["quantity"], "order_status": "EXECUTED",
+                            "average_fill_price": price or float(s[leg]["trigger_price"]), "remark": ""}
+        s["status"] = "COMPLETED"
+        return oid
+
+    # positions / quotes
+    def net(self, sym):
+        q = self.external.get(sym, 0)
+        for o in self.orders.values():
+            if o["trading_symbol"] == sym:
+                q += o["filled_quantity"] * (1 if o["transaction_type"] == "BUY" else -1)
+        return q
+
+    def get_positions_for_user(self, segment=None, timeout=None):
+        syms = {o["trading_symbol"] for o in self.orders.values()} | set(self.external)
+        rows = []
+        for s in sorted(syms):
+            net = self.net(s)
+            credit, debit = (net, 0) if net >= 0 else (0, -net)
+            row = {"trading_symbol": s, "exchange": "NSE", "product": "MIS"}
+            if self.qty_mode == "signed":
+                row.update(quantity=net, credit_quantity=credit, debit_quantity=debit)
+            elif self.qty_mode == "abs":
+                row.update(quantity=abs(net), credit_quantity=credit, debit_quantity=debit)
+            elif self.qty_mode == "only_signed":
+                row.update(quantity=net)
+            elif self.qty_mode == "disagree":
+                row.update(quantity=net + 3, credit_quantity=credit, debit_quantity=debit)
+            rows.append(row)
+        return {"positions": rows}
+
+    def get_quote(self, trading_symbol=None, exchange=None, segment=None, timeout=None):
+        return {"last_price": self.ltp, "upper_circuit_limit": self.upper, "lower_circuit_limit": self.lower}
+
+    def placed(self, order_type=None, side=None):
+        return [kw for c, kw in self.calls if c == "place"
+                and (order_type is None or kw["order_type"] == order_type)
+                and (side is None or kw["transaction_type"] == side)]
+
+    def ccalls(self, name):
+        return [kw for c, kw in self.calls if c == name]
 
 
 class FakeMD:
-    def __init__(self, prices=None, tick=0.05):
+    def __init__(self, prices=None, tick=None):
         self.prices, self.tick = prices or {}, tick
 
     def tick_size(self, ticker):
@@ -117,19 +250,30 @@ class FakeMD:
         return True
 
 
-NOW = datetime(2026, 10, 16, 10, 0, tzinfo=IST)
+CSV = """exchange,exchange_token,trading_symbol,groww_symbol,name,instrument_type,segment,series,isin,tick_size,freeze_quantity,is_reserved,buy_allowed,sell_allowed,internal_trading_symbol,is_intraday
+NSE,1,SBIN,NSE-SBIN,SBI,EQ,CASH,EQ,X,0.05,0,0,1,1,SBIN,1
+NSE,2,X,NSE-X,X,EQ,CASH,EQ,X,0.05,0,0,1,1,X,1
+NSE,3,ITC,NSE-ITC,ITC,EQ,CASH,EQ,X,0.05,0,0,1,1,ITC,1
+NSE,4,SEJALLTD,NSE-SEJAL,Sejal,EQ,CASH,EQ,X,0.01,0,0,1,1,SEJALLTD,0
+NSE,5,NOSHORT,NSE-NS,NoShort,EQ,CASH,EQ,X,0.05,0,0,1,0,NOSHORT,1
+NSE,6,MRF,NSE-MRF,MRF,EQ,CASH,EQ,X,5.0,0,0,1,1,MRF,1
+NSE,7,SBIN,BSE-SBIN,SBI,EQ,CASH,EQ,X,0.05,0,0,1,1,SBIN,0
+"""
+CSV = CSV.replace("NSE,7,SBIN,BSE", "BSE,7,SBIN,BSE")
+
+NOW = datetime(2026, 10, 16, 10, 0, tzinfo=IST)     # a Friday
 
 
 @pytest.fixture
 def env(tmp_path):
-    client = FakeGrowwClient()
-    clock = {"t": 0.0}
+    client = FakeGrowwClient(ltp=940.0)
+    clock = {"t": 0.0, "now": NOW}
     alerts = []
     md = FakeMD({"SBIN.NS": 940.0, "ITC.NS": 400.0})
 
-    def make(smoke=True, now=NOW, **kw):
-        m = LiveMirror(GrowwBroker(client=client), "nse_opus_live", tmp_path / "s", market_data=md,
-                       alert=alerts.append, now=lambda: now,
+    def make(smoke=True, oco=None, instruments=None, **kw):
+        m = LiveMirror(GrowwBroker(client=client, token_path=tmp_path / "tok"), "nse_opus_live", tmp_path / "s",
+                       market_data=md, instruments=instruments, alert=alerts.append, now=lambda: clock["now"],
                        sleep=lambda s: clock.__setitem__("t", clock["t"] + s),
                        monotonic=lambda: clock["t"], **kw)
         if smoke:
@@ -138,123 +282,332 @@ def env(tmp_path):
 
     mirror = make()
     pf = LivePortfolio(str(tmp_path / "t.db"), 500_000, mirror)
-    return NS(client=client, mirror=mirror, pf=pf, alerts=alerts, md=md, make=make, tmp=tmp_path)
+
+    def later(s):
+        clock["t"] += s
+    return NS(client=client, mirror=mirror, pf=pf, alerts=alerts, md=md, make=make, tmp=tmp_path,
+              clock=clock, later=later)
 
 
 def _ledger(env):
     return [json.loads(l) for l in (env.tmp / "s" / "live_orders.jsonl").read_text().splitlines()]
 
 
+def _leg(env, t, m=None):
+    return (m or env.mirror).legs[str(t.id)]
+
+
+def _buy(env, qty=10, stop=930.0, target=None, ticker="SBIN.NS", price=940.0, pf=None):
+    return (pf or env.pf).execute_buy(ticker, qty, price, "intraday", stop_price=stop, target_price=target)
+
+
 # ── Entries ───────────────────────────────────────────────
 
 def test_long_entry_fills_and_places_protective_stop(env):
-    t = env.pf.execute_buy("SBIN.NS", 10, 940.0, "intraday", stop_price=930.0, target_price=960.0)
+    t = _buy(env)
     entry, stop = env.client.placed()
     assert entry["transaction_type"] == "BUY" and entry["order_type"] == "LIMIT" and entry["product"] == "MIS"
-    assert entry["trading_symbol"] == "SBIN" and entry["quantity"] == 10
-    assert entry["price"] == round_to_tick(940 * 1.003, 0.05, up=True) == 942.85
-    assert stop["order_type"] == "SL" and stop["transaction_type"] == "SELL"
-    assert stop["trigger_price"] == 930.0 and stop["price"] == 920.7
-    leg = env.mirror.legs[str(t.id)]
+    assert entry["trading_symbol"] == "SBIN" and entry["quantity"] == 10 and entry["price"] == 942.85
+    assert entry["order_reference_id"] == f"261016-{t.id}-E1"
+    assert stop["order_type"] == "SL" and stop["transaction_type"] == "SELL" and stop["trigger_price"] == 930.0
+    leg = _leg(env, t)
     assert leg["status"] == "open" and leg["filled_qty"] == 10 and leg["entry_fill"] == 942.85
-    assert leg["sl_order"] == "G2"
+
+
+def test_reference_ids_follow_groww_format(env):
+    t = _buy(env)
+    for kw in env.client.placed():
+        ref = kw["order_reference_id"]
+        assert 8 <= len(ref) <= 20 and ref.count("-") <= 2 and ref.replace("-", "").isalnum()
+    assert len({kw["order_reference_id"] for kw in env.client.placed()}) == len(env.client.placed())
+
+
+def test_pending_leg_is_written_before_the_order_is_sent(env):          # [M5]
+    seen = []
+    orig = env.client.place_order
+
+    def spy(timeout=None, **kw):
+        legs = [r for r in _ledger(env) if r["event"] == "leg"]
+        seen.append(legs[-1]["leg"]["status"] if legs else None)
+        return orig(timeout=timeout, **kw)
+    env.client.place_order = spy
+    _buy(env)
+    assert seen[0] == "pending"
 
 
 def test_short_entry_sells_below_and_stop_buys_above(env):
     env.pf.execute_short("SBIN.NS", 5, 940.0, stop_price=950.0, target_price=920.0)
     entry, stop = env.client.placed()
     assert entry["transaction_type"] == "SELL" and entry["price"] == 937.15
-    assert stop["transaction_type"] == "BUY" and stop["trigger_price"] == 950.0 and stop["price"] == 959.5
+    assert stop["transaction_type"] == "BUY" and stop["trigger_price"] == 950.0
 
 
-def test_partial_fill_keeps_filled_qty_and_stop_covers_only_that(env):
+def test_partial_fill_cancels_rest_and_protects_only_the_fill(env):
     env.client.script = [("partial", 4)]
-    t = env.pf.execute_buy("SBIN.NS", 10, 940.0, "intraday", stop_price=930.0)
-    leg = env.mirror.legs[str(t.id)]
+    t = _buy(env)
+    env.later(31)
+    env.mirror.tick()
+    leg = _leg(env, t)
     assert leg["status"] == "open" and leg["filled_qty"] == 4
-    assert ("cancel", "G1") in env.client.calls
     assert env.client.placed("SL")[0]["quantity"] == 4
-    assert any("PARTIAL 4/10" in a for a in env.alerts)
 
 
-def test_unfilled_entry_is_missed_and_later_events_do_nothing(env):
+def test_executed_with_partial_fill_is_not_final(env):                  # [M3]
+    env.client.script = [("exec_partial", 6)]
+    t = _buy(env)
+    assert _leg(env, t)["status"] == "entry_working"                     # EXECUTED 6/10 is not final
+    env.later(31)
+    env.mirror.tick()
+    assert ("cancel", "G1") in env.client.calls
+    assert _leg(env, t)["status"] == "open" and _leg(env, t)["filled_qty"] == 6
+
+
+def test_unfilled_entry_is_missed_only_after_a_final_cancel(env):
     env.client.script = ["open"]
-    t = env.pf.execute_buy("SBIN.NS", 10, 940.0, "intraday", stop_price=930.0)
-    assert env.mirror.legs[str(t.id)]["status"] == "missed"
+    t = _buy(env)
+    assert _leg(env, t)["status"] == "entry_working"
+    env.later(31)
+    env.mirror.tick()
+    assert _leg(env, t)["status"] == "missed"
     n = len(env.client.calls)
     env.pf.update_levels(t.id, stop_price=935.0)
     env.pf.execute_sell(t.id, 950.0, "exit")
-    assert len(env.client.calls) == n              # no stop, no exit order
-    assert env.pf.get_open_positions() == []        # paper unaffected
+    assert len(env.client.calls) == n and env.pf.get_open_positions() == []
 
 
-def test_rejected_entry_is_recorded_and_paper_still_books(env):
+def test_status_read_failure_is_unknown_not_missed(env):                # [B1] repro A
+    env.client.status_fail = 1
+    t = _buy(env)
+    assert _leg(env, t)["status"] == "unknown"
+    assert any("UNKNOWN" in a for a in env.alerts)
+    env.mirror.tick()
+    leg = _leg(env, t)
+    assert leg["status"] == "open" and leg["filled_qty"] == 10 and leg["sl_order"]
+
+
+def test_failed_entry_cancel_keeps_resolving_and_later_fill_is_tracked(env):   # [B4] repro D
+    env.client.script = ["x"]                      # stays OPEN
+    env.client.cancel_mode = "raise"
+    t = _buy(env)
+    env.later(31)
+    env.mirror.tick()
+    assert _leg(env, t)["status"] in ("entry_working", "unknown")         # never "missed"
+    env.client.orders["G1"].update(order_status="EXECUTED", filled_quantity=10, average_fill_price=940.5)
+    env.mirror.tick()
+    assert _leg(env, t)["status"] == "open" and _leg(env, t)["entry_fill"] == 940.5
+    env.mirror.reconcile(force=True)
+    assert not env.mirror._mismatch_alerted
+
+
+def test_entry_reply_lost_after_acceptance_resolves_by_reference(env):   # [B2]
+    env.client.script = [("after", "fill", "json")]
+    t = _buy(env)
+    assert len(env.client.placed("LIMIT")) == 1
+    assert _leg(env, t)["status"] == "open" and _leg(env, t)["entry_order"] == "G1"
+
+
+def test_entry_never_reached_groww_is_missed_after_lookups(env):
+    env.client.script = ["timeout_before"]
+    t = _buy(env)
+    for _ in range(3):
+        env.later(5)
+        env.mirror.tick()
+    assert _leg(env, t)["status"] == "missed" and len(env.client.placed()) == 1
+
+
+def test_definitive_rejection_is_classified_and_recorded(env):
     env.client.script = ["reject"]
-    t = env.pf.execute_buy("SBIN.NS", 10, 940.0, "intraday", stop_price=930.0)
-    assert t.id and env.mirror.legs[str(t.id)]["status"] == "rejected"
+    t = _buy(env)
+    leg = _leg(env, t)
+    assert leg["status"] == "rejected" and leg["category"] == "not_intraday_allowed"
     assert len(env.pf.get_open_positions()) == 1
-    err = [r for r in _ledger(env) if r.get("event") == "order"][0]
-    assert err["status"] == "error" and "MIS not allowed" in err["error"]
+    err = [r for r in _ledger(env) if r.get("event") == "order" and r.get("status") == "rejected"][0]
+    assert err["category"] == "not_intraday_allowed" and "MIS product not allowed" in err["message"]
 
 
 # ── Exits ─────────────────────────────────────────────────
 
 def test_exit_cancels_stop_then_sells(env):
-    t = env.pf.execute_buy("SBIN.NS", 10, 940.0, "intraday", stop_price=930.0)
+    t = _buy(env)
+    env.client.ltp = 950.0
     env.pf.execute_sell(t.id, 950.0, "take profit")
     assert ("cancel", "G2") in env.client.calls
-    exit_order = env.client.placed()[-1]
-    assert exit_order["transaction_type"] == "SELL" and exit_order["quantity"] == 10
-    assert exit_order["price"] == round_to_tick(950 * 0.995, 0.05, up=False)
-    leg = env.mirror.legs[str(t.id)]
-    assert leg["status"] == "closed" and leg["paper_exit"] == 950.0
-    assert env.client.get_positions_for_user()["positions"][0]["quantity"] == 0
+    sell = env.client.placed("LIMIT", "SELL")[0]
+    assert sell["quantity"] == 10 and sell["price"] == round_to_tick(950 * 0.995, 0.05, up=False)
+    assert _leg(env, t)["status"] == "closed" and env.client.net("SBIN") == 0
 
 
-def test_stop_already_filled_at_broker_means_no_second_exit(env):
-    t = env.pf.execute_buy("SBIN.NS", 10, 940.0, "intraday", stop_price=930.0)
+def test_exit_reply_lost_does_not_duplicate_or_flip(env):               # [B2] repro B
+    t = _buy(env)
+    env.client.script = [("after", "fill", "timeout")]
+    env.pf.execute_sell(t.id, 950.0, "exit")
+    assert len(env.client.placed("LIMIT", "SELL")) == 1
+    assert _leg(env, t)["status"] == "closed" and env.client.net("SBIN") == 0
+
+
+def test_exit_waits_while_stop_cancel_is_pending_then_records_stop_fill(env):   # [B3] repro C
+    t = _buy(env)
+    env.client.cancel_mode = "stuck"
+    env.pf.execute_sell(t.id, 931.0, "stop", exit_type="stop_hit")
+    assert env.client.placed("LIMIT", "SELL") == [] and _leg(env, t)["status"] == "exiting"
     env.client.fire_stop("G2", 929.5)
-    n_places = len(env.client.placed())
-    env.pf.execute_sell(t.id, 929.0, "stop", exit_type="stop_hit")
-    assert len(env.client.placed()) == n_places           # nothing new sent
-    leg = env.mirror.legs[str(t.id)]
+    env.mirror.tick()
+    leg = _leg(env, t)
     assert leg["status"] == "closed" and leg["exit_fill"] == 929.5
-    assert env.client.get_positions_for_user()["positions"][0]["quantity"] == 0   # not flipped short
+    assert env.client.placed("LIMIT", "SELL") == [] and env.client.net("SBIN") == 0
 
 
-def test_exit_escalates_then_market(env):
-    t = env.pf.execute_buy("SBIN.NS", 10, 940.0, "intraday", stop_price=930.0)
-    env.client.script = ["open", "open", ("partial", 3), "fill"]   # 3 limits, then MARKET
+def test_stop_already_filled_means_no_second_exit(env):
+    t = _buy(env)
+    env.client.fire_stop("G2", 929.5)
+    env.pf.execute_sell(t.id, 929.0, "stop", exit_type="stop_hit")
+    assert env.client.placed("LIMIT", "SELL") == [] and _leg(env, t)["exit_fill"] == 929.5
+    assert env.client.net("SBIN") == 0
+
+
+def test_exit_is_capped_at_the_broker_position(env):                    # cross-cutting
+    t = _buy(env)
+    env.client.external["SBIN"] = -4               # 4 shares already sold outside the mirror
+    env.pf.execute_sell(t.id, 950.0, "exit")
+    assert env.client.placed("LIMIT", "SELL")[0]["quantity"] == 6
+    assert env.client.net("SBIN") == 0
+
+
+@pytest.mark.parametrize("external", [-10, -15])
+def test_no_exit_when_broker_is_flat_or_opposite(env, external):
+    t = _buy(env)
+    env.client.external["SBIN"] = external
+    env.pf.execute_sell(t.id, 950.0, "exit")
+    assert env.client.placed("LIMIT", "SELL") == [] and _leg(env, t)["status"] == "closed"
+    assert "unknown" in _leg(env, t)["note"]
+
+
+def test_manual_position_in_same_symbol_is_never_touched(env):
+    env.client.external["SBIN"] = 15              # user's own shares
+    t = _buy(env)
+    env.pf.execute_sell(t.id, 950.0, "exit")
+    assert env.client.placed("LIMIT", "SELL")[0]["quantity"] == 10 and env.client.net("SBIN") == 15
+
+
+def test_exit_reprices_then_market_across_ticks(env):                   # [M4]
+    t = _buy(env)
+    env.client.script = ["open", "open", ("partial", 3), "fill"]
     env.client.ltp = 948.0
     env.pf.execute_sell(t.id, 950.0, "exit")
-    exits = env.client.placed()[2:]
+    for _ in range(4):
+        env.later(11)
+        env.mirror.tick()
+    exits = env.client.placed(side="SELL")[1:]       # skip the protective SL
     assert [e["order_type"] for e in exits] == ["LIMIT", "LIMIT", "LIMIT", "MARKET"]
     assert [e["quantity"] for e in exits] == [10, 10, 10, 7]
     assert exits[0]["price"] > exits[1]["price"] > exits[2]["price"]
-    leg = env.mirror.legs[str(t.id)]
-    assert leg["status"] == "closed"
-    assert leg["exit_fill"] == pytest.approx((3 * exits[2]["price"] + 7 * 948.0) / 10, abs=1e-3)
+    assert _leg(env, t)["status"] == "closed" and env.client.net("SBIN") == 0
 
 
-def test_exit_without_market_leaves_remaining_open_and_alerts(env):
+def test_exit_stuck_at_deadline_alerts_loudly(env):
+    t = _buy(env)
     env.mirror.market_ok = False
-    t = env.pf.execute_buy("SBIN.NS", 10, 940.0, "intraday", stop_price=930.0)
-    env.client.script = ["open", "open", "open"]
+    env.client.script = ["open"] * 10
     env.pf.execute_sell(t.id, 950.0, "exit")
-    leg = env.mirror.legs[str(t.id)]
-    assert leg["status"] == "open" and leg["filled_qty"] == 10
-    assert any("STILL OPEN" in a for a in env.alerts)
+    env.clock["now"] = NOW.replace(hour=15, minute=19, second=5)
+    for _ in range(5):
+        env.later(11)
+        env.mirror.tick()
+    assert _leg(env, t)["status"] == "stuck" and any("15:19" in a for a in env.alerts)
 
 
-def test_update_levels_modifies_broker_stop(env):
-    t = env.pf.execute_buy("SBIN.NS", 10, 940.0, "intraday", stop_price=930.0)
-    env.pf.update_levels(t.id, stop_price=936.0)
-    (mod,) = [kw for c, kw in env.client.calls if c == "modify"]
-    assert mod["groww_order_id"] == "G2" and mod["trigger_price"] == 936.0 and mod["quantity"] == 10
-    assert mod["order_type"] == "SL"
+def test_kill_switch_still_lets_exits_out(env):
+    t = _buy(env)
+    (env.tmp / "s" / "LIVE_KILL").write_text("")
+    env.pf.execute_sell(t.id, 950.0, "exit")
+    assert _leg(env, t)["status"] == "closed"
 
 
-# ── Guards ────────────────────────────────────────────────
+def test_paper_exit_during_working_entry_exits_once_filled(env):
+    env.client.script = ["open"]
+    t = _buy(env)
+    env.pf.execute_sell(t.id, 941.0, "changed mind")
+    assert _leg(env, t)["exit_requested"]
+    env.client.orders["G1"].update(order_status="EXECUTED", filled_quantity=10, average_fill_price=941.0)
+    env.mirror.tick()
+    assert _leg(env, t)["status"] == "closed" and env.client.net("SBIN") == 0
+
+
+# ── OCO ───────────────────────────────────────────────────
+
+@pytest.fixture
+def oco(env):
+    env.client.create_smart_order = env.client._create_smart_order
+    env.client.modify_smart_order = env.client._modify_smart_order
+    env.client.cancel_smart_order = env.client._cancel_smart_order
+    env.client.get_smart_order = env.client._get_smart_order
+    env.client.get_smart_order_list = env.client._get_smart_order_list
+    return env
+
+
+def test_oco_protects_with_market_target_and_sl_m_stop(oco):
+    t = _buy(oco, stop=930.0, target=960.0)
+    (kw,) = oco.client.ccalls("oco_create")
+    assert kw["smart_order_type"] == "OCO" and kw["product_type"] == "MIS" and kw["segment"] == "CASH"
+    assert kw["transaction_type"] == "SELL" and kw["quantity"] == 10 and kw["net_position_quantity"] == 10
+    assert kw["target"] == {"trigger_price": "960.00", "order_type": "MARKET", "price": None}
+    assert kw["stop_loss"] == {"trigger_price": "930.00", "order_type": "SL_M", "price": None}
+    assert _leg(oco, t)["protect_kind"] == "oco" and oco.client.placed("SL") == []
+
+
+def test_short_oco_buys_back_with_negative_net(oco):
+    oco.pf.execute_short("SBIN.NS", 5, 940.0, stop_price=950.0, target_price=920.0)
+    (kw,) = oco.client.ccalls("oco_create")
+    assert kw["transaction_type"] == "BUY" and kw["net_position_quantity"] == -5
+
+
+def test_update_levels_modifies_both_oco_triggers(oco):
+    t = _buy(oco, stop=930.0, target=960.0)
+    oco.pf.update_levels(t.id, stop_price=936.0, target_price=965.0)
+    (mod,) = oco.client.ccalls("oco_modify")
+    assert mod["stop_loss"] == {"trigger_price": "936.00"} and mod["target"] == {"trigger_price": "965.00"}
+    oco.pf.update_levels(t.id, stop_price=936.0)                     # unchanged → no call
+    assert len(oco.client.ccalls("oco_modify")) == 1
+    oco.pf.update_levels(t.id, stop_price=938.5)                     # trail the stop only
+    assert oco.client.ccalls("oco_modify")[-1]["stop_loss"] == {"trigger_price": "938.50"}
+    assert oco.client.ccalls("oco_modify")[-1]["target"] == {"trigger_price": "965.00"}
+
+
+def test_oco_fired_before_exit_is_recorded_without_a_second_exit(oco):
+    t = _buy(oco, stop=930.0, target=960.0)
+    oco.client.fire_oco("oco_1", "target", price=960.4)
+    oco.pf.execute_sell(t.id, 960.0, "target", exit_type="target_hit")
+    leg = _leg(oco, t)
+    assert oco.client.placed(side="SELL") == [] and leg["status"] == "closed"
+    assert leg["exit_fill"] == 960.4 and leg["exit_fills"][0]["source"] == "oco"
+    assert oco.client.net("SBIN") == 0
+
+
+def test_oco_triggering_between_cancel_and_exit_does_not_flip(oco):
+    t = _buy(oco, stop=930.0, target=960.0)
+    oco.client.oco_cancel_mode = "stuck"
+    oco.pf.execute_sell(t.id, 931.0, "stop", exit_type="stop_hit")
+    assert _leg(oco, t)["status"] == "exiting" and oco.client.placed(side="SELL") == []
+    oco.client.fire_oco("oco_1", "stop_loss", price=929.8)
+    oco.mirror.tick()
+    assert _leg(oco, t)["status"] == "closed" and oco.client.net("SBIN") == 0
+    assert oco.client.placed(side="SELL") == []
+
+
+def test_oco_failure_falls_back_to_plain_stop(oco):
+    oco.client.oco_script = ["reject"]
+    t = _buy(oco, stop=930.0, target=960.0)
+    assert _leg(oco, t)["protect_kind"] == "sl" and len(oco.client.placed("SL")) == 1
+    assert any("plain stop" in a for a in oco.alerts)
+
+
+def test_oco_reply_lost_is_found_not_duplicated(oco):
+    oco.client.oco_script = ["timeout_after"]
+    t = _buy(oco, stop=930.0, target=960.0)
+    assert _leg(oco, t)["sl_order"] == "oco_1" and len(oco.client.smart) == 1 and oco.client.placed("SL") == []
+
+
+# ── Guards / eligibility ──────────────────────────────────
 
 def _session(sid="nse_opus_live", broker="groww", backtest=False):
     return NS(session_id=sid, live_broker=broker, backtest_mode=backtest)
@@ -263,182 +616,234 @@ def _session(sid="nse_opus_live", broker="groww", backtest=False):
 def test_live_enabled_needs_all_three_gates(monkeypatch):
     monkeypatch.setenv("GROWW_LIVE_SESSIONS", "nse_opus_live, nse_opus")
     assert live_enabled_for(_session()) is True
-    assert live_enabled_for(_session(sid="nse_opus")) is False         # env-listed, not hard-allowlisted
+    assert live_enabled_for(_session(sid="nse_opus")) is False
     assert live_enabled_for(_session(broker=None)) is False
     assert live_enabled_for(_session(backtest=True)) is False
-    assert live_enabled_for(None) is False
     monkeypatch.delenv("GROWW_LIVE_SESSIONS")
     assert live_enabled_for(_session()) is False
 
 
-def test_kill_switch_blocks_entries(env):
+@pytest.fixture
+def inst(tmp_path):
+    return GrowwInstruments(path=tmp_path / "inst.csv", fetch=lambda: CSV, now=lambda: NOW)
+
+
+def test_not_intraday_allowed_is_blocked_without_an_api_call(env, inst):
+    m = env.make(instruments=inst)
+    pf = LivePortfolio(str(env.tmp / "t2.db"), 500_000, m)
+    t = _buy(env, ticker="SEJALLTD.NS", price=120.0, stop=118.0, pf=pf)
+    assert m.legs[str(t.id)]["status"] == "blocked" and m.legs[str(t.id)]["category"] == "not_intraday_allowed"
+    assert env.client.calls == [] and any("not_intraday_allowed" in a for a in env.alerts)
+
+
+def test_short_blocked_when_sell_not_allowed(env, inst):
+    m = env.make(instruments=inst)
+    pf = LivePortfolio(str(env.tmp / "t2.db"), 500_000, m)
+    t = pf.execute_short("NOSHORT.NS", 5, 100.0, stop_price=102.0)
+    assert m.legs[str(t.id)]["category"] == "sell_not_allowed" and env.client.calls == []
+
+
+def test_instrument_csv_is_cached_daily_and_nse_cash_only(inst, tmp_path):
+    calls = []
+    i = GrowwInstruments(path=tmp_path / "c.csv", fetch=lambda: calls.append(1) or CSV, now=lambda: NOW)
+    assert i.info("SBIN")["is_intraday"] is True                  # the BSE row (is_intraday=0) is ignored
+    assert i.info("SEJALLTD")["is_intraday"] is False and i.info("SEJALLTD")["tick_size"] == 0.01
+    j = GrowwInstruments(path=tmp_path / "c.csv", fetch=lambda: calls.append(1) or CSV, now=lambda: NOW)
+    assert j.info("ITC") and len(calls) == 1                         # second reader uses today's file
+
+
+def test_tick_size_prefers_groww_then_kite_then_band(env, inst):
+    m = env.make(instruments=inst)
+    assert m._tick_size("MRF.NS", 130000) == 5.0
+    env.md.tick = 0.05
+    assert m._tick_size("UNLISTED.NS", 1500) == 0.05
+    env.md.tick = None
+    assert m._tick_size("UNLISTED.NS", 1500) == 0.10 and band_tick(200) == 0.01 and band_tick(6000) == 0.5
+
+
+def test_kill_switch_exposure_loss_and_order_caps(env, monkeypatch):
     (env.tmp / "s").mkdir(exist_ok=True)
     (env.tmp / "s" / "LIVE_KILL").write_text("")
-    t = env.pf.execute_buy("SBIN.NS", 10, 940.0, "intraday", stop_price=930.0)
-    assert env.client.calls == [] and env.mirror.legs[str(t.id)]["note"] == "kill switch"
-
-
-def test_kill_switch_still_lets_exits_out(env):
-    t = env.pf.execute_buy("SBIN.NS", 10, 940.0, "intraday", stop_price=930.0)
-    (env.tmp / "s" / "LIVE_KILL").write_text("")
-    env.pf.execute_sell(t.id, 950.0, "exit")
-    assert env.mirror.legs[str(t.id)]["status"] == "closed"
-
-
-def test_exposure_and_order_value_caps(env):
-    env.pf.execute_buy("SBIN.NS", 40, 940.0, "intraday", stop_price=930.0)     # ₹37.7K real
-    t = env.pf.execute_buy("SBIN.NS", 15, 940.0, "intraday", stop_price=930.0)  # +₹14.1K > ₹50K
-    assert env.mirror.legs[str(t.id)]["status"] == "skipped" and "exposure" in env.mirror.legs[str(t.id)]["note"]
-    t2 = env.pf.execute_buy("ITC.NS", 130, 400.0, "intraday")                     # ₹52K one order
-    assert "order value" in env.mirror.legs[str(t2.id)]["note"]
-
-
-def test_daily_loss_cap_blocks_new_entries(env):
+    t = _buy(env)
+    assert _leg(env, t)["note"] == "kill switch"
+    (env.tmp / "s" / "LIVE_KILL").unlink()
+    _buy(env, qty=40)
+    t2 = _buy(env, qty=15)
+    assert "exposure" in _leg(env, t2)["note"]
     env.mirror._realized_today = -1500.0
-    t = env.pf.execute_buy("SBIN.NS", 1, 940.0, "intraday")
-    assert "daily real loss" in env.mirror.legs[str(t.id)]["note"]
+    assert "daily real loss" in _leg(env, _buy(env, qty=1))["note"]
+    env.mirror._realized_today = 0.0
+    monkeypatch.setattr(lm, "MAX_ORDERS_PER_DAY", 4)
+    assert "order cap" in _leg(env, _buy(env, qty=1))["note"]
 
 
-def test_order_cap(env, monkeypatch):
-    monkeypatch.setattr(lm, "MAX_ORDERS_PER_DAY", 3)
-    env.pf.execute_buy("SBIN.NS", 1, 940.0, "intraday", stop_price=930.0)        # 2 orders
-    t = env.pf.execute_buy("SBIN.NS", 1, 940.0, "intraday", stop_price=930.0)
-    assert "order cap" in env.mirror.legs[str(t.id)]["note"]
-
-
-def test_backtest_is_a_noop(env):
+def test_backtest_and_non_nse_and_no_smoke(env):
     env.mirror.is_backtest = lambda: True
-    env.pf.execute_buy("SBIN.NS", 1, 940.0, "intraday")
-    env.mirror.reconcile(force=True)
-    assert env.client.calls == [] and env.alerts == []
-
-
-def test_no_entries_before_smoke_test_passes(env):
+    _buy(env, qty=1)
+    env.mirror.is_backtest = lambda: False
+    t = _buy(env, ticker="RELIANCE.BO", price=1000.0, qty=1)
+    assert "not an NSE equity" in _leg(env, t)["note"]
     m = env.make(smoke=False)
     pf = LivePortfolio(str(env.tmp / "t2.db"), 500_000, m)
-    t = pf.execute_buy("SBIN.NS", 1, 940.0, "intraday")
-    assert "smoke test" in m.legs[str(t.id)]["note"]
+    assert "smoke test" in m.legs[str(_buy(env, qty=1, pf=pf).id)]["note"]
+    assert env.client.calls == []
 
 
-def test_non_nse_ticker_refused(env):
-    t = env.pf.execute_buy("RELIANCE.BO", 1, 1000.0, "intraday")
-    assert "not an NSE equity" in env.mirror.legs[str(t.id)]["note"] and env.client.calls == []
+# ── Auth / failures ───────────────────────────────────────
 
-
-# ── Auth / disable ────────────────────────────────────────
-
-def test_auth_failure_disables_real_orders_for_the_day(env, monkeypatch):
-    env.client.script = ["auth", "auth"]               # first call + retry after re-login
-    env.mirror.broker._client = env.client
+def test_body_level_auth_error_disables_entries(env, monkeypatch):       # [M1]
+    env.client.script = ["auth", "auth"]
     monkeypatch.setattr(GrowwBroker, "_login", lambda self: env.client)
-    t = env.pf.execute_buy("SBIN.NS", 10, 940.0, "intraday", stop_price=930.0)
-    assert env.mirror.legs[str(t.id)]["status"] == "rejected"
-    assert env.mirror.disabled_reason() and "auth" in env.mirror.disabled_reason().lower()
-    assert any("DISABLED" in a for a in env.alerts)
-    t2 = env.pf.execute_buy("SBIN.NS", 1, 940.0, "intraday")
-    assert env.mirror.legs[str(t2.id)]["status"] == "skipped"
-    # a restart the same day stays disabled; the next day starts fresh
-    assert env.make().disabled_reason()
-    assert env.make(now=datetime(2026, 10, 19, 10, 0, tzinfo=IST)).disabled_reason() is None
+    t = _buy(env)
+    assert _leg(env, t)["status"] == "rejected" and _leg(env, t)["category"] == "auth"
+    assert "auth" in env.mirror.disabled_reason().lower()
+    assert _leg(env, _buy(env, qty=1))["status"] == "skipped"
+    assert env.make().disabled_reason()                                     # survives a restart
+    env.clock["now"] = datetime(2026, 10, 19, 10, 0, tzinfo=IST)
+    assert env.make().disabled_reason() is None
 
 
-def test_login_without_keys_is_an_auth_error(tmp_path, monkeypatch):
-    fake = types.ModuleType("growwapi")
-    fake.GrowwAPI = type("GrowwAPI", (), {})
-    monkeypatch.setitem(sys.modules, "growwapi", fake)
-    b = GrowwBroker(api_key="", totp_secret="", token_path=tmp_path / "tok.json")
-    with pytest.raises(GrowwAuthError):
-        b.client
+def test_three_consecutive_failures_disable_entries_but_exits_continue(env):   # [M1]
+    t = _buy(env)
+    env.client.status_fail = 3
+    for _ in range(3):
+        env.mirror._try("probe", env.mirror.broker.order_status, "G1")
+    assert "in a row" in env.mirror.disabled_reason()
+    env.pf.execute_sell(t.id, 950.0, "exit")
+    assert _leg(env, t)["status"] == "closed"
 
 
-def test_token_is_cached_for_the_ist_day(tmp_path, monkeypatch):
-    calls = []
-
-    class GrowwAPI:
-        def __init__(self, token):
-            self.token = token
-
-        @staticmethod
-        def get_access_token(api_key, totp=None, secret=None):
-            calls.append((api_key, totp))
-            return f"tok{len(calls)}"
-    fake = types.ModuleType("growwapi")
-    fake.GrowwAPI = GrowwAPI
-    monkeypatch.setitem(sys.modules, "growwapi", fake)
-    otp = types.ModuleType("pyotp")
-    otp.TOTP = lambda secret: NS(now=lambda: "123456" if secret == "JBSWY3DPEHPK3PXP" else "bad")
-    monkeypatch.setitem(sys.modules, "pyotp", otp)
-    day = {"now": NOW}
-    mk = lambda: GrowwBroker(api_key="K", totp_secret="JBSWY3DPEHPK3PXP", token_path=tmp_path / "tok.json",
-                             now=lambda: day["now"])
-    assert mk().client.token == "tok1" and mk().client.token == "tok1" and len(calls) == 1
-    assert len(calls[0][1]) == 6                               # a TOTP code, not the secret
-    day["now"] = datetime(2026, 10, 17, 9, 0, tzinfo=IST)
-    assert mk().client.token == "tok2"
+def test_classification():
+    assert classify_error(GErr("Invalid access token", "GA005")) == "auth"
+    assert classify_error(GErr("Request from IP not whitelisted")) == "ip_not_whitelisted"
+    assert classify_error(GErr("Insufficient margin")) == "insufficient_margin"
+    assert classify_error(GErr("Price is outside the circuit limit")) == "circuit_limit"
+    assert classify_error(GErr("Price must be a multiple of tick size")) == "invalid_price_tick"
+    assert classify_error(GErr("Market is closed")) == "market_closed"
+    assert classify_error(GErr("Too many requests", "429")) == "rate_limited"
+    assert classify_error(GErr("MIS not allowed for this scrip")) == "not_intraday_allowed"
+    assert classify_error(GErr("something odd")) == "unknown"
+    assert is_auth_error(GErr("Invalid access token", "GA005")) and not is_auth_error(GErr("Insufficient margin"))
+    assert is_ambiguous(TimeoutError()) and is_ambiguous(json.JSONDecodeError("x", "y", 0))
+    assert is_ambiguous(GErr("bad gateway", "502")) and not is_ambiguous(GErr("Insufficient margin"))
 
 
-# ── Smoke test ────────────────────────────────────────────
+# ── Positions ─────────────────────────────────────────────
 
-def test_smoke_test_buys_one_and_sells_market(env):
-    m = env.make(smoke=False)
-    env.client.ltp = 400.0
-    r = m.smoke_test("ITC.NS")
-    assert r["passed"] and m.market_ok
-    buy, sell = env.client.placed()
-    assert buy["quantity"] == 1 and buy["order_type"] == "LIMIT" and sell["order_type"] == "MARKET"
-    assert m.smoke_done_today()
-    assert env.make(smoke=False).smoke_done_today()            # persisted across restarts
+def test_short_with_unsigned_quantity_uses_credit_debit(env):             # [M2]
+    env.client.qty_mode = "abs"
+    t = env.pf.execute_short("SBIN.NS", 5, 940.0, stop_price=950.0)
+    assert env.mirror.broker.net_position("SBIN") == -5
+    env.pf.execute_cover(t.id, 935.0, "cover")
+    assert env.client.placed("LIMIT", "BUY")[0]["quantity"] == 5 and env.client.net("SBIN") == 0
 
 
-def test_smoke_test_falls_back_to_limit_exit_when_market_rejected(env):
-    m = env.make(smoke=False)
-    env.client.script = ["fill", "reject", "fill"]
-    r = m.smoke_test("ITC.NS")
-    assert r["passed"] and m.market_ok is False
-    assert [p["order_type"] for p in env.client.placed()] == ["LIMIT", "MARKET", "LIMIT"]
+def test_position_sign_disagreement_refuses_to_act(env):                  # [M2]
+    t = _buy(env)
+    env.client.qty_mode = "disagree"
+    env.pf.execute_sell(t.id, 950.0, "exit")
+    assert env.client.placed("LIMIT", "SELL") == [] and _leg(env, t)["status"] == "exiting"
+    assert any("disagree" in a for a in env.alerts)
 
 
-def test_failed_smoke_test_disables_the_day(env):
-    m = env.make(smoke=False)
-    env.client.script = ["open"]
-    r = m.smoke_test("ITC.NS")
-    assert not r["passed"] and m.disabled_reason().startswith("smoke test failed")
+# ── Restart / exit-only / liquidate ───────────────────────
 
+def test_restart_mid_entry_resolves_by_reference(env):                    # [M5]
+    orig = env.client.place_order
 
-# ── Reconcile ─────────────────────────────────────────────
-
-def test_reconcile_alerts_on_mismatch_once(env):
-    env.pf.execute_buy("SBIN.NS", 10, 940.0, "intraday", stop_price=930.0)
-    env.client.orders["G1"]["filled_quantity"] = 7          # Groww disagrees
-    env.mirror.reconcile(force=True)
-    env.mirror.reconcile(force=True)
-    assert sum("mismatch" in a for a in env.alerts) == 1
-
-
-def test_flattens_traded_symbols_after_forced_close(env):
-    m = env.make(now=datetime(2026, 10, 16, 15, 17, tzinfo=IST),
-                 forced_close_time=lambda now: now.replace(hour=15, minute=15, second=0))
-    pf = LivePortfolio(str(env.tmp / "t3.db"), 500_000, m)
-    pf.execute_buy("SBIN.NS", 10, 940.0, "intraday", stop_price=930.0)
-    env.client.orders["G99"] = {"trading_symbol": "INFY", "quantity": 5, "filled_quantity": 5,
-                                "transaction_type": "BUY", "order_status": "EXECUTED"}   # user's own trade
-    m.reconcile(force=True)
-    pos = {p["trading_symbol"]: p["quantity"] for p in env.client.get_positions_for_user()["positions"]}
-    assert pos["SBIN"] == 0 and pos["INFY"] == 5            # never touches symbols we didn't trade
-
-
-# ── Restart ───────────────────────────────────────────────
-
-def test_restart_rebuilds_open_legs_from_ledger(env):
-    t = env.pf.execute_buy("SBIN.NS", 10, 940.0, "intraday", stop_price=930.0)
+    def crash_after_send(timeout=None, **kw):
+        orig(timeout=timeout, **kw)
+        raise SystemExit("process killed")
+    env.client.place_order = crash_after_send
+    with pytest.raises(SystemExit):
+        env.mirror.on_entry(NS(id=77, ticker="SBIN.NS", direction="long", quantity=10, entry_price=940.0,
+                               stop_price=930.0, target_price=None))
+    env.client.place_order = orig
     m2 = env.make()
-    assert m2.legs[str(t.id)]["status"] == "open" and m2._orders_today == 2
-    pf2 = LivePortfolio(env.pf.db_path, 500_000, m2)
-    pf2.execute_sell(t.id, 950.0, "exit")
-    assert m2.legs[str(t.id)]["status"] == "closed"
+    assert m2.legs["77"]["status"] == "pending"
+    m2.tick()
+    assert m2.legs["77"]["status"] == "open" and len(env.client.placed("LIMIT")) == 1
 
 
-# ── Runner paths: stop sweep + forced close go through the wrapper ──
+def test_restart_mid_exit_resolves_and_finishes(env):
+    t = _buy(env)
+    env.client.script = [("after", "open", "timeout")]
+    env.pf.execute_sell(t.id, 950.0, "exit")
+    m2 = env.make()
+    assert m2.legs[str(t.id)]["status"] == "exiting"
+    env.client.orders["G3"].update(order_status="EXECUTED", filled_quantity=10, average_fill_price=948.0)
+    m2.tick()
+    assert m2.legs[str(t.id)]["status"] == "closed" and len(env.client.placed("LIMIT", "SELL")) == 1
+
+
+def test_open_leg_with_closed_paper_trade_is_exited_on_startup(env):
+    t = _buy(env)
+    Portfolio(env.pf.db_path, 500_000).execute_sell(t.id, 950.0, "closed while the agent was down")
+    db = env.pf.db_path
+    m2 = env.make(paper_open_ids=lambda: {str(p.id) for p in Portfolio(db, 0).get_open_positions()})
+    m2.tick()
+    assert m2.legs[str(t.id)]["status"] == "closed" and env.client.net("SBIN") == 0
+
+
+def test_runner_builds_exit_only_mirror_when_gates_fail_but_positions_open(env, tmp_path, monkeypatch):   # [M7]
+    t = _buy(env)
+    monkeypatch.delenv("GROWW_LIVE_SESSIONS", raising=False)
+    monkeypatch.setattr(lm, "ledger_has_exposure", lambda d, today=None: True)
+    a = TradingAgent.__new__(TradingAgent)
+    a.config = AgentConfig(starting_capital=50_000, db_path=str(tmp_path / "r.db"))
+    a.market_data = FakeMD()
+    a.session = NS(session_id="nse_opus_live", live_broker=None, backtest_mode=False, session_dir=env.tmp / "s")
+    p = a._make_portfolio(start_worker=False)
+    assert isinstance(p, LivePortfolio) and a.live_mirror.exit_only
+    assert "exit-only" in a.live_mirror._entry_block("SBIN.NS", 1, 940.0)
+
+
+def test_runner_builds_live_portfolio_only_when_gated(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROWW_LIVE_SESSIONS", "nse_opus_live")
+    a = TradingAgent.__new__(TradingAgent)
+    a.config = AgentConfig(starting_capital=50_000, db_path=str(tmp_path / "t.db"))
+    a.market_data = FakeMD()
+    a.session = NS(session_id="nse_opus_live", live_broker="groww", backtest_mode=False, session_dir=tmp_path / "s")
+    assert isinstance(a._make_portfolio(start_worker=False), LivePortfolio) and a.live_worker is not None
+    a.session = NS(session_id="nse_opus", live_broker="groww", backtest_mode=False, session_dir=tmp_path / "o")
+    a.live_mirror = None
+    p = a._make_portfolio(start_worker=False)
+    assert type(p) is Portfolio and a.live_worker is None
+
+
+def test_dashboard_liquidate_flattens_real_positions(env):                 # [B5]
+    t = _buy(env)
+    t2 = env.pf.execute_short("ITC.NS", 20, 400.0, stop_price=405.0)
+    m = env.make(exit_only=True)
+    res = lm.liquidate_from_dashboard(NS(session_dir=env.tmp / "s"), mirror=m, run_until_flat=False,
+                                      sleep=lambda s: None)
+    assert res["live"] == "flattening 2 legs"
+    assert m.legs[str(t.id)]["status"] == "closed" and m.legs[str(t2.id)]["status"] == "closed"
+    assert env.client.net("SBIN") == 0 and env.client.net("ITC") == 0
+    assert "manual liquidation" in m.disabled_reason()
+
+
+def test_dashboard_liquidate_defers_to_the_agent_holding_the_lock(env):
+    t = _buy(env)
+    assert env.mirror.acquire_lock()
+    other = env.make(exit_only=True)
+    res = lm.liquidate_from_dashboard(NS(session_dir=env.tmp / "s"), mirror=other, wait_lock_s=1,
+                                      sleep=lambda s: None)
+    assert res["live"] == "requested_from_agent" and (env.tmp / "s" / "LIVE_LIQUIDATE").exists()
+    env.mirror.tick()                                                       # the agent picks it up
+    assert _leg(env, t)["status"] == "closed" and not (env.tmp / "s" / "LIVE_LIQUIDATE").exists()
+    env.mirror.release_lock()
+
+
+def test_process_lock_is_exclusive(env):
+    a, b = env.make(), env.make()
+    assert a.acquire_lock() and not b.acquire_lock()
+    a.release_lock()
+    assert b.acquire_lock()
+    b.release_lock()
+
+
+# ── Runner paths through the wrapper ──────────────────────
 
 def _agent(env):
     cfg = AgentConfig(starting_capital=500_000, _market_preset=get_preset("nse-intraday"))
@@ -449,82 +854,231 @@ def _agent(env):
     a.learner = NS(write_trade_log=lambda *x, **k: None)
     a.engine = NS(client=None)
     a._auto_exits, a._is_backtest = [], False
-    a.live_mirror = None
+    a.live_mirror = a.live_worker = None
     a._seconds_to_forced_close = lambda: None
     return a
 
 
 def test_between_cycle_stop_sweep_is_mirrored(env):
     a = _agent(env)
-    t = env.pf.execute_buy("SBIN.NS", 10, 940.0, "intraday", stop_price=930.0)
-    a.market_data = NS(is_market_open=lambda: True,
-                       get_current_prices=lambda tickers=None: {"SBIN.NS": 929.0})
+    t = _buy(env)
+    a.market_data = NS(is_market_open=lambda: True, get_current_prices=lambda tickers=None: {"SBIN.NS": 929.0})
     a.risk_manager.check_intraday_close = lambda now=None: False
     a._monitor_positions()
-    assert env.mirror.legs[str(t.id)]["status"] == "closed"
-    assert env.client.placed()[-1]["transaction_type"] == "SELL"
+    assert _leg(env, t)["status"] == "closed"
 
 
-def test_forced_close_is_mirrored(env):
+def test_forced_close_places_all_exits(env):
     a = _agent(env)
-    t = env.pf.execute_short("SBIN.NS", 5, 940.0, stop_price=950.0)
-    a._close_intraday_positions({"SBIN.NS": 938.0})
-    assert env.mirror.legs[str(t.id)]["status"] == "closed"
-    assert env.mirror.legs[str(t.id)]["exit_type"] == "forced_close"
-    assert env.client.placed()[-1]["transaction_type"] == "BUY"
+    t1 = env.pf.execute_short("SBIN.NS", 5, 940.0, stop_price=950.0)
+    t2 = _buy(env, ticker="ITC.NS", qty=10, price=400.0, stop=395.0)
+    env.client.script = ["open", "open"]                                     # exits rest at first
+    a._close_intraday_positions({"SBIN.NS": 938.0, "ITC.NS": 401.0})
+    assert len(env.client.placed("LIMIT", "BUY")) >= 1 and len(env.client.placed("LIMIT", "SELL")) >= 1
+    env.later(11)
+    env.mirror.tick()
+    assert _leg(env, t1)["exit_type"] == "forced_close"
+    assert _leg(env, t1)["status"] == "closed" and _leg(env, t2)["status"] == "closed"
 
 
-def test_runner_builds_live_portfolio_only_when_gated(tmp_path, monkeypatch):
-    monkeypatch.setenv("GROWW_LIVE_SESSIONS", "nse_opus_live")
+def test_forced_close_is_1510_for_the_live_session():
+    from agent.session import SessionConfig
+    sc = SessionConfig(session_id="nse_opus_live", market="nse-intraday", intraday_close_buffer_min=20)
+    sc.resolve_defaults()
+    cfg = AgentConfig.from_session(sc)
+    rm = RiskManager(cfg, None)
+    at = rm.forced_close_time(datetime(2026, 10, 16, 12, 0, tzinfo=IST))
+    assert (at.hour, at.minute) == (15, 10)
+    sc2 = SessionConfig(session_id="nse_opus", market="nse-intraday")
+    sc2.resolve_defaults()
+    at2 = RiskManager(AgentConfig.from_session(sc2), None).forced_close_time(datetime(2026, 10, 16, 12, 0, tzinfo=IST))
+    assert (at2.hour, at2.minute) == (15, 15)
+
+
+def test_mis_only_universe_filter_applies_to_the_live_session_only(env, inst):
     a = TradingAgent.__new__(TradingAgent)
-    a.config = AgentConfig(starting_capital=50_000, db_path=str(tmp_path / "t.db"))
-    a.market_data = FakeMD()
-    a.session = NS(session_id="nse_opus_live", live_broker="groww", backtest_mode=False,
-                   session_dir=tmp_path / "s")
-    assert isinstance(a._make_portfolio(), LivePortfolio) and a.live_mirror is not None
-    a.session = NS(session_id="nse_opus", live_broker="groww", backtest_mode=False, session_dir=tmp_path)
-    a.live_mirror = None
-    p = a._make_portfolio()
-    assert type(p) is Portfolio and a.live_mirror is None
+    a.live_mirror = env.make(instruments=inst)
+    a.session = NS(live_universe_filter="mis_only")
+    assert a._apply_live_universe_filter(["SBIN.NS", "SEJALLTD.NS", "ITC.NS"]) == ["SBIN.NS", "ITC.NS"]
+    a.session = NS(live_universe_filter=None)
+    assert a._apply_live_universe_filter(["SEJALLTD.NS"]) == ["SEJALLTD.NS"]
 
 
-# ── Charges + report ──────────────────────────────────────
+# ── Worker thread ─────────────────────────────────────────
+
+def test_worker_runs_broker_calls_off_the_agent_thread(env):            # [M8]
+    import threading
+    threads = []
+    orig = env.client.place_order
+
+    def spy(timeout=None, **kw):
+        threads.append(threading.current_thread().name)
+        return orig(timeout=timeout, **kw)
+    env.client.place_order = spy
+    w = LiveWorker(env.mirror)
+    w.BUSY_TICK_S = w.IDLE_TICK_S = 0.05
+    w.start()
+    try:
+        pf = LivePortfolio(str(env.tmp / "w.db"), 500_000, w)
+        t = _buy(env, pf=pf)
+        assert w.drain(5)
+        assert threads and all(n == "live-mirror" for n in threads)
+        assert _leg(env, t)["status"] == "open"
+    finally:
+        w.stop()
+
+
+# ── Smoke test ────────────────────────────────────────────
+
+def test_smoke_test_full_sequence(oco):
+    m = oco.make(smoke=False)
+    oco.client.ltp = 400.0
+    r = m.smoke_test("ITC.NS")
+    assert r["passed"] and r["oco_ok"] and r["market_ok"]
+    assert [kw["order_type"] for kw in oco.client.placed()] == ["LIMIT", "MARKET"]
+    assert len(oco.client.ccalls("oco_create")) == 1 and len(oco.client.ccalls("oco_modify")) == 1
+    assert len(oco.client.ccalls("oco_cancel")) >= 1 and oco.client.net("ITC") == 0
+    steps = [r["step"] for r in _ledger(oco) if r.get("event") == "smoke_step"]
+    assert steps == ["oco_create", "oco_modify", "oco_cancel"]
+    assert oco.make(smoke=False).smoke_done_today()
+
+
+def test_smoke_oco_unsupported_still_passes_with_plain_stop_fallback(env):
+    m = env.make(smoke=False)
+    env.client.ltp = 400.0
+    r = m.smoke_test("ITC.NS")
+    assert r["passed"] and r["oco_ok"] is False
+
+
+def test_smoke_market_rejected_falls_back_to_limit(env):
+    m = env.make(smoke=False)
+    env.client.ltp = 400.0
+    env.client.script = ["fill", "reject", "fill"]
+    r = m.smoke_test("ITC.NS")
+    assert r["passed"] and r["market_ok"] is False and env.client.net("ITC") == 0
+
+
+def test_failed_smoke_buy_disables_the_day(env):
+    m = env.make(smoke=False)
+    env.client.script = ["reject"]
+    r = m.smoke_test("ITC.NS")
+    assert not r["passed"] and m.disabled_reason().startswith("smoke test failed")
+
+
+def test_market_ok_resets_next_day(env):
+    env.mirror.market_ok = env.mirror.oco_ok = False
+    env.clock["now"] = datetime(2026, 10, 19, 10, 0, tzinfo=IST)
+    env.mirror._roll_day()
+    assert env.mirror.market_ok and env.mirror.oco_ok
+
+
+# ── Circuit limits ────────────────────────────────────────
+
+def test_entry_limit_is_clamped_to_the_upper_circuit(env):
+    env.client.upper = 941.0
+    _buy(env)
+    assert env.client.placed("LIMIT")[0]["price"] == 941.0
+
+
+def test_long_at_lower_circuit_alerts_cant_exit(env):
+    t = _buy(env)
+    env.client.lower = env.client.ltp = 900.0
+    env.client.script = ["open"]
+    env.pf.execute_sell(t.id, 900.0, "stop")
+    assert any("lower circuit" in a and "can't exit" in a for a in env.alerts)
+
+
+# ── Reconcile / report / charges / token ──────────────────
+
+def test_reconcile_alerts_on_mismatch_once(env):
+    _buy(env)
+    env.client.orders["G1"]["filled_quantity"] = 7
+    env.mirror.reconcile(force=True)
+    env.mirror.reconcile(force=True)
+    assert sum("mismatch" in a for a in env.alerts) == 1
+
 
 def test_charges_match_hand_computed_schedule():
-    # ₹10,000 buy: brokerage 10 + exch 0.297 + sebi 0.01 + stamp 0.30 + ipft 0.01 + GST 18% of 10.307
     assert order_charges("BUY", 10_000) == 12.47
-    # ₹10,000 sell: brokerage 10 + STT 2.50 + exch 0.297 + sebi 0.01 + ipft 0.01 + GST 1.855
     assert order_charges("SELL", 10_000) == 14.67
-    # ₹3,000 buy: 0.1% = ₹3 < ₹5 → min(₹5, 2.5%) = ₹5
     assert order_charges("BUY", 3_000) == 6.10
-    # ₹50,000: brokerage capped at ₹20
     assert order_charges("BUY", 50_000) == pytest.approx(20 + 1.485 + 0.05 + 1.5 + 0.05 + 0.18 * 21.535, abs=0.01)
 
 
-def test_eod_report_compares_paper_and_real(env):
-    t = env.pf.execute_buy("SBIN.NS", 10, 940.0, "intraday", stop_price=930.0)
+def test_charges_are_per_executed_order_across_split_fills(env):
+    t = _buy(env)
+    env.client.script = [("partial", 3), "fill"]
+    env.client.ltp = 950.0
+    env.pf.execute_sell(t.id, 950.0, "exit")
+    env.later(11)
+    env.mirror.tick()
+    leg = _leg(env, t)
+    assert leg["status"] == "closed" and len(leg["exit_fills"]) == 2
+    expected = order_charges("BUY", 9428.5) + sum(order_charges("SELL", f["qty"] * f["price"])
+                                                  for f in leg["exit_fills"])
+    assert leg["charges"] == pytest.approx(expected, abs=0.01)
+
+
+def test_eod_report_compares_paper_and_real_and_lists_failures(env):
+    t = _buy(env)
     env.client.script = [("fill", 948.0)]
     env.pf.execute_sell(t.id, 950.0, "exit")
-    env.client.script = ["open"]
-    env.pf.execute_buy("ITC.NS", 10, 400.0, "intraday")
-    leg = env.mirror.legs[str(t.id)]
-    gross = (948.0 - 942.85) * 10
-    assert leg["real_gross"] == pytest.approx(gross)
-    assert leg["real_pnl"] == pytest.approx(gross - order_charges("BUY", 9428.5) - order_charges("SELL", 9480.0), abs=0.01)
+    env.client.script = ["reject"]
+    _buy(env, ticker="ITC.NS", qty=10, price=400.0, stop=395.0)
+    leg = _leg(env, t)
+    assert leg["real_gross"] == pytest.approx((948.0 - 942.85) * 10)
     text = env.mirror.send_eod_report()
-    assert "paper ₹+100.00" in text and "missed 1" in text and "closed 1" in text
-    assert "+30.3bps" in text                 # entry 942.85 vs 940 = 30.3bps worse
-    assert any(r.get("event") == "eod_report" for r in _ledger(env))
+    assert "paper ₹+100.00" in text and "+30.3bps" in text and "rejected 1" in text
+    assert "FAILURES: not_intraday_allowed 1" in text and "MIS product not allowed" in text
 
 
-def test_ledger_records_orders_and_legs(env):
-    t = env.pf.execute_buy("SBIN.NS", 10, 940.0, "intraday", stop_price=930.0)
-    rows = _ledger(env)
-    orders = [r for r in rows if r["event"] == "order"]
-    assert [o["leg"] for o in orders] == ["entry", "stop"]
-    assert orders[0]["groww_order_id"] == "G1" and orders[0]["req_price"] == 942.85
-    assert all(r["date"] == "2026-10-16" for r in rows)
-    assert rows[-1]["leg"]["paper_trade_id"] == str(t.id)
+def test_eod_report_survives_missing_fields_and_flags_stuck(env):         # [M9]
+    env.mirror.legs["9"] = {"paper_trade_id": "9", "status": "closed", "direction": "long"}
+    env.mirror.legs["10"] = {"paper_trade_id": "10", "status": "stuck", "symbol": "SBIN", "direction": "short",
+                             "filled_qty": 5, "exit_fills": []}
+    text = env.mirror.eod_report()
+    assert "NEEDS ATTENTION" in text and "stuck" in text and "#9" in text
+
+
+def test_token_is_cached_for_the_ist_day_with_0600_perms(tmp_path, monkeypatch):
+    calls = []
+
+    class GrowwAPI:
+        def __init__(self, token):
+            raise AssertionError("constructor fetches the changelog with no timeout; must not be called")
+
+        @staticmethod
+        def get_access_token(api_key, totp=None, secret=None):
+            calls.append((api_key, totp))
+            return f"tok{len(calls)}"
+    fake = types.ModuleType("growwapi")
+    fake.GrowwAPI = GrowwAPI
+    monkeypatch.setitem(sys.modules, "growwapi", fake)
+    otp = types.ModuleType("pyotp")
+    otp.TOTP = lambda secret: NS(now=lambda: "123456")
+    monkeypatch.setitem(sys.modules, "pyotp", otp)
+    day = {"now": NOW}
+    mk = lambda: GrowwBroker(api_key="K", totp_secret="S", token_path=tmp_path / "tok.json", now=lambda: day["now"])
+    assert mk().client.token == "tok1" and mk().client.token == "tok1" and calls == [("K", "123456")]
+    assert stat.S_IMODE(os.stat(tmp_path / "tok.json").st_mode) == 0o600
+    day["now"] = datetime(2026, 10, 17, 9, 0, tzinfo=IST)
+    assert mk().client.token == "tok2"
+
+
+def test_login_without_keys_is_an_auth_error(tmp_path, monkeypatch):
+    from agent.groww_broker import GrowwAuthError
+    fake = types.ModuleType("growwapi")
+    fake.GrowwAPI = type("GrowwAPI", (), {})
+    monkeypatch.setitem(sys.modules, "growwapi", fake)
+    with pytest.raises(GrowwAuthError):
+        GrowwBroker(api_key="", totp_secret="", token_path=tmp_path / "t.json").client
+
+
+def test_norm_order_finality():
+    assert norm_order({"order_status": "EXECUTED", "quantity": 10, "filled_quantity": 10})["final"]
+    assert not norm_order({"order_status": "EXECUTED", "quantity": 10, "filled_quantity": 6})["final"]
+    assert norm_order({"order_status": "CANCELLED", "quantity": 10, "filled_quantity": 6})["final"]
+    assert not norm_order({"order_status": "CANCELLATION_REQUESTED", "quantity": 10})["final"]
 
 
 def test_kite_market_data_exposes_tick_size(monkeypatch, tmp_path):
@@ -539,3 +1093,26 @@ def test_kite_market_data_exposes_tick_size(monkeypatch, tmp_path):
     m = kd.KiteMarketData(["SBIN.NS"], kite_client=TickKite({}, {}))
     assert m.tick_size("SBIN.NS") == 0.05 and m.tick_size("IDEA") == 0.01 and m.tick_size("XYZ.NS") is None
     assert round_to_tick(9.876, 0.01, up=True) == 9.88 and round_to_tick(942.82, 0.05, up=True) == 942.85
+
+
+def test_dashboard_liquidate_skips_paper_only_sessions(tmp_path, monkeypatch):
+    import dashboard.app as app
+    monkeypatch.delenv("GROWW_LIVE_SESSIONS", raising=False)
+    sess = NS(session_id="nse_opus", live_broker=None, backtest_mode=False, session_dir=tmp_path)
+    assert app._liquidate_live(sess) is None and app._liquidate_live(None) is None
+
+
+def test_sigterm_drains_the_live_queue_and_reports_open_positions(env):
+    import signal
+    t = _buy(env)
+    a = TradingAgent.__new__(TradingAgent)
+    a.live_worker = LiveWorker(env.mirror, synchronous=True)
+    old = signal.getsignal(signal.SIGTERM)
+    try:
+        a._install_live_sigterm()
+        handler = signal.getsignal(signal.SIGTERM)
+        with pytest.raises(SystemExit):
+            handler(signal.SIGTERM, None)
+    finally:
+        signal.signal(signal.SIGTERM, old)
+    assert any("Agent stopping" in x and "SBIN long 10" in x for x in env.alerts)

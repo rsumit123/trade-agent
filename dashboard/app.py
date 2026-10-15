@@ -1527,9 +1527,13 @@ def liquidate_session(session_id: str, user: dict = Depends(current_user)):
     portfolio = c["portfolio"]
     market_data = c["market_data"]
 
+    # Real-money session: flatten the real positions too (cancel protective
+    # orders, exit capped at Groww's net position), retrying in the background.
+    live = _liquidate_live(c.get("session"))
+
     open_positions = portfolio.get_open_positions()
     if not open_positions:
-        return {"status": "ok", "agent_stopped": was_running, "closed": 0, "trades": []}
+        return {"status": "ok", "agent_stopped": was_running, "closed": 0, "trades": [], "live": live}
 
     tickers = list({t.ticker for t in open_positions})
     try:
@@ -1572,7 +1576,22 @@ def liquidate_session(session_id: str, user: dict = Depends(current_user)):
         "closed": len(closed),
         "trades": closed,
         "errors": errors,
+        "live": live,
     }
+
+
+def _liquidate_live(session):
+    """Real side of the kill switch for a Groww live-mirror session; None otherwise."""
+    if session is None:
+        return None
+    try:
+        from agent import live_mirror
+        if not (live_mirror.live_enabled_for(session) or live_mirror.ledger_has_exposure(session.session_dir)):
+            return None
+        return live_mirror.liquidate_from_dashboard(session)
+    except Exception as e:
+        logger.error(f"liquidate: real-side flatten failed for {getattr(session, 'session_id', '?')}: {e}")
+        return {"live": f"error: {e}"}
 
 
 # ── Backtest Endpoints ────────────────────────────────────────

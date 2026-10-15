@@ -60,3 +60,19 @@ with no per-order approval (the user's explicit instruction). Data stays on Kite
 - Deploy after the close/evening; create nse_opus_live; schedule the 09:16 smoke test and a 09:45 check.
 - Capacity: MAX_RUNNING_AGENTS = 8 (auto-restart already runs 9); VM has ~850MB free. A 10th agent needs
   a slot: ask the user (pause a BTC experiment, or stop open-webui 522MB).
+
+## Rework after the adversarial review (as built)
+- All broker calls run on one worker thread (LiveWorker). Paper books on the agent thread and enqueues.
+- Leg states: pending → entry_working/unknown → open → exiting → closed | stuck; missed/rejected/blocked/skipped.
+  Nothing is recorded as missed/rejected without a final broker state.
+- Every order has a deterministic order_reference_id (YYMMDD-<trade>-<kind><n>). An ambiguous reply is resolved
+  by reference lookup, never by retrying blind.
+- Protection: OCO (target MARKET, stop SL_M; triggers modified on every update_levels). Falls back to a plain
+  SL if the OCO fails. Groww has no trailing stop, so Opus trails through update_levels.
+- Exit: cancel protection → final → resolve earlier exit orders → read the net position → exit capped at
+  min(owned, net). Retried every tick until flat; at 15:19 status is "stuck" and an alert goes out.
+- Eligibility comes from Groww's instrument CSV (is_intraday, buy/sell_allowed, tick_size).
+  live_universe_filter: mis_only filters the scanner picks.
+- nse_opus_live config.yaml must set: live_broker: groww, live_universe_filter: mis_only,
+  intraday_close_buffer_min: 20 (forced close at 15:10), starting_capital: 50000, and
+  GROWW_LIVE_SESSIONS=nse_opus_live in the VM .env.

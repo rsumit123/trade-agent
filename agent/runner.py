@@ -110,44 +110,86 @@ class TradingAgent:
         }.get(self.config.llm_provider, "unknown")
         logger.info(f"   LLM: {self.config.llm_provider} / {active_model}")
 
-    def _make_portfolio(self) -> Portfolio:
+    def _make_portfolio(self, start_worker: bool = True) -> Portfolio:
         """Paper portfolio; for an allowlisted live session, one that also
-        mirrors every booking as a real Groww order (agent/live_mirror.py)."""
+        mirrors every booking as a real Groww order (agent/live_mirror.py).
+        A session that is no longer live but still has real positions open
+        today gets the mirror in exit-only mode, so they are still managed."""
         from . import live_mirror
-        if not live_mirror.live_enabled_for(getattr(self, "session", None)):
+        session = getattr(self, "session", None)
+        self.live_worker = None
+        live = live_mirror.live_enabled_for(session)
+        exit_only = (not live and session is not None and not getattr(session, "backtest_mode", False)
+                     and live_mirror.ledger_has_exposure(session.session_dir))
+        if not (live or exit_only):
             return Portfolio(self.config.db_path, self.config.starting_capital)
         try:
-            from .groww_broker import GrowwBroker
-            self.live_mirror = live_mirror.LiveMirror(
-                GrowwBroker(), self.session.session_id, self.session.session_dir,
-                market_data=self.market_data,
+            self.live_mirror = live_mirror.build_mirror(
+                session, self.market_data, exit_only=exit_only,
                 is_backtest=lambda: getattr(self, "_is_backtest", False),
                 forced_close_time=lambda now: self.risk_manager.forced_close_time(now),
+                db_path=self.config.db_path,
             )
-            logger.warning(f"💸 LIVE MIRROR ON: paper trades of {self.session.session_id} "
-                           f"are also placed as real Groww orders")
+            self.live_worker = live_mirror.LiveWorker(self.live_mirror)
+            if start_worker:
+                self.live_worker.start()
+            mode = "EXIT-ONLY (real positions still open)" if exit_only else "ON"
+            logger.warning(f"💸 LIVE MIRROR {mode}: paper trades of {session.session_id} "
+                           f"are mirrored as real Groww orders")
             return live_mirror.LivePortfolio(self.config.db_path, self.config.starting_capital,
-                                             self.live_mirror)
+                                             self.live_worker)
         except Exception as e:
             logger.error(f"Live mirror setup failed — paper only: {e}")
-            self.live_mirror = None
+            self.live_mirror = self.live_worker = None
+            if exit_only or live:
+                try:
+                    from .health import send_telegram
+                    send_telegram(f"[{session.session_id} LIVE] mirror setup FAILED: {e}. "
+                                  f"Real positions are not managed — check Groww.")
+                except Exception:
+                    pass
             return Portfolio(self.config.db_path, self.config.starting_capital)
 
-    def _live_tick(self):
-        """Once a day after the open: the real-order smoke test; then periodic
-        reconciliation with Groww. No-op unless this is a live session. Never raises."""
-        mirror = getattr(self, "live_mirror", None)
-        if mirror is None or getattr(self, "_is_backtest", False):
+    def _install_live_sigterm(self):
+        """On SIGTERM (dashboard stop/liquidate), let queued broker events finish
+        and report what is still open, instead of dying mid-order."""
+        worker = getattr(self, "live_worker", None)
+        if worker is None:
             return
-        try:
-            if not self.market_data.is_market_open():
-                return
-            if not mirror.smoke_done_today() and not self.risk_manager.check_intraday_close():
-                result = mirror.smoke_test()
-                logger.info(f"💸 Live smoke test: {result['passed']} — {result['reason']}")
-            mirror.reconcile()
-        except Exception as e:
-            logger.warning(f"Live mirror tick failed: {e}")
+        import signal
+        import threading
+
+        def on_term(signum, frame):
+            logger.warning("🛑 SIGTERM — draining live order queue")
+            worker.drain(20)
+            try:
+                worker.mirror._alert(f"Agent stopping. Real positions: {worker.mirror.open_legs_summary()}. "
+                                     f"Protective orders stay at Groww; MIS squares off at 15:20.")
+            except Exception:
+                pass
+            worker.stop()
+            raise SystemExit(0)
+        if threading.current_thread() is threading.main_thread():
+            signal.signal(signal.SIGTERM, on_term)
+
+    def _apply_live_universe_filter(self, tickers):
+        """live_universe_filter: mis_only — keep only stocks Groww allows for
+        intraday, so paper and real trade the same names. Other sessions: as is."""
+        mirror = getattr(self, "live_mirror", None)
+        if (getattr(self.session, "live_universe_filter", None) or "") != "mis_only" or mirror is None:
+            return list(tickers)
+        inst = mirror.instruments
+        if inst is None or not inst.load():
+            logger.warning("⚠️  Groww instrument list unavailable — universe NOT filtered (real entries "
+                           "will be blocked per stock)")
+            return list(tickers)
+        keep, dropped = [], []
+        for t in tickers:
+            sym = t[:-3] if t.endswith(".NS") else t
+            (keep if inst.intraday_allowed(sym) else dropped).append(t)
+        if dropped:
+            logger.info(f"🧹 Not intraday-allowed on Groww, dropped from the universe: {', '.join(dropped)}")
+        return keep
 
     # ── Tool Handler ─────────────────────────────────────────
 
@@ -664,9 +706,6 @@ class TradingAgent:
             force_intraday = False
         logger.info("🔄 Starting decision cycle" + (" [FORCE INTRADAY]" if force_intraday else "") + (" [BACKTEST]" if is_backtest else ""))
 
-        if not is_backtest:
-            self._live_tick()
-
         # 1. OBSERVE — gather market data
         logger.info("👁️  Observing market...")
         prices = prices_incl_positions(self.market_data, self.portfolio)
@@ -932,6 +971,7 @@ class TradingAgent:
         """
         logger.info(f"🚀 Starting agent loop in {mode} mode")
         self._last_review_date: str | None = None
+        self._install_live_sigterm()
 
         try:
             while True:
@@ -1011,7 +1051,6 @@ class TradingAgent:
         close of intraday positions. No LLM call; never raises."""
         if getattr(self, "_is_backtest", False):
             return
-        self._live_tick()
         try:
             positions = self.portfolio.get_open_positions()
             if not positions or not self.market_data.is_market_open():
@@ -1092,11 +1131,8 @@ class TradingAgent:
             return
         logger.info("🔄 Running scheduled daily review (market closed)")
         self.run_daily_review()
-        if getattr(self, "live_mirror", None) is not None:
-            try:
-                self.live_mirror.send_eod_report()
-            except Exception as e:
-                logger.warning(f"Live EOD report failed: {e}")
+        if getattr(self, "live_worker", None) is not None:
+            self.live_worker.submit("send_eod_report")
         self._set_review_marker(today)
 
     def _review_marker_path(self):
@@ -1145,6 +1181,7 @@ class TradingAgent:
             # Fixed universe → use the user's exact picks; never run the scanner.
             mode, tickers = self.session.resolve_universe()
             if mode == "fixed":
+                tickers = self._apply_live_universe_filter(tickers)
                 self.config.watchlist = list(tickers)
                 self.market_data.watchlist = list(tickers)
                 self._premarket_summary = (
@@ -1171,6 +1208,7 @@ class TradingAgent:
         # ranks stocks that have already made their move.
         saved = self.session.read_scan_picks(today) if self.session is not None else None
         if saved:
+            saved["tickers"] = self._apply_live_universe_filter(saved["tickers"])
             self.config.watchlist = list(saved["tickers"])
             self.market_data.watchlist = list(saved["tickers"])
             self._premarket_summary = saved.get("summary", "")
@@ -1206,6 +1244,9 @@ class TradingAgent:
                 news="",  # News not available yet during pre-market
             )
 
+            if scan_results:
+                kept = set(self._apply_live_universe_filter([s["ticker"] for s in scan_results]))
+                scan_results = [s for s in scan_results if s["ticker"] in kept]
             if scan_results:
                 new_watchlist = [s["ticker"] for s in scan_results]
                 old_count = len(self.config.watchlist)

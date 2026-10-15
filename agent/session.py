@@ -68,6 +68,8 @@ class SessionConfig:
     # ── Data Source ────────────────────────────────────────
     data_source: str = "yfinance"                # "yfinance" or "kite"
     live_broker: Optional[str] = None            # "groww" → mirror paper trades as real orders (see agent/live_mirror.py)
+    live_universe_filter: Optional[str] = None   # "mis_only" → trade only Groww intraday-allowed stocks
+    intraday_close_buffer_min: Optional[int] = None  # override the preset's forced-close buffer (min before close)
 
     # ── Backtest ──────────────────────────────────────────
     backtest_mode: bool = False                  # True = backtest before live
@@ -206,7 +208,7 @@ _YAML_FIELDS = {
     "watchlist", "universe", "include_news", "extra_system_prompt", "prompt_version",
     "llm_provider", "llm_model", "api_key_env",
     "intraday_interval_min", "personality", "created_at",
-    "data_source", "live_broker",
+    "data_source", "live_broker", "live_universe_filter", "intraday_close_buffer_min",
     "backtest_mode", "backtest_start_date", "backtest_end_date", "backtest_status", "live_started_at",
     "parent_session", "user_email", "api_key_encrypted",
     "tier", "started_at",
