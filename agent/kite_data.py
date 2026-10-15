@@ -152,6 +152,7 @@ class KiteMarketData:
         self.kite = kite_client
         self._auth = auth  # KiteAuth handle so we can re-issue a token if Kite revokes
         self._instrument_map: Dict[str, int] = {}  # tradingsymbol → instrument_token
+        self._tick_sizes: Dict[str, float] = {}    # tradingsymbol → tick size (₹)
         self._price_cache: Dict[str, float] = {}
         self._cache_time: Optional[datetime] = None
         self._cache_ttl = timedelta(seconds=30)  # 30s cache (much fresher than yfinance 5min)
@@ -207,6 +208,8 @@ class KiteMarketData:
                 self._instrument_map[sym] = i["instrument_token"]
                 # Also map with .NS suffix for compatibility
                 self._instrument_map[f"{sym}.NS"] = i["instrument_token"]
+                if i.get("tick_size"):
+                    self._tick_sizes[sym] = float(i["tick_size"])
             logger.info(f"📊 Loaded {len(instruments)} NSE instruments from Kite")
             return bool(instruments)
         except Exception as e:
@@ -220,6 +223,10 @@ class KiteMarketData:
     def _kite_symbol(self, ticker: str) -> str:
         """Convert to Kite format: 'RELIANCE.NS' → 'NSE:RELIANCE'"""
         return f"NSE:{self._strip_ns(ticker)}"
+
+    def tick_size(self, ticker: str) -> Optional[float]:
+        """NSE price tick for a ticker (e.g. 0.05), or None if unknown."""
+        return self._tick_sizes.get(self._strip_ns(ticker))
 
     def _get_instrument_token(self, ticker: str) -> Optional[int]:
         """Get instrument token for a ticker."""

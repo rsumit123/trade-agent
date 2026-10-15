@@ -80,8 +80,9 @@ class TradingAgent:
         )
 
         # Initialize components — pass market_preset for market-aware behaviour
-        self.portfolio = Portfolio(self.config.db_path, self.config.starting_capital)
         self.market_data = create_market_data(self.config, market_preset=self.preset)
+        self.live_mirror = None
+        self.portfolio = self._make_portfolio()
         self.researcher = WebResearcher(self.config.news_sources, market_preset=self.preset)
         self.risk_manager = RiskManager(self.config, self.portfolio)
         self.learner = Learner(self.config, self.portfolio)
@@ -108,6 +109,45 @@ class TradingAgent:
             "openrouter": self.config.openrouter_model,
         }.get(self.config.llm_provider, "unknown")
         logger.info(f"   LLM: {self.config.llm_provider} / {active_model}")
+
+    def _make_portfolio(self) -> Portfolio:
+        """Paper portfolio; for an allowlisted live session, one that also
+        mirrors every booking as a real Groww order (agent/live_mirror.py)."""
+        from . import live_mirror
+        if not live_mirror.live_enabled_for(getattr(self, "session", None)):
+            return Portfolio(self.config.db_path, self.config.starting_capital)
+        try:
+            from .groww_broker import GrowwBroker
+            self.live_mirror = live_mirror.LiveMirror(
+                GrowwBroker(), self.session.session_id, self.session.session_dir,
+                market_data=self.market_data,
+                is_backtest=lambda: getattr(self, "_is_backtest", False),
+                forced_close_time=lambda now: self.risk_manager.forced_close_time(now),
+            )
+            logger.warning(f"💸 LIVE MIRROR ON: paper trades of {self.session.session_id} "
+                           f"are also placed as real Groww orders")
+            return live_mirror.LivePortfolio(self.config.db_path, self.config.starting_capital,
+                                             self.live_mirror)
+        except Exception as e:
+            logger.error(f"Live mirror setup failed — paper only: {e}")
+            self.live_mirror = None
+            return Portfolio(self.config.db_path, self.config.starting_capital)
+
+    def _live_tick(self):
+        """Once a day after the open: the real-order smoke test; then periodic
+        reconciliation with Groww. No-op unless this is a live session. Never raises."""
+        mirror = getattr(self, "live_mirror", None)
+        if mirror is None or getattr(self, "_is_backtest", False):
+            return
+        try:
+            if not self.market_data.is_market_open():
+                return
+            if not mirror.smoke_done_today() and not self.risk_manager.check_intraday_close():
+                result = mirror.smoke_test()
+                logger.info(f"💸 Live smoke test: {result['passed']} — {result['reason']}")
+            mirror.reconcile()
+        except Exception as e:
+            logger.warning(f"Live mirror tick failed: {e}")
 
     # ── Tool Handler ─────────────────────────────────────────
 
@@ -624,6 +664,9 @@ class TradingAgent:
             force_intraday = False
         logger.info("🔄 Starting decision cycle" + (" [FORCE INTRADAY]" if force_intraday else "") + (" [BACKTEST]" if is_backtest else ""))
 
+        if not is_backtest:
+            self._live_tick()
+
         # 1. OBSERVE — gather market data
         logger.info("👁️  Observing market...")
         prices = prices_incl_positions(self.market_data, self.portfolio)
@@ -968,6 +1011,7 @@ class TradingAgent:
         close of intraday positions. No LLM call; never raises."""
         if getattr(self, "_is_backtest", False):
             return
+        self._live_tick()
         try:
             positions = self.portfolio.get_open_positions()
             if not positions or not self.market_data.is_market_open():
@@ -1048,6 +1092,11 @@ class TradingAgent:
             return
         logger.info("🔄 Running scheduled daily review (market closed)")
         self.run_daily_review()
+        if getattr(self, "live_mirror", None) is not None:
+            try:
+                self.live_mirror.send_eod_report()
+            except Exception as e:
+                logger.warning(f"Live EOD report failed: {e}")
         self._set_review_marker(today)
 
     def _review_marker_path(self):

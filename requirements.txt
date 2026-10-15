@@ -29,6 +29,9 @@ pyyaml>=6.0
 kiteconnect>=5.0.0
 pyotp>=2.9.0
 
+# Groww Trade API (real orders for the live-mirror session only; data stays on Kite)
+growwapi>=1.5.0
+
 # Auth (Google OAuth + JWT + per-user API key encryption)
 google-auth>=2.30.0
 PyJWT>=2.8.0
