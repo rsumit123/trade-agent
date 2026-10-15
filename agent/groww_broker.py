@@ -101,22 +101,29 @@ def is_auth_error(exc) -> bool:
     return classify_error(exc) in ("auth", "ip_not_whitelisted")
 
 
+# Groww error codes that mean "something broke on our side", not "your order is rejected".
+INTERNAL_CODES = {"GA000", "GA003"}
+
+
 def is_ambiguous(exc) -> bool:
-    """True when the request may have reached Groww and been acted on:
-    timeouts, connection drops, 5xx, unreadable bodies. A clean Groww
-    rejection (status FAILURE / 4xx) is definitive."""
-    name = type(exc).__name__
-    code = str(getattr(exc, "code", "") or "")
-    if name in ("GrowwAPITimeoutException", "Timeout", "ReadTimeout", "ConnectTimeout", "TimeoutError",
-                "ConnectionError", "ChunkedEncodingError", "JSONDecodeError", "RemoteDisconnected"):
+    """Default: ambiguous (the order may have reached Groww). Only an explicit
+    rejection response is definitive: a Groww error code that isn't internal,
+    or an HTTP 4xx. Timeouts, SSL/proxy/OS errors, 5xx, internal GA codes,
+    unreadable JSON and unknown exception types all need a reference lookup."""
+    if isinstance(exc, GrowwAuthError):
+        return False
+    # Raised in our process before any request goes out (SDK method missing,
+    # bad arguments): nothing can have reached Groww.
+    if type(exc) in (AttributeError, TypeError, NotImplementedError):
+        return False
+    code = str(getattr(exc, "code", "") or "").strip()
+    if not code:
         return True
-    if isinstance(exc, (TimeoutError, ConnectionError)):
-        return True
-    if isinstance(exc, ValueError) and "json" in str(exc).lower():
-        return True
-    if code.startswith("5"):
-        return True
-    return False
+    if code.isdigit():
+        return not code.startswith("4")
+    if code.upper().startswith("GA"):
+        return code.upper() in INTERNAL_CODES
+    return True
 
 
 class GrowwAuthError(Exception):
@@ -164,6 +171,8 @@ def norm_order(d: Dict) -> Dict:
         "final": status in DEAD_STATUSES or (status in FILLED_STATUSES and (full or qty == 0)),
         "remark": d.get("remark") or "",
         "created_at": d.get("created_at") or "",
+        "order_type": d.get("order_type"),
+        "product": d.get("product"),
     }
 
 
@@ -217,6 +226,7 @@ class GrowwBroker:
             t.start()
             t.join(LOGIN_TIMEOUT_S)
             if t.is_alive():
+                box["abandoned"] = True          # a late token from that thread is never used
                 raise GrowwAuthError(f"Groww login timed out after {LOGIN_TIMEOUT_S}s")
             if "e" in box:
                 raise GrowwAuthError(f"Groww login failed: {error_text(box['e'])}")
@@ -324,16 +334,38 @@ class GrowwBroker:
                           order_type=order_type, quantity=int(quantity),
                           price=price, trigger_price=trigger_price)
 
-    def order_list(self, symbol: str = None, pages: int = 4) -> List[Dict]:
-        """Today's orders (newest pages first as Groww returns them), normalised."""
-        out = []
-        for page in range(pages):
-            resp = self._call("get_order_list", page=page, page_size=25, segment=SEGMENT_CASH) or {}
+    def order_list(self, symbol: str = None, max_pages: int = 20) -> List[Dict]:
+        """Today's orders, normalised. The SDK ignores page_size (server default
+        page size), so page until a page is empty or brings nothing new."""
+        out, seen = [], set()
+        for page in range(max_pages):
+            resp = self._call("get_order_list", page=page, segment=SEGMENT_CASH) or {}
             rows = resp.get("order_list") or []
-            out += [norm_order(r) for r in rows if symbol is None or r.get("trading_symbol") == symbol]
-            if len(rows) < 25:
+            new = [r for r in rows if r.get("groww_order_id") not in seen]
+            if not new:
                 break
+            for r in new:
+                seen.add(r.get("groww_order_id"))
+                if symbol is None or r.get("trading_symbol") == symbol:
+                    out.append(norm_order(r))
         return out
+
+    def order_by_reference_in_list(self, reference_id: str, symbol: str = None) -> Optional[Dict]:
+        for o in self.order_list(symbol):
+            if o.get("ref") == reference_id:
+                return o
+        return None
+
+    def orders_net(self, symbol: str) -> int:
+        """Signed net MIS quantity implied by today's filled orders on a symbol
+        (all orders, ours and the user's) — the cross-check for positions()."""
+        net = 0
+        for o in self.order_list(symbol):
+            if o.get("product") not in (None, "", PRODUCT_MIS):
+                continue
+            q = o.get("filled_qty") or 0
+            net += q if o.get("side") == BUY else -q
+        return net
 
     # ── OCO (target + stop, one cancels the other) ─────────
 
@@ -372,15 +404,33 @@ class GrowwBroker:
         return {"id": smart_order_id, "status": status, "final": status in OCO_FINAL,
                 "fired": status in OCO_FIRED, "raw": d}
 
+    def supports_oco(self) -> bool:
+        return hasattr(self.client, "get_smart_order_list")
+
+    def smart_orders(self, symbol: str = None) -> List[Dict]:
+        """OCO smart orders (ASSUMED list key and row fields: reference_id,
+        trading_symbol, smart_order_id, status)."""
+        out = []
+        for page in range(10):
+            resp = self._call("get_smart_order_list", smart_order_type=OCO, segment=SEGMENT_CASH,
+                              page=page, page_size=50) or {}
+            rows = resp.get("smart_orders") or resp.get("order_list") or resp.get("data") or []
+            if not rows:
+                break
+            for r in rows:
+                if symbol is None or r.get("trading_symbol") == symbol:
+                    out.append({"id": r.get("smart_order_id"), "ref": r.get("reference_id"),
+                                "symbol": r.get("trading_symbol"),
+                                "status": str(r.get("status") or "").upper(), "raw": r})
+            if len(rows) < 50:
+                break
+        return out
+
     def find_oco(self, symbol: str, reference_id: str) -> Optional[str]:
-        """Smart order id for an OCO whose create call was ambiguous (ASSUMED:
-        list rows carry reference_id and trading_symbol)."""
-        resp = self._call("get_smart_order_list", smart_order_type=OCO, segment=SEGMENT_CASH,
-                          page=0, page_size=50) or {}
-        rows = resp.get("smart_orders") or resp.get("order_list") or resp.get("data") or []
-        for r in rows:
-            if r.get("reference_id") == reference_id and r.get("trading_symbol") == symbol:
-                return r.get("smart_order_id")
+        """Smart order id for an OCO whose create call was ambiguous."""
+        for r in self.smart_orders(symbol):
+            if r["ref"] == reference_id:
+                return r["id"]
         return None
 
     # ── Positions / quotes / margin ─────────────────────────
@@ -461,36 +511,42 @@ class GrowwInstruments:
             return None
 
     def load(self) -> bool:
+        today = _ist_today(self._now())
         with self._lock:
-            today = _ist_today(self._now())
             if self._day == today and self._rows:
                 return True
-            text = self._fresh_on_disk()
-            if text is None:
+        text = self._fresh_on_disk()
+        if text is None:
+            try:
+                text = self._fetch()                       # network: never under the lock
+            except Exception as e:
+                logger.warning(f"Groww instrument list download failed: {e}")
+                text = None
+            if text:
                 try:
-                    text = self._fetch()
-                except Exception as e:
-                    logger.warning(f"Groww instrument list download failed: {e}")
-                    text = None
-                if text:
-                    try:
-                        self.path.parent.mkdir(parents=True, exist_ok=True)
-                        self.path.write_text(text)
-                        self._date_path.write_text(today)
-                    except OSError as e:
-                        logger.warning(f"Could not cache Groww instruments: {e}")
-            if not text:
-                try:
-                    text = self.path.read_text()           # stale copy beats nothing for tick size
-                    logger.warning("Using a stale Groww instrument list")
-                except OSError:
-                    return False
-            rows = {}
-            for r in csv.DictReader(io.StringIO(text)):
-                if r.get("exchange") == EXCHANGE_NSE and r.get("segment") == SEGMENT_CASH:
-                    rows[r.get("trading_symbol")] = r
+                    self.path.parent.mkdir(parents=True, exist_ok=True)
+                    self.path.write_text(text)
+                    self._date_path.write_text(today)
+                except OSError as e:
+                    logger.warning(f"Could not cache Groww instruments: {e}")
+        if not text:
+            try:
+                text = self.path.read_text()               # stale copy beats nothing for tick size
+                logger.warning("Using a stale Groww instrument list")
+            except OSError:
+                return False
+        rows = {}
+        for r in csv.DictReader(io.StringIO(text)):
+            if r.get("exchange") != EXCHANGE_NSE or r.get("segment") != SEGMENT_CASH:
+                continue
+            sym = r.get("trading_symbol")
+            prev = rows.get(sym)
+            # Duplicate symbols: prefer series EQ, else keep the first row seen.
+            if prev is None or (prev.get("series") != "EQ" and r.get("series") == "EQ"):
+                rows[sym] = r
+        with self._lock:
             self._rows, self._day = rows, today
-            return bool(rows)
+        return bool(rows)
 
     def info(self, symbol: str) -> Optional[Dict]:
         """{'is_intraday', 'buy_allowed', 'sell_allowed', 'tick_size'} or None."""

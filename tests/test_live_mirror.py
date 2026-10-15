@@ -9,6 +9,7 @@ import os
 import stat
 import sys
 import types
+from dataclasses import replace
 from datetime import datetime
 from types import SimpleNamespace as NS
 from zoneinfo import ZoneInfo
@@ -59,7 +60,8 @@ class FakeGrowwClient:
         self.oco_cancel_mode = "ok"
         self.qty_mode = "signed"         # signed | abs | only_signed | disagree
         self.upper = self.lower = None
-        self.external = {}               # symbol → qty held outside the mirror (user's own trades)
+        self.pos_offset = {}             # symbol → qty added to positions only (lag / misread)
+        self.clock = lambda: NOW
         if oco:
             self.create_smart_order = self._create_smart_order
             self.modify_smart_order = self._modify_smart_order
@@ -92,7 +94,8 @@ class FakeGrowwClient:
         o = {"groww_order_id": oid, "order_reference_id": kw.get("order_reference_id"),
              "trading_symbol": kw["trading_symbol"], "quantity": kw["quantity"],
              "transaction_type": kw["transaction_type"], "order_type": kw["order_type"],
-             "price": kw.get("price"), "trigger_price": kw.get("trigger_price"),
+             "price": kw.get("price"), "trigger_price": kw.get("trigger_price"), "product": kw.get("product"),
+             "created_at": self.clock().isoformat(),
              "filled_quantity": 0, "average_fill_price": None, "order_status": "OPEN", "remark": ""}
         px = kw.get("price") if kw["order_type"] != "MARKET" else self.ltp
         if how == "fill" or (isinstance(how, tuple) and how[0] == "fill"):
@@ -128,9 +131,23 @@ class FakeGrowwClient:
                                           "order_reference_id")}
         raise GErr("Order not found", code="404")
 
-    def get_order_list(self, page=0, page_size=25, segment=None, timeout=None):
-        rows = list(self.orders.values())[page * page_size:(page + 1) * page_size]
+    PAGE = 25                         # the server's page size; the SDK never sends page_size
+
+    def get_order_list(self, page=0, segment=None, timeout=None):
+        rows = list(self.orders.values())[page * self.PAGE:(page + 1) * self.PAGE]
         return {"order_list": [dict(r) for r in rows]}
+
+    def add_manual(self, sym, qty, price=100.0, order_type="MARKET", status="EXECUTED", ref=None):
+        """An order the user placed in the Groww app (no reference of ours)."""
+        self.n += 1
+        oid = f"G{self.n}"
+        filled = abs(qty) if status == "EXECUTED" else 0
+        self.orders[oid] = {"groww_order_id": oid, "order_reference_id": ref, "trading_symbol": sym,
+                            "quantity": abs(qty), "transaction_type": "BUY" if qty > 0 else "SELL",
+                            "order_type": order_type, "product": "MIS", "created_at": self.clock().isoformat(),
+                            "filled_quantity": filled, "average_fill_price": price if filled else None,
+                            "order_status": status, "remark": "", "trigger_price": None, "price": price}
+        return oid
 
     def cancel_order(self, groww_order_id, segment, timeout=None):
         self.calls.append(("cancel", groww_order_id))
@@ -191,6 +208,7 @@ class FakeGrowwClient:
         self.n += 1
         oid = f"G{self.n}"
         self.orders[oid] = {"groww_order_id": oid, "order_reference_id": "OCOCHILD1",
+                            "product": "MIS", "created_at": self.clock().isoformat(),
                             "trading_symbol": s["trading_symbol"], "quantity": s["quantity"],
                             "transaction_type": s["transaction_type"], "order_type": "MARKET",
                             "filled_quantity": s["quantity"], "order_status": "EXECUTED",
@@ -200,17 +218,17 @@ class FakeGrowwClient:
 
     # positions / quotes
     def net(self, sym):
-        q = self.external.get(sym, 0)
+        q = 0
         for o in self.orders.values():
             if o["trading_symbol"] == sym:
                 q += o["filled_quantity"] * (1 if o["transaction_type"] == "BUY" else -1)
         return q
 
     def get_positions_for_user(self, segment=None, timeout=None):
-        syms = {o["trading_symbol"] for o in self.orders.values()} | set(self.external)
+        syms = {o["trading_symbol"] for o in self.orders.values()} | set(self.pos_offset)
         rows = []
         for s in sorted(syms):
-            net = self.net(s)
+            net = self.net(s) + self.pos_offset.get(s, 0)
             credit, debit = (net, 0) if net >= 0 else (0, -net)
             row = {"trading_symbol": s, "exchange": "NSE", "product": "MIS"}
             if self.qty_mode == "signed":
@@ -268,6 +286,7 @@ NOW = datetime(2026, 10, 16, 10, 0, tzinfo=IST)     # a Friday
 def env(tmp_path):
     client = FakeGrowwClient(ltp=940.0)
     clock = {"t": 0.0, "now": NOW}
+    client.clock = lambda: clock["now"]
     alerts = []
     md = FakeMD({"SBIN.NS": 940.0, "ITC.NS": 400.0})
 
@@ -406,10 +425,14 @@ def test_entry_reply_lost_after_acceptance_resolves_by_reference(env):   # [B2]
     assert _leg(env, t)["status"] == "open" and _leg(env, t)["entry_order"] == "G1"
 
 
-def test_entry_never_reached_groww_is_missed_after_lookups(env):
+def test_entry_never_reached_groww_is_missed_only_after_30s_of_lookups(env):
     env.client.script = ["timeout_before"]
     t = _buy(env)
     for _ in range(3):
+        env.later(5)
+        env.mirror.tick()
+    assert _leg(env, t)["status"] == "entry_working"            # 3 lookups but only 15s
+    for _ in range(4):
         env.later(5)
         env.mirror.tick()
     assert _leg(env, t)["status"] == "missed" and len(env.client.placed()) == 1
@@ -467,7 +490,7 @@ def test_stop_already_filled_means_no_second_exit(env):
 
 def test_exit_is_capped_at_the_broker_position(env):                    # cross-cutting
     t = _buy(env)
-    env.client.external["SBIN"] = -4               # 4 shares already sold outside the mirror
+    env.client.add_manual("SBIN", -4)              # 4 shares already sold in the Groww app
     env.pf.execute_sell(t.id, 950.0, "exit")
     assert env.client.placed("LIMIT", "SELL")[0]["quantity"] == 6
     assert env.client.net("SBIN") == 0
@@ -476,14 +499,14 @@ def test_exit_is_capped_at_the_broker_position(env):                    # cross-
 @pytest.mark.parametrize("external", [-10, -15])
 def test_no_exit_when_broker_is_flat_or_opposite(env, external):
     t = _buy(env)
-    env.client.external["SBIN"] = external
+    env.client.add_manual("SBIN", external)
     env.pf.execute_sell(t.id, 950.0, "exit")
     assert env.client.placed("LIMIT", "SELL") == [] and _leg(env, t)["status"] == "closed"
     assert "unknown" in _leg(env, t)["note"]
 
 
 def test_manual_position_in_same_symbol_is_never_touched(env):
-    env.client.external["SBIN"] = 15              # user's own shares
+    env.client.add_manual("SBIN", 15)             # user's own shares
     t = _buy(env)
     env.pf.execute_sell(t.id, 950.0, "exit")
     assert env.client.placed("LIMIT", "SELL")[0]["quantity"] == 10 and env.client.net("SBIN") == 15
@@ -793,7 +816,7 @@ def test_runner_builds_exit_only_mirror_when_gates_fail_but_positions_open(env, 
     a.config = AgentConfig(starting_capital=50_000, db_path=str(tmp_path / "r.db"))
     a.market_data = FakeMD()
     a.session = NS(session_id="nse_opus_live", live_broker=None, backtest_mode=False, session_dir=env.tmp / "s")
-    p = a._make_portfolio(start_worker=False)
+    p = a._make_portfolio()
     assert isinstance(p, LivePortfolio) and a.live_mirror.exit_only
     assert "exit-only" in a.live_mirror._entry_block("SBIN.NS", 1, 940.0)
 
@@ -804,10 +827,10 @@ def test_runner_builds_live_portfolio_only_when_gated(tmp_path, monkeypatch):
     a.config = AgentConfig(starting_capital=50_000, db_path=str(tmp_path / "t.db"))
     a.market_data = FakeMD()
     a.session = NS(session_id="nse_opus_live", live_broker="groww", backtest_mode=False, session_dir=tmp_path / "s")
-    assert isinstance(a._make_portfolio(start_worker=False), LivePortfolio) and a.live_worker is not None
+    assert isinstance(a._make_portfolio(), LivePortfolio) and a.live_worker is not None
     a.session = NS(session_id="nse_opus", live_broker="groww", backtest_mode=False, session_dir=tmp_path / "o")
     a.live_mirror = None
-    p = a._make_portfolio(start_worker=False)
+    p = a._make_portfolio()
     assert type(p) is Portfolio and a.live_worker is None
 
 
@@ -815,24 +838,42 @@ def test_dashboard_liquidate_flattens_real_positions(env):                 # [B5
     t = _buy(env)
     t2 = env.pf.execute_short("ITC.NS", 20, 400.0, stop_price=405.0)
     m = env.make(exit_only=True)
-    res = lm.liquidate_from_dashboard(NS(session_dir=env.tmp / "s"), mirror=m, run_until_flat=False,
+    res = lm.liquidate_from_dashboard(NS(session_dir=env.tmp / "s"), mirror=m, background=False,
                                       sleep=lambda s: None)
-    assert res["live"] == "flattening 2 legs"
+    assert res["live"] == "flattened 2 legs"
     assert m.legs[str(t.id)]["status"] == "closed" and m.legs[str(t2.id)]["status"] == "closed"
     assert env.client.net("SBIN") == 0 and env.client.net("ITC") == 0
     assert "manual liquidation" in m.disabled_reason()
 
 
-def test_dashboard_liquidate_defers_to_the_agent_holding_the_lock(env):
+def test_dashboard_liquidate_waits_for_the_lock_then_flattens(env):      # [Major 6]
     t = _buy(env)
-    assert env.mirror.acquire_lock()
+    assert env.mirror.acquire_lock()                                        # the agent, still exiting
     other = env.make(exit_only=True)
-    res = lm.liquidate_from_dashboard(NS(session_dir=env.tmp / "s"), mirror=other, wait_lock_s=1,
-                                      sleep=lambda s: None)
-    assert res["live"] == "requested_from_agent" and (env.tmp / "s" / "LIVE_LIQUIDATE").exists()
-    env.mirror.tick()                                                       # the agent picks it up
+    waits = []
+
+    def sleep(s):
+        waits.append(s)
+        if len(waits) == 5:
+            env.mirror.release_lock()                                       # agent exits
+    res = lm.liquidate_from_dashboard(NS(session_dir=env.tmp / "s"), mirror=other, wait_lock_s=60,
+                                      background=False, sleep=sleep)
+    assert res["live"] == "flattened 1 legs" and other.legs[str(t.id)]["status"] == "closed"
+    assert env.client.net("SBIN") == 0
+
+
+def test_unclaimed_liquidation_request_is_acted_on_by_the_agent(env):
+    t = _buy(env)
+    lm.request_liquidation(env.tmp / "s", today="2026-10-16")
+    env.mirror.tick()
     assert _leg(env, t)["status"] == "closed" and not (env.tmp / "s" / "LIVE_LIQUIDATE").exists()
-    env.mirror.release_lock()
+
+
+def test_stale_liquidation_request_from_another_day_is_ignored_and_cleared(env):
+    t = _buy(env)
+    lm.request_liquidation(env.tmp / "s", today="2026-10-15")
+    env.mirror.tick()
+    assert _leg(env, t)["status"] == "open" and not (env.tmp / "s" / "LIVE_LIQUIDATE").exists()
 
 
 def test_process_lock_is_exclusive(env):
@@ -939,7 +980,7 @@ def test_smoke_test_full_sequence(oco):
     assert len(oco.client.ccalls("oco_create")) == 1 and len(oco.client.ccalls("oco_modify")) == 1
     assert len(oco.client.ccalls("oco_cancel")) >= 1 and oco.client.net("ITC") == 0
     steps = [r["step"] for r in _ledger(oco) if r.get("event") == "smoke_step"]
-    assert steps == ["oco_create", "oco_modify", "oco_cancel"]
+    assert steps == ["lookup_by_reference", "positions_after_buy", "oco_create", "oco_modify", "oco_cancel"]
     assert oco.make(smoke=False).smoke_done_today()
 
 
@@ -1102,17 +1143,447 @@ def test_dashboard_liquidate_skips_paper_only_sessions(tmp_path, monkeypatch):
     assert app._liquidate_live(sess) is None and app._liquidate_live(None) is None
 
 
-def test_sigterm_drains_the_live_queue_and_reports_open_positions(env):
+def _sigterm(env, a):
     import signal
-    t = _buy(env)
-    a = TradingAgent.__new__(TradingAgent)
-    a.live_worker = LiveWorker(env.mirror, synchronous=True)
     old = signal.getsignal(signal.SIGTERM)
     try:
-        a._install_live_sigterm()
+        a._start_live()
         handler = signal.getsignal(signal.SIGTERM)
         with pytest.raises(SystemExit):
             handler(signal.SIGTERM, None)
     finally:
         signal.signal(signal.SIGTERM, old)
+
+
+def _term_agent(env):
+    a = TradingAgent.__new__(TradingAgent)
+    a.live_worker = LiveWorker(env.mirror, synchronous=True)
+    a.session = NS(session_dir=env.tmp / "s")
+    return a
+
+
+def test_sigterm_plain_stop_keeps_positions_protected(env, monkeypatch):     # [Major 6]
+    monkeypatch.setattr(lm, "_ist_today", lambda: "2026-10-16")
+    t = _buy(env)
+    env.mirror.market_ok = False
+    env.client.script = ["open"] * 30                                        # exit orders keep resting
+    env.pf.execute_sell(t.id, 950.0, "exit")
+    assert _leg(env, t)["protect_final"] and env.client.net("SBIN") == 10    # stop cancelled, exit resting
+    _sigterm(env, _term_agent(env))
+    leg = _leg(env, t)
+    assert leg["status"] == "open" and leg["sl_order"] and not leg["protect_final"]   # re-protected
+    resting_exits = [o for o in env.client.orders.values()
+                     if o["order_type"] == "LIMIT" and o["transaction_type"] == "SELL" and o["order_status"] == "OPEN"]
+    assert resting_exits == []                                               # no exit next to the fresh stop
     assert any("Agent stopping" in x and "SBIN long 10" in x for x in env.alerts)
+
+
+def test_sigterm_with_liquidation_request_flattens(env, monkeypatch):
+    monkeypatch.setattr(lm, "_ist_today", lambda: "2026-10-16")
+    t = _buy(env)
+    lm.request_liquidation(env.tmp / "s", today="2026-10-16")
+    _sigterm(env, _term_agent(env))
+    assert _leg(env, t)["status"] == "closed" and env.client.net("SBIN") == 0
+
+
+# ── Re-review blockers (repro2.py / repro3.py on c95397b) ─────────────────
+
+def _no_live_protection(client, sym):
+    sl = [o for o in client.orders.values() if o["trading_symbol"] == sym and o["order_type"] == "SL"
+          and o["order_status"] in ("OPEN", "TRIGGER_PENDING")]
+    oco = [s for s in client.smart.values() if s["trading_symbol"] == sym and s["status"] == "ACTIVE"]
+    return not sl and not oco
+
+
+def test_unresolved_oco_blocks_closing_until_found_and_cancelled(oco):           # [N1] repro E
+    oco.client.oco_script = ["timeout_after"]
+    lister = oco.client.get_smart_order_list
+    oco.client.get_smart_order_list = lambda **kw: {"smart_orders": []}          # Groww can't show it yet
+    t = _buy(oco, stop=930.0, target=960.0)
+    assert _leg(oco, t)["protect_kind"] == "oco_unknown"
+    oco.pf.execute_sell(t.id, 950.0, "exit")
+    for _ in range(5):
+        oco.later(5)
+        oco.mirror.tick()
+    assert oco.client.net("SBIN") == 0 and _leg(oco, t)["status"] == "exiting"   # never "closed" yet
+    assert any("unknown" in a for a in oco.alerts)
+    oco.client.get_smart_order_list = lister                                     # it shows up
+    oco.mirror.tick()
+    assert _leg(oco, t)["status"] == "closed" and _no_live_protection(oco.client, "SBIN")
+
+
+def test_unknown_plain_stop_is_resolved_by_reference_and_cancelled(env):         # [N1] repro F
+    env.client.script = ["fill", ("after", "open", "timeout")]
+    orig = env.client.get_order_status_by_reference
+    env.client.get_order_status_by_reference = lambda **kw: (_ for _ in ()).throw(ConnectionError("reset"))
+    t = _buy(env)
+    assert _leg(env, t)["protect_kind"] == "sl_unknown"
+    env.client.get_order_status_by_reference = orig
+    env.pf.execute_sell(t.id, 950.0, "exit")
+    env.mirror.tick()
+    assert _leg(env, t)["status"] == "closed" and _no_live_protection(env.client, "SBIN")
+    assert env.client.net("SBIN") == 0
+
+
+def test_close_sweeps_a_leftover_stop_of_ours_but_not_the_users(env):          # [N1]
+    t = _buy(env)
+    ghost = env.client.add_manual("SBIN", -10, order_type="SL", status="TRIGGER_PENDING",
+                                  ref=f"261016-{t.id}-P9")                       # ours, forgotten
+    users = env.client.add_manual("SBIN", -5, order_type="SL", status="TRIGGER_PENDING", ref="MYOWNSTOP1")
+    env.pf.execute_sell(t.id, 950.0, "exit")
+    assert _leg(env, t)["status"] == "closed"
+    assert env.client.orders[ghost]["order_status"] == "CANCELLED"
+    assert env.client.orders[users]["order_status"] == "TRIGGER_PENDING"
+
+
+def test_periodic_orphan_sweep_cancels_our_stop_on_a_flat_symbol(env):          # [N1]
+    t = _buy(env)
+    env.pf.execute_sell(t.id, 950.0, "exit")
+    ghost = env.client.add_manual("SBIN", -10, order_type="SL", status="TRIGGER_PENDING", ref="261016-77-P1")
+    env.mirror.reconcile(force=True)
+    assert env.client.orders[ghost]["order_status"] == "CANCELLED"
+    assert any("leftover protective stop" in a for a in env.alerts)
+
+
+def test_oco_triggered_without_its_order_waits_then_exits(oco):                  # [Major 1] repro G
+    t = _buy(oco, stop=930.0, target=960.0)
+    oco.client.smart["oco_1"]["status"] = "TRIGGERED"
+    oco.pf.execute_sell(t.id, 950.0, "exit")
+    assert oco.client.placed(side="SELL") == [] and _leg(oco, t)["status"] == "exiting"
+    for _ in range(4):
+        oco.later(6)
+        oco.mirror.tick()
+    assert _leg(oco, t)["status"] == "closed" and oco.client.net("SBIN") == 0
+    assert len(oco.client.placed("LIMIT", "SELL")) == 1
+
+
+def test_oco_triggered_child_still_working_is_cancelled_before_exit(oco):
+    t = _buy(oco, stop=930.0, target=960.0)
+    child = oco.client.fire_oco("oco_1", "stop_loss", price=929.0)
+    oco.client.orders[child].update(order_status="OPEN", filled_quantity=0, average_fill_price=None)
+    oco.client.smart["oco_1"]["status"] = "TRIGGERED"
+    oco.pf.execute_sell(t.id, 931.0, "stop")
+    oco.mirror.tick()
+    assert oco.client.orders[child]["order_status"] == "CANCELLED"
+    assert _leg(oco, t)["status"] == "closed" and oco.client.net("SBIN") == 0
+
+
+def test_entry_lookup_lag_is_resolved_from_the_order_list(env):                 # [Major 3] repro H
+    env.client.script = [("after", "fill", "timeout")]
+    env.client.get_order_status_by_reference = lambda **kw: (_ for _ in ()).throw(GErr("nf", "404"))
+    for i in range(30):                                                          # push it to page 2
+        env.client.add_manual("ITC", 1 if i % 2 else -1)
+    t = _buy(env)
+    for _ in range(8):
+        env.later(2)
+        env.mirror.tick()
+    assert _leg(env, t)["status"] == "open" and env.client.net("SBIN") == 10
+
+
+def test_standby_mirror_drops_events_and_never_touches_the_broker(env):        # [N2] repro I
+    t = _buy(env)
+    standby = env.make()
+    standby.standby = True
+    env.client.script = ["open"]
+    env.pf.execute_sell(t.id, 950.0, "exit")
+    n = len(env.client.calls)
+    standby.on_exit(replace(t, exit_price=950.0, exit_type="manual"))
+    standby.on_levels(t)
+    standby.on_entry(t)
+    assert len(env.client.calls) == n
+    env.client.orders["G3"].update(order_status="EXECUTED", filled_quantity=10, average_fill_price=949.0)
+    env.mirror.tick()
+    assert env.client.net("SBIN") == 0
+
+
+def test_unstarted_worker_drops_events(env):                                     # [N2]
+    w = LiveWorker(env.mirror)
+    pf = LivePortfolio(str(env.tmp / "u.db"), 500_000, w)
+    _buy(env, pf=pf)
+    assert env.client.calls == []
+
+
+def test_runner_never_takes_the_lock_outside_the_loop(tmp_path, monkeypatch):    # [N2]
+    monkeypatch.setenv("GROWW_LIVE_SESSIONS", "nse_opus_live")
+    a = TradingAgent.__new__(TradingAgent)
+    a.config = AgentConfig(starting_capital=50_000, db_path=str(tmp_path / "t.db"))
+    a.market_data = FakeMD()
+    a.session = NS(session_id="nse_opus_live", live_broker="groww", backtest_mode=False, session_dir=tmp_path / "s")
+    a._make_portfolio()
+    assert a.live_worker.started is False
+    probe = LiveMirror(None, "nse_opus_live", tmp_path / "s", alert=lambda s: None)
+    assert probe.acquire_lock()
+    probe.release_lock()
+
+
+class Inverted(FakeGrowwClient):
+    """credit = sold / debit = bought, quantity unsigned (a plausible misreading)."""
+
+    def get_positions_for_user(self, segment=None, timeout=None):
+        rows = super().get_positions_for_user(segment)["positions"]
+        for r in rows:
+            r["credit_quantity"], r["debit_quantity"] = r["debit_quantity"], r["credit_quantity"]
+            r["quantity"] = abs(r["quantity"])
+        return {"positions": rows}
+
+
+def test_inverted_position_semantics_fail_the_smoke_test_and_still_sell(tmp_path):   # [N3] repro3
+    c = Inverted(ltp=400.0, oco=True)
+    alerts, clk = [], {"t": 0.0}
+    m = LiveMirror(GrowwBroker(client=c, token_path=tmp_path / "tok"), "nse_opus_live", tmp_path,
+                   FakeMD({"ITC.NS": 400.0}), alert=alerts.append, now=lambda: NOW,
+                   sleep=lambda s: clk.__setitem__("t", clk["t"] + s), monotonic=lambda: clk["t"])
+    r = m.smoke_test("ITC.NS")
+    assert not r["passed"] and "position semantics untrusted" in r["reason"]
+    assert c.net("ITC") == 0 and m.disabled_reason()
+    t = NS(id=11, ticker="ITC.NS", direction="long", quantity=10, entry_price=400.0, stop_price=395.0,
+           target_price=410.0, exit_price=400.0, exit_type="x")
+    m.on_entry(t)
+    assert m.legs["11"]["status"] == "skipped" and c.net("ITC") == 0
+
+
+def test_position_lag_after_exit_fill_never_double_exits(env):                 # [N3]
+    t = _buy(env)
+    orig = env.client.place_order
+
+    def lagging(timeout=None, **kw):
+        r = orig(timeout=timeout, **kw)
+        if kw["transaction_type"] == "SELL" and kw["order_type"] == "LIMIT":
+            env.client.pos_offset["SBIN"] = 10                               # positions still show +10
+        return r
+    env.client.place_order = lagging
+    env.pf.execute_sell(t.id, 950.0, "exit")
+    for _ in range(3):
+        env.later(3)
+        env.mirror.tick()
+    assert len(env.client.placed("LIMIT", "SELL")) == 1 and _leg(env, t)["status"] == "exiting"
+    env.client.pos_offset.clear()
+    env.mirror.tick()
+    assert _leg(env, t)["status"] == "closed" and env.client.net("SBIN") == 0
+
+
+def test_persistent_disagreement_goes_stuck_reprotects_and_disables(env):      # [N3]
+    t = _buy(env)
+    env.mirror.market_ok = False
+    env.client.script = ["open"] * 10                                        # exits rest
+    env.pf.execute_sell(t.id, 950.0, "exit")                                 # stop cancelled, exit resting
+    env.client.pos_offset["SBIN"] = -10                                      # positions say flat, fills say +10
+    for _ in range(6):
+        env.later(6)
+        env.mirror.tick()
+    leg = _leg(env, t)
+    assert leg["status"] == "stuck" and leg["stuck_reason"] == "positions"
+    assert leg["sl_order"] and not leg["protect_final"]                      # re-protected
+    assert "positions untrusted" in env.mirror.disabled_reason()
+    assert env.client.net("SBIN") == 10 and len(env.client.placed("SL")) == 2
+    env.client.pos_offset.clear()                                            # reads agree again
+    env.client.script = []
+    for _ in range(3):
+        env.later(11)
+        env.mirror.tick()
+    assert _leg(env, t)["status"] == "closed" and env.client.net("SBIN") == 0
+
+
+def test_position_read_failure_keeps_protection(env):                          # [Major 2]
+    t = _buy(env)
+    env.client.get_positions_for_user = lambda **kw: (_ for _ in ()).throw(ConnectionError("reset"))
+    env.pf.execute_sell(t.id, 950.0, "exit")
+    assert ("cancel", "G2") not in env.client.calls and _leg(env, t)["status"] == "exiting"
+    assert env.client.orders["G2"]["order_status"] == "TRIGGER_PENDING"
+
+
+@pytest.mark.parametrize("exc,amb", [
+    (TimeoutError(), True), (OSError("ssl"), True), (ConnectionError(), True),
+    (GErr("internal", "GA000"), True), (GErr("internal", "GA003"), True), (GErr("bad gw", "502"), True),
+    (json.JSONDecodeError("x", "y", 0), True), (KeyError("payload"), True),
+    (GErr("Insufficient margin", "GA001"), False), (GErr("bad request", "400"), False),
+    (GErr("too many", "429"), False), (AttributeError("no method"), False),
+])
+def test_only_explicit_rejections_are_definitive(exc, amb):                    # [N4]
+    assert is_ambiguous(exc) is amb
+
+
+def test_internal_error_after_accept_is_looked_up_not_retried(env):            # [N4]
+    t = _buy(env)
+    orig = env.client.place_order
+
+    def internal(timeout=None, **kw):
+        orig(timeout=timeout, **kw)
+        raise GErr("Something went wrong", "GA000")
+    env.client.place_order = internal
+    env.pf.execute_sell(t.id, 950.0, "exit")
+    assert len(env.client.placed("LIMIT", "SELL")) == 1
+    assert _leg(env, t)["status"] == "closed" and env.client.net("SBIN") == 0
+
+
+def test_triggers_are_tick_rounded_toward_safety(oco):                          # [Major 4]
+    _buy(oco, stop=930.03, target=960.02)
+    kw = oco.client.ccalls("oco_create")[0]
+    assert kw["stop_loss"]["trigger_price"] == "930.00" and kw["target"]["trigger_price"] == "960.05"
+    oco.pf.execute_short("SBIN.NS", 5, 940.0, stop_price=950.02, target_price=920.04)
+    kw = oco.client.ccalls("oco_create")[1]
+    assert kw["stop_loss"]["trigger_price"] == "950.05" and kw["target"]["trigger_price"] == "920.00"
+
+
+def test_smoke_oco_triggers_are_near_the_price(oco):                            # [Major 4]
+    m = oco.make(smoke=False)
+    oco.client.ltp = 400.0
+    m.smoke_test("ITC.NS")
+    kw = oco.client.ccalls("oco_create")[0]
+    assert kw["target"]["trigger_price"] == "410.00" and kw["stop_loss"]["trigger_price"] == "390.00"
+
+
+def test_smoke_validates_reference_lookup_and_fill_units(env):                  # [Major 5]
+    m = env.make(smoke=False)
+    env.client.ltp = 400.0
+    env.client.get_order_status_by_reference = lambda **kw: {"order_status": "EXECUTED"}   # no id
+    r = m.smoke_test("ITC.NS")
+    assert not r["passed"] and "groww_order_id" in r["reason"] and env.client.net("ITC") == 0
+
+
+def test_smoke_flags_fill_price_in_wrong_units(env):
+    m = env.make(smoke=False)
+    env.client.ltp = 400.0
+    env.client.script = [("fill", 40000.0)]                                     # paise?
+    r = m.smoke_test("ITC.NS")
+    assert not r["passed"] and "units" in r["reason"]
+
+
+def test_smoke_unknown_oco_status_disables_oco_only(oco):
+    m = oco.make(smoke=False)
+    oco.client.ltp = 400.0
+    real, calls = oco.client.get_smart_order, []
+
+    def odd_first(**kw):                       # an unexpected status value on the first read
+        calls.append(1)
+        return {**real(**kw), "status": "LIVE?"} if len(calls) == 1 else real(**kw)
+    oco.client.get_smart_order = odd_first
+    r = m.smoke_test("ITC.NS")
+    assert r["passed"] and r["oco_ok"] is False and any("status" in f for f in r["oco_failures"])
+
+
+def test_smoke_buy_that_fills_late_is_sold(env):                                # [minor]
+    m = env.make(smoke=False)
+    env.client.ltp = 400.0
+    env.client.script = ["open"]
+    env.client.cancel_mode = "stuck"
+    r = m.smoke_test("ITC.NS")
+    assert not r["passed"]
+    env.client.cancel_mode = "ok"
+    buy = env.client.placed("LIMIT", "BUY")[0]["order_reference_id"]
+    o = next(o for o in env.client.orders.values() if o["order_reference_id"] == buy)
+    o.update(order_status="EXECUTED", filled_quantity=1, average_fill_price=400.5)
+    for _ in range(3):
+        env.later(11)
+        m.tick()
+    assert env.client.net("ITC") == 0
+
+
+def test_orders_are_counted_once_on_replay(env):                                # [minor]
+    _buy(env)
+    assert env.make()._orders_today == len(env.client.placed()) == env.mirror._orders_today
+
+
+def test_oco_fill_attribution_ignores_older_and_manual_orders(oco):            # [minor]
+    early = oco.client.add_manual("SBIN", -10, price=900.0)                     # user's sell, before the OCO
+    oco.client.orders[early]["created_at"] = NOW.replace(hour=9, minute=30).isoformat()
+    t = _buy(oco, stop=930.0, target=960.0)
+    oco.client.fire_oco("oco_1", "target", price=960.4)
+    oco.pf.execute_sell(t.id, 960.0, "target")
+    leg = _leg(oco, t)
+    assert leg["exit_fill"] == 960.4 and leg["real_pnl"] is not None
+
+
+def test_ambiguous_oco_fill_attribution_leaves_pnl_unknown(oco):
+    t = _buy(oco, stop=930.0, target=960.0)
+    oco.client.fire_oco("oco_1", "target", price=960.4)
+    oco.client.add_manual("SBIN", -10, price=961.0)                             # a second candidate
+    oco.client.add_manual("SBIN", 10, price=961.0)                              # (user round trip)
+    oco.pf.execute_sell(t.id, 960.0, "target")
+    leg = _leg(oco, t)
+    assert leg["status"] == "closed" and leg["oco_fill_ambiguous"] and leg["real_pnl"] is None
+    assert "OCO fill ambiguous" in oco.mirror.eod_report()
+
+
+def test_entry_for_an_already_closed_paper_trade_is_dropped(env):              # [minor]
+    m = env.make(paper_open_ids=lambda: set())
+    m.on_entry(NS(id=5, ticker="SBIN.NS", direction="long", quantity=1, entry_price=940.0,
+                  stop_price=930.0, target_price=None))
+    assert m.legs["5"]["status"] == "skipped" and env.client.calls == []
+
+
+def test_worker_stop_keeps_the_lock_while_a_call_is_running(env):              # [minor]
+    import threading
+    w = LiveWorker(env.mirror)
+    assert env.mirror.acquire_lock()
+    gate = threading.Event()
+    w._thread = threading.Thread(target=gate.wait, daemon=True)
+    w._thread.start()
+    w.stop(join_s=0.05)
+    assert env.mirror._lock_fh is not None                                      # still held
+    gate.set()
+    w._thread.join()
+    env.mirror.release_lock()
+
+
+def test_drain_waits_for_the_running_event(env):                                # [minor]
+    import time as _t
+    done = []
+    env.mirror.slow = lambda: (_t.sleep(0.2), done.append(1))
+    w = LiveWorker(env.mirror)
+    w.BUSY_TICK_S = w.IDLE_TICK_S = 0.05
+    w.start()
+    try:
+        w.submit("slow")
+        assert w.drain(5) and done == [1]
+    finally:
+        w.stop()
+
+
+def test_instrument_download_happens_outside_the_lock(tmp_path):                # [minor]
+    seen = []
+    holder = {}
+
+    def fetch():
+        seen.append(holder["i"]._lock.locked())
+        return CSV
+    holder["i"] = GrowwInstruments(path=tmp_path / "i.csv", fetch=fetch, now=lambda: NOW)
+    assert holder["i"].load() and seen == [False]
+
+
+def test_duplicate_csv_symbols_prefer_series_eq(tmp_path):                       # [minor]
+    csv_text = CSV + "NSE,8,DUPE,NSE-D1,D,EQ,CASH,BE,X,0.01,0,0,1,1,DUPE,0\n" \
+                     "NSE,9,DUPE,NSE-D2,D,EQ,CASH,EQ,X,0.05,0,0,1,1,DUPE,1\n"
+    i = GrowwInstruments(path=tmp_path / "d.csv", fetch=lambda: csv_text, now=lambda: NOW)
+    assert i.info("DUPE")["is_intraday"] is True and i.info("DUPE")["tick_size"] == 0.05
+
+
+def test_login_timeout_never_uses_a_late_token(tmp_path, monkeypatch):          # [minor]
+    import time as _t
+    import agent.groww_broker as gb
+    from agent.groww_broker import GrowwAuthError
+
+    class GrowwAPI:
+        @staticmethod
+        def get_access_token(api_key, totp=None, secret=None):
+            _t.sleep(0.3)
+            return "late"
+    fake = types.ModuleType("growwapi")
+    fake.GrowwAPI = GrowwAPI
+    monkeypatch.setitem(sys.modules, "growwapi", fake)
+    otp = types.ModuleType("pyotp")
+    otp.TOTP = lambda secret: NS(now=lambda: "123456")
+    monkeypatch.setitem(sys.modules, "pyotp", otp)
+    monkeypatch.setattr(gb, "LOGIN_TIMEOUT_S", 0.05)
+    b = GrowwBroker(api_key="K", totp_secret="S", token_path=tmp_path / "tok.json", now=lambda: NOW)
+    with pytest.raises(GrowwAuthError, match="timed out"):
+        b.client
+    _t.sleep(0.4)
+    assert not (tmp_path / "tok.json").exists()
+
+
+def test_order_list_pages_until_nothing_new(env):                               # [minor]
+    for i in range(60):
+        env.client.add_manual("ITC", 1)
+    assert len(env.mirror.broker.order_list()) == 60
+    assert env.mirror.broker.orders_net("ITC") == 60

@@ -110,7 +110,7 @@ class TradingAgent:
         }.get(self.config.llm_provider, "unknown")
         logger.info(f"   LLM: {self.config.llm_provider} / {active_model}")
 
-    def _make_portfolio(self, start_worker: bool = True) -> Portfolio:
+    def _make_portfolio(self) -> Portfolio:
         """Paper portfolio; for an allowlisted live session, one that also
         mirrors every booking as a real Groww order (agent/live_mirror.py).
         A session that is no longer live but still has real positions open
@@ -130,9 +130,9 @@ class TradingAgent:
                 forced_close_time=lambda now: self.risk_manager.forced_close_time(now),
                 db_path=self.config.db_path,
             )
+            # Started only by run_loop: one-shot, --status and dashboard paths never
+            # take the live lock or touch the broker (their events are dropped).
             self.live_worker = live_mirror.LiveWorker(self.live_mirror)
-            if start_worker:
-                self.live_worker.start()
             mode = "EXIT-ONLY (real positions still open)" if exit_only else "ON"
             logger.warning(f"💸 LIVE MIRROR {mode}: paper trades of {session.session_id} "
                            f"are mirrored as real Groww orders")
@@ -150,24 +150,22 @@ class TradingAgent:
                     pass
             return Portfolio(self.config.db_path, self.config.starting_capital)
 
-    def _install_live_sigterm(self):
-        """On SIGTERM (dashboard stop/liquidate), let queued broker events finish
-        and report what is still open, instead of dying mid-order."""
+    def _start_live(self):
+        """Agent loop only: take the live lock, start the broker worker, and
+        handle SIGTERM (dashboard stop/liquidate) without dying mid-order."""
         worker = getattr(self, "live_worker", None)
         if worker is None:
             return
+        worker.start()
         import signal
         import threading
+        from . import live_mirror
 
         def on_term(signum, frame):
-            logger.warning("🛑 SIGTERM — draining live order queue")
-            worker.drain(20)
-            try:
-                worker.mirror._alert(f"Agent stopping. Real positions: {worker.mirror.open_legs_summary()}. "
-                                     f"Protective orders stay at Groww; MIS squares off at 15:20.")
-            except Exception:
-                pass
-            worker.stop()
+            liquidate = live_mirror.liquidation_requested(self.session.session_dir)
+            logger.warning(f"🛑 SIGTERM — {'flattening real positions' if liquidate else 'protecting real positions'} "
+                           f"before exit")
+            worker.shutdown(liquidate=liquidate, timeout=60 if liquidate else 40)
             raise SystemExit(0)
         if threading.current_thread() is threading.main_thread():
             signal.signal(signal.SIGTERM, on_term)
@@ -971,7 +969,7 @@ class TradingAgent:
         """
         logger.info(f"🚀 Starting agent loop in {mode} mode")
         self._last_review_date: str | None = None
-        self._install_live_sigterm()
+        self._start_live()
 
         try:
             while True:
