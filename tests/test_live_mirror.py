@@ -62,6 +62,7 @@ class FakeGrowwClient:
         self.upper = self.lower = None
         self.pos_offset = {}             # symbol → qty added to positions only (lag / misread)
         self.clock = lambda: NOW
+        self.link_children = True        # smart order detail exposes the child order id
         if oco:
             self.create_smart_order = self._create_smart_order
             self.modify_smart_order = self._modify_smart_order
@@ -214,6 +215,8 @@ class FakeGrowwClient:
                             "filled_quantity": s["quantity"], "order_status": "EXECUTED",
                             "average_fill_price": price or float(s[leg]["trigger_price"]), "remark": ""}
         s["status"] = "COMPLETED"
+        if self.link_children:
+            s["triggered_order_id"] = oid               # how Groww links the child (ASSUMED field)
         return oid
 
     # positions / quotes
@@ -980,7 +983,8 @@ def test_smoke_test_full_sequence(oco):
     assert len(oco.client.ccalls("oco_create")) == 1 and len(oco.client.ccalls("oco_modify")) == 1
     assert len(oco.client.ccalls("oco_cancel")) >= 1 and oco.client.net("ITC") == 0
     steps = [r["step"] for r in _ledger(oco) if r.get("event") == "smoke_step"]
-    assert steps == ["lookup_by_reference", "positions_after_buy", "oco_create", "oco_modify", "oco_cancel"]
+    assert steps == ["lookup_by_reference", "lookup_unknown_reference", "positions_after_buy", "oco_create",
+                     "oco_modify", "oco_cancel"]
     assert oco.make(smoke=False).smoke_done_today()
 
 
@@ -1214,11 +1218,22 @@ def test_unresolved_oco_blocks_closing_until_found_and_cancelled(oco):          
 
 def test_unknown_plain_stop_is_resolved_by_reference_and_cancelled(env):         # [N1] repro F
     env.client.script = ["fill", ("after", "open", "timeout")]
-    orig = env.client.get_order_status_by_reference
-    env.client.get_order_status_by_reference = lambda **kw: (_ for _ in ()).throw(ConnectionError("reset"))
+    orig, orig_list = env.client.get_order_status_by_reference, env.client.get_order_list
+    boom = lambda **kw: (_ for _ in ()).throw(ConnectionError("reset"))
+    env.client.get_order_status_by_reference = boom
+    real_place = env.client.place_order
+
+    def place(timeout=None, **kw):                     # the order list goes down right after the stop is sent
+        try:
+            return real_place(timeout=timeout, **kw)
+        finally:
+            if kw["order_type"] == "SL":
+                env.client.get_order_list = boom
+    env.client.place_order = place
     t = _buy(env)
     assert _leg(env, t)["protect_kind"] == "sl_unknown"
-    env.client.get_order_status_by_reference = orig
+    env.client.get_order_status_by_reference, env.client.get_order_list = orig, orig_list
+    env.client.place_order = real_place
     env.pf.execute_sell(t.id, 950.0, "exit")
     env.mirror.tick()
     assert _leg(env, t)["status"] == "closed" and _no_live_protection(env.client, "SBIN")
@@ -1362,12 +1377,27 @@ def test_position_lag_after_exit_fill_never_double_exits(env):                 #
     assert _leg(env, t)["status"] == "closed" and env.client.net("SBIN") == 0
 
 
+def test_disagreement_with_flat_positions_goes_stuck_but_places_nothing(env):   # [N3 + Major 1]
+    t = _buy(env)
+    env.mirror.market_ok = False
+    env.client.script = ["open"] * 10
+    env.pf.execute_sell(t.id, 950.0, "exit")
+    env.client.pos_offset["SBIN"] = -10                                      # positions flat, fills +10
+    for _ in range(6):
+        env.later(6)
+        env.mirror.tick()
+    leg = _leg(env, t)
+    assert leg["status"] == "stuck" and "positions untrusted" in env.mirror.disabled_reason()
+    assert len(env.client.placed("SL")) == 1                                 # no blind re-protection
+    assert any("not re-protecting" in a for a in env.alerts)
+
+
 def test_persistent_disagreement_goes_stuck_reprotects_and_disables(env):      # [N3]
     t = _buy(env)
     env.mirror.market_ok = False
     env.client.script = ["open"] * 10                                        # exits rest
     env.pf.execute_sell(t.id, 950.0, "exit")                                 # stop cancelled, exit resting
-    env.client.pos_offset["SBIN"] = -10                                      # positions say flat, fills say +10
+    env.client.pos_offset["SBIN"] = 5                                        # positions 15, fills 10
     for _ in range(6):
         env.later(6)
         env.mirror.tick()
@@ -1494,15 +1524,16 @@ def test_oco_fill_attribution_ignores_older_and_manual_orders(oco):            #
     assert leg["exit_fill"] == 960.4 and leg["real_pnl"] is not None
 
 
-def test_ambiguous_oco_fill_attribution_leaves_pnl_unknown(oco):
+def test_unlinked_oco_fill_is_never_guessed_from_the_users_orders(oco):      # [minor]
+    oco.client.link_children = False                                            # Groww doesn't expose the child
     t = _buy(oco, stop=930.0, target=960.0)
     oco.client.fire_oco("oco_1", "target", price=960.4)
-    oco.client.add_manual("SBIN", -10, price=961.0)                             # a second candidate
-    oco.client.add_manual("SBIN", 10, price=961.0)                              # (user round trip)
+    oco.client.add_manual("SBIN", -10, price=961.0)                             # user's own round trip
+    oco.client.add_manual("SBIN", 10, price=961.0)
     oco.pf.execute_sell(t.id, 960.0, "target")
     leg = _leg(oco, t)
-    assert leg["status"] == "closed" and leg["oco_fill_ambiguous"] and leg["real_pnl"] is None
-    assert "OCO fill ambiguous" in oco.mirror.eod_report()
+    assert leg["status"] == "closed" and leg["real_pnl"] is None and leg["exit_unknown_qty"] == 10
+    assert not leg["exit_fills"] and oco.client.placed(side="SELL") == []
 
 
 def test_entry_for_an_already_closed_paper_trade_is_dropped(env):              # [minor]
@@ -1587,3 +1618,191 @@ def test_order_list_pages_until_nothing_new(env):                               
         env.client.add_manual("ITC", 1)
     assert len(env.mirror.broker.order_list()) == 60
     assert env.mirror.broker.orders_net("ITC") == 60
+
+
+# ── Round 3 (repro4.py on a636bc9) ─────────────────────────
+
+def _ga004(client):
+    def lookup(segment=None, order_reference_id=None, timeout=None):
+        for o in client.orders.values():
+            if o.get("order_reference_id") == order_reference_id:
+                return {"groww_order_id": o["groww_order_id"]}
+        raise GErr("Order not found", code="GA004")
+    client.get_order_status_by_reference = lookup
+
+
+def test_ga004_not_found_lets_a_never_placed_exit_move_on(env):                 # [P] repro4 P
+    _ga004(env.client)
+    t = _buy(env)
+    env.client.script = ["timeout_before"]
+    env.pf.execute_sell(t.id, 950.0, "exit")
+    for _ in range(25):
+        env.later(2)
+        env.mirror.tick()
+    leg = _leg(env, t)
+    assert leg["status"] == "closed" and env.client.net("SBIN") == 0
+    assert leg["exit_attempts"][0]["final"] and "never placed" in leg["exit_attempts"][0]["note"]
+
+
+@pytest.mark.parametrize("exc", [GErr("Order not found", "GA004"), GErr("x", "404"),
+                                 GErr("No order exists with this reference", "GA001")])
+def test_not_found_variants_read_as_missing(env, exc):
+    env.client.get_order_status_by_reference = lambda **kw: (_ for _ in ()).throw(exc)
+    assert env.mirror.broker.order_by_reference("261016-1-X9") is None
+
+
+def test_lookup_error_falls_back_to_the_order_list(env):                        # [P b]
+    t = _buy(env)
+    env.client.get_order_status_by_reference = lambda **kw: (_ for _ in ()).throw(ConnectionError("reset"))
+    env.client.script = [("after", "fill", "timeout")]
+    env.pf.execute_sell(t.id, 950.0, "exit")
+    assert _leg(env, t)["status"] == "closed" and len(env.client.placed("LIMIT", "SELL")) == 1
+
+
+def test_unresolvable_exit_reprotects_after_30s(env):                            # [P d]
+    t = _buy(env)
+    env.client.get_order_status_by_reference = lambda **kw: (_ for _ in ()).throw(ConnectionError("reset"))
+    env.client.script = ["timeout_before"]
+    env.pf.execute_sell(t.id, 950.0, "exit")                                   # stop cancelled, exit lost
+    for _ in range(2):
+        env.later(10)
+        env.mirror.tick()
+    assert len(env.client.placed("SL")) == 1                                    # < 30s: still waiting
+    for _ in range(2):
+        env.later(10)
+        env.mirror.tick()
+    assert any("unresolved" in a for a in env.alerts)
+    assert len(env.client.placed("SL")) == 2 and env.client.placed("SL")[-1]["quantity"] == 10
+    assert len(env.client.placed("LIMIT", "SELL")) == 1                          # no blind second exit
+
+
+def test_deadline_fires_even_while_an_exit_is_unresolved(env):                  # [P d]
+    t = _buy(env)
+    env.client.get_order_status_by_reference = lambda **kw: (_ for _ in ()).throw(ConnectionError("reset"))
+    env.client.script = ["timeout_before"]
+    env.pf.execute_sell(t.id, 950.0, "exit")
+    env.clock["now"] = NOW.replace(hour=15, minute=19, second=10)
+    env.mirror.tick()
+    assert _leg(env, t)["status"] == "stuck" and any("15:19" in a for a in env.alerts)
+
+
+def test_smoke_unknown_reference_lookup_must_be_not_found(env):                  # [P c]
+    m = env.make(smoke=False)
+    env.client.ltp = 400.0
+    real = env.client.get_order_status_by_reference
+
+    def lookup(segment=None, order_reference_id=None, timeout=None):
+        if order_reference_id.endswith("-Z1"):
+            raise GErr("Something went wrong", "GA000")
+        return real(segment=segment, order_reference_id=order_reference_id)
+    env.client.get_order_status_by_reference = lookup
+    r = m.smoke_test("ITC.NS")
+    assert not r["passed"] and "lookup semantics untrusted" in r["reason"] and env.client.net("ITC") == 0
+
+
+def test_smoke_passes_with_ga004_not_found(oco):
+    _ga004(oco.client)
+    m = oco.make(smoke=False)
+    oco.client.ltp = 400.0
+    assert m.smoke_test("ITC.NS")["passed"]
+
+
+def test_oco_fired_child_missing_from_order_list_closes_without_reprotect(oco):  # [Major 1] repro4 Q
+    t = _buy(oco, stop=930.0, target=960.0)
+    oco.client.smart["oco_1"]["status"] = "COMPLETED"
+    oco.client.pos_offset["SBIN"] = -10                                        # child filled, not listed
+    oco.pf.execute_sell(t.id, 950.0, "exit")
+    leg = _leg(oco, t)
+    assert leg["status"] == "closed" and leg["closed_by_oco_unconfirmed"] and leg["real_pnl"] is None
+    assert len(oco.client.ccalls("oco_create")) == 1 and oco.client.placed(side="SELL") == []
+    assert oco.mirror.disabled_reason() is None
+
+
+def test_oco_firing_during_cancel_closes_without_reprotect(oco):                 # [Major 1] repro4 Q2
+    t = _buy(oco, stop=930.0, target=960.0)
+
+    def fire_on_cancel(segment=None, smart_order_type=None, smart_order_id=None, timeout=None):
+        oco.client.smart[smart_order_id]["status"] = "COMPLETED"
+        oco.client.pos_offset["SBIN"] = -10
+        return {"smart_order_id": smart_order_id, "status": "COMPLETED"}
+    oco.client.cancel_smart_order = fire_on_cancel
+    oco.pf.execute_sell(t.id, 931.0, "stop")
+    for _ in range(5):
+        oco.later(4)
+        oco.mirror.tick()
+    leg = _leg(oco, t)
+    assert leg["status"] == "closed" and len(oco.client.ccalls("oco_create")) == 1
+    assert oco.client.placed(side="SELL") == [] and oco.client.net("SBIN") + oco.client.pos_offset["SBIN"] == 0
+
+
+def test_shutdown_reprotects_only_what_groww_shows(env, monkeypatch):            # [Major 1]
+    monkeypatch.setattr(lm, "_ist_today", lambda: "2026-10-16")
+    t = _buy(env)
+    env.mirror.market_ok = False
+    env.client.script = ["open"] * 30
+    env.pf.execute_sell(t.id, 950.0, "exit")
+    env.client.add_manual("SBIN", -6)                                            # user sold 6 in the app
+    env.mirror.prepare_shutdown(budget_s=5)
+    assert env.client.placed("SL")[-1]["quantity"] == 4
+
+
+def test_shutdown_places_nothing_when_groww_is_flat(env):
+    t = _buy(env)
+    env.mirror.market_ok = False
+    env.client.script = ["open"] * 30
+    env.pf.execute_sell(t.id, 950.0, "exit")
+    env.client.add_manual("SBIN", -10)
+    env.mirror.prepare_shutdown(budget_s=5)
+    assert len(env.client.placed("SL")) == 1
+
+
+def test_smoke_requires_the_oco_to_be_listed_by_reference(oco):                  # [Major 2]
+    m = oco.make(smoke=False)
+    oco.client.ltp = 400.0
+    oco.client.get_smart_order_list = lambda **kw: {"smart_orders": []}
+    r = m.smoke_test("ITC.NS")
+    assert r["passed"] and r["oco_ok"] is False and any("reference_id" in f for f in r["oco_failures"])
+    assert any("OCOs OFF" in a for a in oco.alerts)
+
+
+def test_smoke_requires_order_type_labels(oco):                                  # [Major 2]
+    m = oco.make(smoke=False)
+    oco.client.ltp = 400.0
+    real = oco.client.get_order_list
+    oco.client.get_order_list = lambda **kw: {"order_list": [{**r, "order_type": "L"} for r in real(**kw)["order_list"]]}
+    r = m.smoke_test("ITC.NS")
+    assert r["passed"] and r["oco_ok"] is False and any("order_type" in f for f in r["oco_failures"])
+
+
+def test_force_plain_sl_switch(oco, monkeypatch):                                # [Major 2]
+    monkeypatch.setenv("GROWW_FORCE_PLAIN_SL", "1")
+    m = oco.make()
+    pf = LivePortfolio(str(oco.tmp / "f.db"), 500_000, m)
+    _buy(oco, stop=930.0, target=960.0, pf=pf)
+    assert oco.client.ccalls("oco_create") == [] and len(oco.client.placed("SL")) == 1
+    m2 = oco.make(smoke=False)
+    oco.client.ltp = 400.0
+    r = m2.smoke_test("ITC.NS")
+    assert r["oco_ok"] is False and oco.client.ccalls("oco_create") == []
+
+
+def test_triggered_oco_never_cancels_the_users_order(oco):                       # [minor]
+    t = _buy(oco, stop=930.0, target=960.0)
+    users = oco.client.add_manual("SBIN", -10, order_type="LIMIT", status="OPEN")   # user's resting sell
+    oco.client.smart["oco_1"]["status"] = "TRIGGERED"
+    oco.pf.execute_sell(t.id, 950.0, "exit")
+    for _ in range(4):
+        oco.later(6)
+        oco.mirror.tick()
+    assert ("cancel", users) not in oco.client.calls
+    assert oco.client.orders[users]["order_status"] == "OPEN"
+
+
+def test_sweep_spares_another_legs_inflight_oco_child(oco):                      # [minor]
+    a = _buy(oco, stop=930.0, target=960.0)
+    b = _buy(oco, stop=931.0, target=961.0, qty=5)
+    pref = _leg(oco, b)["protect_ref"]
+    kid = oco.client.add_manual("SBIN", -5, order_type="SL_M", status="OPEN", ref=pref + "C")
+    oco.pf.execute_sell(a.id, 950.0, "exit")
+    assert _leg(oco, a)["status"] == "closed"
+    assert oco.client.orders[kid]["order_status"] == "OPEN"

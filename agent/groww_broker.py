@@ -126,6 +126,20 @@ def is_ambiguous(exc) -> bool:
     return True
 
 
+NOT_FOUND_CODES = {"404", "GA004"}
+
+
+def is_not_found(exc) -> bool:
+    """Groww's 'no such order': HTTP 404, or (more likely) a FAILURE body with
+    its own code (GA004 'Order not found'), which the SDK raises before it
+    looks at the HTTP status."""
+    code = str(getattr(exc, "code", "") or "").upper()
+    if code in NOT_FOUND_CODES or type(exc).__name__ == "GrowwAPINotFoundException":
+        return True
+    msg = str(getattr(exc, "msg", "") or exc).lower()
+    return "not found" in msg or "does not exist" in msg or "no order" in msg
+
+
 class GrowwAuthError(Exception):
     """Login failed, or Groww refused our token / IP after a re-login."""
     code = "401"
@@ -317,7 +331,7 @@ class GrowwBroker:
             st = self._call("get_order_status_by_reference", order_reference_id=reference_id,
                             segment=SEGMENT_CASH) or {}
         except Exception as e:
-            if str(getattr(e, "code", "")) == "404" or type(e).__name__ == "GrowwAPINotFoundException":
+            if is_not_found(e):
                 return None
             raise
         oid = st.get("groww_order_id")
