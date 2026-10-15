@@ -1712,6 +1712,9 @@ def test_oco_fired_child_missing_from_order_list_closes_without_reprotect(oco): 
     oco.client.smart["oco_1"]["status"] = "COMPLETED"
     oco.client.pos_offset["SBIN"] = -10                                        # child filled, not listed
     oco.pf.execute_sell(t.id, 950.0, "exit")
+    assert _leg(oco, t)["status"] == "exiting"                                 # one flat read is not enough
+    oco.later(2)
+    oco.mirror.tick()
     leg = _leg(oco, t)
     assert leg["status"] == "closed" and leg["closed_by_oco_unconfirmed"] and leg["real_pnl"] is None
     assert len(oco.client.ccalls("oco_create")) == 1 and oco.client.placed(side="SELL") == []
@@ -1806,3 +1809,28 @@ def test_sweep_spares_another_legs_inflight_oco_child(oco):                     
     oco.pf.execute_sell(a.id, 950.0, "exit")
     assert _leg(oco, a)["status"] == "closed"
     assert oco.client.orders[kid]["order_status"] == "OPEN"
+
+
+def test_flat_reads_must_be_two_seconds_apart(oco):                              # final review
+    t = _buy(oco, stop=930.0, target=960.0)
+    oco.client.smart["oco_1"]["status"] = "COMPLETED"
+    oco.client.pos_offset["SBIN"] = -10
+    oco.pf.execute_sell(t.id, 950.0, "exit")
+    for _ in range(3):
+        oco.later(0.5)                                                          # reads 0.5s apart
+        oco.mirror.tick()
+    assert _leg(oco, t)["status"] == "exiting"
+    oco.later(1)                                                                # now ≥2s after the first
+    oco.mirror.tick()
+    assert _leg(oco, t)["status"] == "closed" and _leg(oco, t)["closed_by_oco_unconfirmed"]
+
+
+def test_a_non_flat_read_resets_the_flat_confirmation(oco):
+    t = _buy(oco, stop=930.0, target=960.0)
+    oco.client.smart["oco_1"]["status"] = "COMPLETED"
+    oco.client.pos_offset["SBIN"] = -10
+    oco.pf.execute_sell(t.id, 950.0, "exit")
+    oco.client.pos_offset["SBIN"] = -5                                          # positions show 5 again
+    oco.later(3)
+    oco.mirror.tick()
+    assert _leg(oco, t)["status"] in ("exiting", "stuck") and "_flat_n" not in _leg(oco, t)

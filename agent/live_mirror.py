@@ -80,6 +80,7 @@ REF_LOOKUPS = 3                  # "not found" lookups (by reference AND in the 
 ABSENCE_S = 30                   # ... over at least this long before an order counts as never placed
 DISAGREE_READS, DISAGREE_S = 3, 15   # positions vs fills mismatch this long → stuck + re-protect
 OCO_TRIGGER_WAIT_S = 20          # a TRIGGERED OCO's child order gets this long to show up
+FLAT_READS_APART_S = 2           # the two "flat" reads behind closed_by_oco_unconfirmed, at least this far apart
 UNRESOLVED_REPROTECT_S = 30      # an exit order we can't resolve this long → protect what we still hold
 FORCE_PLAIN_SL_ENV = "GROWW_FORCE_PLAIN_SL"   # "1" → never use OCOs (plain stops only)
 FALLBACK_STOP_PCT = 0.015        # re-protection when the paper stop is unknown
@@ -1177,10 +1178,14 @@ class LiveMirror:
         sign = 1 if leg["direction"] == "long" else -1
         if view.get("net") is None or sign * view["net"] > 0:
             leg.pop("_flat_n", None)
+            leg.pop("_flat_t", None)
             return False
-        leg["_flat_n"] = leg.get("_flat_n", 0) + 1
-        if leg["_flat_n"] < 2:
+        if not leg.get("_flat_n"):
+            leg["_flat_n"], leg["_flat_t"] = 1, self._mono()
             return False
+        if self._mono() - leg["_flat_t"] < FLAT_READS_APART_S:
+            return False                       # same burst of reads: wait for a later tick
+        leg["_flat_n"] += 1
         leg["closed_by_oco_unconfirmed"] = True
         return True
 
@@ -1219,9 +1224,9 @@ class LiveMirror:
             else:
                 if leg.get("_flat_n"):
                     self._save_leg(leg)
-                    return "again" if leg["_flat_n"] < 2 else "wait"
+                    return "wait"              # confirm on a later tick (worker thread)
                 return self._position_disagreement(leg, view)
-        for k in ("_dis_t", "_dis_n", "_flat_n"):
+        for k in ("_dis_t", "_dis_n", "_flat_n", "_flat_t"):
             leg.pop(k, None)
         if leg.get("status") == "stuck":
             leg["status"] = "exiting"

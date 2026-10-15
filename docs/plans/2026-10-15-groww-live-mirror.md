@@ -76,3 +76,76 @@ with no per-order approval (the user's explicit instruction). Data stays on Kite
 - nse_opus_live config.yaml must set: live_broker: groww, live_universe_filter: mis_only,
   intraday_close_buffer_min: 20 (forced close at 15:10), starting_capital: 50000, and
   GROWW_LIVE_SESSIONS=nse_opus_live in the VM .env.
+
+## Operator runbook
+
+### Setup
+`sessions/nse_opus_live/config.yaml` (a clone of nse_opus, plus):
+```yaml
+session_id: nse_opus_live
+market: nse-intraday
+data_source: kite
+llm_provider: anthropic          # same model as nse_opus
+starting_capital: 50000
+live_broker: groww               # gate 3 of 3
+live_universe_filter: mis_only   # trade only stocks Groww allows intraday
+intraday_close_buffer_min: 20    # paper and real close at 15:10 (Groww squares off at 15:20)
+```
+VM `.env` (never in git; the user adds these themselves):
+- `GROWW_API_KEY`, `GROWW_TOTP_SECRET`: a Groww Cloud **TOTP** API key (no daily approval).
+- `GROWW_LIVE_SESSIONS=nse_opus_live`: gate 2. Remove it to stop real entries; positions still open
+  today are then managed in exit-only mode.
+- `GROWW_SMOKE_SYMBOL=ITC.NS` (optional): the 1-share stock for the daily smoke test.
+- `GROWW_FORCE_PLAIN_SL=1` (optional): never use OCOs; protect with plain SL orders only.
+Gate 1 is hard-coded: only `nse_opus_live` can ever trade real money.
+Static IP `34.139.217.34` must be whitelisted in Groww Cloud. Env changes need a container restart.
+
+### Daily flow
+- The first tick after 09:15 runs the smoke test (about ₹10–15 in charges). It buys 1 share, checks the
+  API shapes, places, modifies and cancels an OCO, and sells. No real entries happen before it passes.
+- Paper trades are mirrored automatically. The forced close is at 15:10. A stuck exit raises an
+  alert at 15:19.
+- The EOD paper-vs-real report goes to Telegram after the daily review. The ledger is
+  `sessions/nse_opus_live/live_orders.jsonl`.
+
+### Kill switch (stop new real entries, keep managing open ones)
+`ssh ssh-social "docker exec alphaagent-backend touch /app/sessions/nse_opus_live/LIVE_KILL"`
+To undo: `rm` the same file. Paper trading continues either way.
+
+### Liquidate (flatten everything now)
+Use the dashboard **Liquidate** button for nse_opus_live. It writes a dated `LIVE_LIQUIDATE` request and
+stops the agent. The agent flattens real positions (≤60s) before it exits. The dashboard then waits
+for the live lock and finishes the job in the background until Groww is flat. New real entries stay
+off for the rest of the day.
+If the dashboard is unavailable: write today's date into `/app/sessions/nse_opus_live/LIVE_LIQUIDATE`
+(e.g. `date +%F > …`). The running agent acts on it at its next tick. A file dated another day is ignored.
+Last resort: square off in the Groww app. The mirror reconciles and alerts on any mismatch.
+
+### Stop / restart
+A plain stop (SIGTERM) lets in-flight orders settle. It then makes sure every open real position has a
+protective order at Groww, capped at what Groww shows, before the process exits. On restart the ledger
+is replayed and any leg whose paper trade closed is exited.
+
+### Telegram alerts ([nse_opus_live LIVE] …) and what to do
+| Alert | Meaning | Action |
+|---|---|---|
+| Smoke test passed … Real orders are ON | Daily check OK; says whether MARKET orders and OCOs are in use | none |
+| Real ENTRIES DISABLED for today: … | Smoke test failed, auth/IP failure, 3 broker errors in a row, untrusted positions, or liquidation | Read the reason. Auth/IP: check keys and the IP whitelist. Exits keep working |
+| OCOs OFF for today (plain stops) | The smoke test couldn't verify the OCO API shapes | none; plain SL protection is used |
+| Blocked real … not_intraday_allowed / buy_not_allowed / sell_not_allowed / eligibility_unknown | Groww doesn't allow that stock intraday (or the list couldn't load) | none; paper trade only |
+| Skipped real … (kill switch / exposure / daily real loss / order cap / smoke test / exit-only) | A guard stopped the entry | Expected; review if frequent |
+| Real BUY/SELL … filled @ … / MISSED / REJECTED [category] | Entry outcome; the category and raw Groww message are in the ledger and EOD report | Check circuit/margin rejections |
+| Can't read the real … order — status UNKNOWN | A status read failed; it retries every tick | Only act if it persists for minutes |
+| OCO/Protective stop … may or may not exist | A protective order's reply was lost; the leg can't close until it's found | Check the Groww app for an extra OCO/SL on that stock |
+| Position fields for X disagree / positions say A but fills say B | Groww positions and order fills disagree. After 15s the leg goes stuck and is re-protected (capped), and entries stop | Check the Groww app position; square off manually if needed |
+| exit order … unresolved for 30s — re-protecting | An exit's reply was lost and can't be resolved | Check the Groww app |
+| X is at its lower/upper circuit — can't exit | Stuck at a circuit limit | Watch it; nothing can trade until it opens |
+| STILL OPEN at 15:19 / real exit not confirmed by 15:19 | Not flat before Groww's 15:20 square-off (₹50+GST per position) | Square off in the Groww app now |
+| Position mismatch X: Groww +a, ledger expects +b | Reconcile found a difference (a manual trade, or a missed fill) | Check the app; manual trades in the same stock are expected |
+| Cancelled a leftover protective stop/OCO | The orphan sweep removed one of our orders on a flat stock | none |
+| Agent stopping. Real positions: … | SIGTERM summary | Confirm protection in the app if anything is listed |
+| Liquidation incomplete / couldn't get the live lock | The flatten didn't finish | Square off in the Groww app |
+
+### Force plain stops
+Set `GROWW_FORCE_PLAIN_SL=1` in the VM `.env` and restart. The smoke test then skips the OCO steps and all
+protection uses plain SL orders.
