@@ -217,6 +217,11 @@ def _build_context(portfolio: Dict, watchlist: List[Dict], news: str,
     asset_label = "assets" if (config and config._market_preset and config._market_preset.market_id == "crypto") else "stocks"
     goal_section = f"\n{day_goal_context}\n" if day_goal_context else ""
     market_section = f"\n{market_context}\n" if market_context else ""
+    screener_line = (
+        "\nThe watchlist is only a starting point: `screen_stocks` screens the whole NSE universe "
+        "with your own filters, if nothing here is worth trading."
+        if config and screener_enabled(config) else ""
+    )
 
     return f"""## Current Portfolio
 ```json
@@ -252,7 +257,7 @@ SHORT signals: RSI >70 (overbought), price near resistance (res <0.5%), vol_rati
 macd_state in get_stock_details: bullish_cross/bearish_cross = the MACD crossed its signal line on today's bar
   (daily, so it can flip intraday); *_cross_1bar_ago = on the previous daily bar; above_signal/below_signal = only
   which side it sits on (a state, not a fresh cross). res/sup of n/a = too little history to measure, not "at" a level.
-Use `get_stock_details` to fetch full indicators (RSI, ATR, EMA20/50, MACD, VWAP) before any trade.
+Use `get_stock_details` to fetch full indicators (RSI, ATR, EMA20/50, MACD, VWAP) before any trade.{screener_line}
 Caution: avoid entering longs when RSI >75 or near resistance; avoid shorts when RSI <30.
 Confluence wins: a setup with 2+ aligned signals (e.g. RSI<30 + bullish EMA + MACD turning) is far stronger.
 If no good opportunities exist, it's perfectly fine to hold and wait.
@@ -274,7 +279,15 @@ def _get_tool_defs(config, is_backtest: bool = False):
     ]
     if not is_backtest:
         tools.insert(0, LLMWebSearchTool.tool_definition(market_preset=preset))
+        if screener_enabled(config):
+            tools.insert(2, LLMWebSearchTool.get_screener_tool())
     return tools
+
+
+def screener_enabled(config) -> bool:
+    """screen_stocks is offered only to sessions that opted in and use Kite data."""
+    sc = getattr(config, "_session_config", None)
+    return bool(sc and getattr(sc, "screener", False) and getattr(sc, "data_source", "") == "kite")
 
 
 # ── Anthropic Implementation ────────────────────────────────

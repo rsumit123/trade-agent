@@ -17,7 +17,8 @@ from .config import AgentConfig
 from .portfolio import Portfolio
 from .market_data import MarketData, create_market_data, prices_incl_positions
 from .web_research import WebResearcher
-from .decision_engine import create_engine
+from .decision_engine import create_engine, screener_enabled
+from .screener import StockScreener
 from .risk_manager import RiskManager
 from .learner import Learner
 from . import trade_alerts
@@ -237,6 +238,16 @@ class TradingAgent:
         elif tool_name == "get_stock_details":
             ticker = tool_input.get("ticker", "")
             return self.market_data.get_stock_context(ticker)
+
+        elif tool_name == "screen_stocks":
+            if not screener_enabled(self.config) or not getattr(self.market_data, "kite", None):
+                return {"error": "screen_stocks is not available for this session"}
+            if getattr(self, "_screener", None) is None:
+                self._screener = StockScreener(self.market_data, self._apply_live_universe_filter)
+            result = self._screener.screen(**tool_input)
+            logger.info(f"🔎 Screen → {result.get('matched', 0)} matched: "
+                        f"{', '.join(r['ticker'] for r in result.get('results', [])[:10])}")
+            return result
 
         elif tool_name == "place_trade":
             result = self._execute_trade(tool_input)

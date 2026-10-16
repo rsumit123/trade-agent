@@ -341,6 +341,48 @@ class LLMWebSearchTool:
         }
 
     @staticmethod
+    def get_screener_tool() -> Dict[str, Any]:
+        """Tool for the LLM to screen the whole NSE equity universe live."""
+        pct = {"type": "number"}
+        return {
+            "name": "screen_stocks",
+            "description": (
+                "Screen ALL ~2,500 liquid NSE equities right now with your own filters, not just "
+                "your watchlist. Returns compact rows (price, % change vs previous close, gap, "
+                "move since open, position in the day's range, VWAP distance, turnover, sector). "
+                "Data is at most ~90s old. Every filter is optional; combine them as you like. "
+                "Use it to find candidates, then get_stock_details on the ones you shortlist."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "change_pct_min": {**pct, "description": "Min % change vs previous close"},
+                    "change_pct_max": {**pct, "description": "Max % change vs previous close"},
+                    "gap_pct_min": {**pct, "description": "Min opening gap % vs previous close"},
+                    "gap_pct_max": {**pct, "description": "Max opening gap % vs previous close"},
+                    "from_open_pct_min": {**pct, "description": "Min % move since today's open"},
+                    "from_open_pct_max": {**pct, "description": "Max % move since today's open"},
+                    "range_pos_min": {**pct, "description": "Min position in today's range, 0 = day low, 100 = day high"},
+                    "range_pos_max": {**pct, "description": "Max position in today's range, 0 = day low, 100 = day high"},
+                    "vs_vwap": {"type": "string", "enum": ["above", "below", "any"],
+                                "description": "Price above or below today's VWAP"},
+                    "max_vwap_dist_pct": {**pct, "description": "Max absolute % distance from VWAP"},
+                    "price_min": {**pct, "description": "Min share price in ₹ (default 50)"},
+                    "price_max": {**pct, "description": "Max share price in ₹ (default 10000)"},
+                    "min_turnover_cr": {**pct, "description": "Min value traded today in ₹ crore, a liquidity floor (default 5)"},
+                    "sector": {"type": "string",
+                               "description": "NSE sector index: Auto, Bank, Consumer Durables, Energy, FMCG, Financial Services, Healthcare, IT, Media, Metals, Oil & Gas, PSU Bank, Pharma, Private Bank, Realty (a word prefix also works, e.g. 'Bank'). Only stocks in these indices have a sector; smaller stocks show none"},
+                    "sort_by": {"type": "string", "enum": sorted([
+                        "turnover", "change_desc", "change_asc", "from_open_desc", "from_open_asc",
+                        "range_pos_desc", "range_pos_asc", "vs_vwap_desc", "vs_vwap_asc"]),
+                        "description": "Sort order (default turnover, most traded first)"},
+                    "limit": {"type": "integer", "description": "Rows to return, 1-30 (default 20)"},
+                },
+                "required": []
+            }
+        }
+
+    @staticmethod
     def get_trade_tool(market_preset=None) -> Dict[str, Any]:
         """Tool for the LLM to place trades."""
         if market_preset and market_preset.is_24x7:
