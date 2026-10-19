@@ -25,6 +25,12 @@
         "source_commit": "2db9eca",
         "date": "2026-10-11",
         "summary": "Exit discipline (no manual closes of winners; respect stops) and news treated as a weak signal."
+      },
+      "v5": {
+        "sha256": "7e93ebad31e8c00bba5d8190a36c00325f8ee79a9b11bf0a12adac076742ac4a",
+        "source_commit": "2b9f017",
+        "date": "2026-10-20",
+        "summary": "v4 without the exploration mandate: no trading to sample under-tested setups, cash is a valid outcome. For real-money sessions (pinned via prompt_version)."
       }
     }
   }

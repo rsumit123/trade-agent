@@ -71,6 +71,8 @@ class SessionConfig:
     live_universe_filter: Optional[str] = None   # "mis_only" → trade only Groww intraday-allowed stocks
     intraday_close_buffer_min: Optional[int] = None  # override the preset's forced-close buffer (min before close)
     screener: bool = False                       # give the LLM the screen_stocks tool (Kite only; see agent/screener.py)
+    exploration_mandate: bool = True             # False → distilled rules stop asking the LLM to sample untested setups (real money)
+    min_stop_atr: Optional[float] = None         # e.g. 0.5 → update_levels keeps the stop ≥ 0.5×ATR(14) from the current price
 
     # ── Backtest ──────────────────────────────────────────
     backtest_mode: bool = False                  # True = backtest before live
@@ -210,6 +212,7 @@ _YAML_FIELDS = {
     "llm_provider", "llm_model", "api_key_env",
     "intraday_interval_min", "personality", "created_at",
     "data_source", "live_broker", "live_universe_filter", "intraday_close_buffer_min", "screener",
+    "exploration_mandate", "min_stop_atr",
     "backtest_mode", "backtest_start_date", "backtest_end_date", "backtest_status", "live_started_at",
     "parent_session", "user_email", "api_key_encrypted",
     "tier", "started_at",

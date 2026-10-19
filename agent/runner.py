@@ -292,7 +292,10 @@ class TradingAgent:
         reason = tool_input.get("reason", "") or ""
         if new_stop is None and new_target is None:
             return {"success": False, "error": "Provide stop_price and/or target_price"}
+        note = None
         try:
+            if new_stop is not None:
+                new_stop, note = self._apply_stop_floor(int(trade_id), float(new_stop))
             updated = self.portfolio.update_levels(
                 int(trade_id),
                 stop_price=float(new_stop) if new_stop is not None else None,
@@ -306,7 +309,7 @@ class TradingAgent:
             f"🔧 Levels updated for trade {trade_id} ({updated.ticker}): "
             f"stop={updated.stop_price}, target={updated.target_price} — {reason[:80]}"
         )
-        return {
+        result = {
             "success": True,
             "action": "UPDATE_LEVELS",
             "trade_id": int(trade_id),
@@ -314,6 +317,50 @@ class TradingAgent:
             "stop_price": updated.stop_price,
             "target_price": updated.target_price,
         }
+        if note:
+            result["note"] = note
+        return result
+
+    def _apply_stop_floor(self, trade_id: int, stop: float):
+        """Keep a requested stop at least min_stop_atr × ATR(14) away from the current
+        price (session setting; off when unset). A stop inside that band is moved out
+        to the band edge, and the caller is told, so the LLM stops re-requesting it.
+        Returns (stop, note)."""
+        sc = getattr(self.config, "_session_config", None)
+        mult = getattr(sc, "min_stop_atr", None) if sc else None
+        if not mult:
+            return stop, None
+        trade = next((t for t in self.portfolio.get_open_positions() if t.id == trade_id), None)
+        if trade is None:
+            return stop, None
+        atr = trade.atr_14
+        if not atr:
+            try:
+                atr = self.market_data.get_stock_context(trade.ticker, include_vwap=False).get("atr_14")
+            except Exception:
+                atr = None
+        if not atr or atr <= 0:
+            logger.warning(f"Stop floor skipped for {trade.ticker}: ATR unavailable")
+            return stop, None
+        price = (self.market_data.get_current_prices([trade.ticker]) or {}).get(trade.ticker)
+        if not price:
+            logger.warning(f"Stop floor skipped for {trade.ticker}: no live price")
+            return stop, None
+        floor = round(mult * atr, 2)
+        if (trade.direction or "long").lower() == "short":
+            edge = round(price + floor, 2)
+            inside = stop < edge
+        else:
+            edge = round(price - floor, 2)
+            inside = stop > edge
+        if not inside:
+            return stop, None
+        logger.info(f"🧱 Stop floor: {trade.ticker} requested {stop} is within {mult}×ATR "
+                    f"({floor}) of {price}; set to {edge}")
+        note = (f"stop_price moved from {stop} to {edge}: stops must stay at least "
+                f"{mult}×ATR(14) = {floor} away from the current price {price} (noise floor). "
+                f"Do not re-request a tighter stop.")
+        return edge, note
 
     @property
     def _active_model(self) -> str:
@@ -400,7 +447,7 @@ class TradingAgent:
             trade = self.portfolio.execute_buy(
                 ticker, quantity, price, trade_type, reason,
                 stop_price=stop_price, target_price=target_price,
-                conviction=conviction, llm_model=self._active_model,
+                conviction=conviction, llm_model=self._active_model, atr_14=atr_14,
             )
             self.learner.write_trade_log(trade)
             return {
@@ -511,7 +558,7 @@ class TradingAgent:
             trade = self.portfolio.execute_short(
                 ticker, quantity, price, reason,
                 stop_price=stop_price, target_price=target_price,
-                conviction=conviction, llm_model=self._active_model,
+                conviction=conviction, llm_model=self._active_model, atr_14=atr_14,
             )
             self.learner.write_trade_log(trade)
             return {

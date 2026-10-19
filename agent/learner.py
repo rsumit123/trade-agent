@@ -325,6 +325,31 @@ Start with `## {self._now_local().strftime("%Y-%m-%d")} — Daily Review`
 
         total_trades = stats.get('total_trades', 0)
 
+        # Paper sessions are told to keep sampling under-tested setups so the
+        # data grows. A real-money session must not trade to collect data, so
+        # its rules get the opposite instruction (session: exploration_mandate).
+        sc = getattr(self.config, "_session_config", None)
+        if getattr(sc, "exploration_mandate", True):
+            exploration_block = (
+                '**Exploration mandate (ALWAYS include this rule verbatim):**\n'
+                '- "Exploration budget: even when a setup looks dominant, allocate at least 1 in every 4 trade ideas '
+                'to alternative setups (different direction, different signal type, different ticker class) until '
+                'each category has reached 30 closed trades. Confident bans require N≥30."'
+            )
+            exploration_items = (
+                "- The exploration mandate above\n"
+                '- "Categories under N=30: <list>. Keep sampling these — verdict premature."'
+            )
+        else:
+            exploration_block = (
+                "**No exploration (this session trades real money):**\n"
+                "- Do NOT write any rule that asks to sample, explore, test, rotate through or schedule "
+                "under-sampled or untested setups. Remove such rules if the previous rules contain them. "
+                "A category with little data is simply \"no data\", not a to-do list; every trade must stand "
+                "on its own merits."
+            )
+            exploration_items = '- "Categories under N=30: <list>. No verdict yet."'
+
         prompt = f"""You are a trading journal assistant. Read the previous rules, the recent trade entries and reflections, AND the quantitative stats below. Update the rules: keep earlier lessons that still hold, revise or drop those the new evidence contradicts, and add new ones.
 
 ## Previous Distilled Rules (update these with the new evidence)
@@ -349,15 +374,13 @@ Write a "## 📌 Distilled Rules" section (max 20 bullet points). It MUST follow
 - **N ≥ 30 in a category → you may write a confident rule** ("Setup X: 22/30 wins, reliable").
 - **A 0-win streak under 10 trades is noise, not evidence.** A losing streak is not a setup type — it's randomness until proven otherwise.
 
-**Exploration mandate (ALWAYS include this rule verbatim):**
-- "Exploration budget: even when a setup looks dominant, allocate at least 1 in every 4 trade ideas to alternative setups (different direction, different signal type, different ticker class) until each category has reached 30 closed trades. Confident bans require N≥30."
+{exploration_block}
 
 **What to write:**
 - Statistically supported wins (N≥10): cite the win rate
 - Statistically supported losses (N≥30): cite the loss rate
 - Position sizing / stop / target observations (these can apply across categories with smaller N)
-- The exploration mandate above
-- "Categories under N=30: <list>. Keep sampling these — verdict premature."
+{exploration_items}
 
 Rules must be SPECIFIC and DATA-BACKED (e.g. "Long RSI<30 bounces: 8/11 wins (73% WR), avg +1.2%. Tentative — needs N≥30."). No "always avoid X" or "discontinue Y" from samples under 30.
 

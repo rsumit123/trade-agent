@@ -463,7 +463,7 @@ class LLMWebSearchTool:
         }
 
     @staticmethod
-    def get_update_levels_tool() -> Dict[str, Any]:
+    def get_update_levels_tool(min_stop_atr: float = None) -> Dict[str, Any]:
         """Tool for adjusting stop/target on an existing open position
         (e.g. trailing stop after a favorable move, tightening stop on
         signs of reversal). Cannot change ticker or quantity — those
@@ -476,6 +476,9 @@ class LLMWebSearchTool:
                 "a stop when reversal signs appear, or extend a target. "
                 "Provide at least one of stop_price or target_price. "
                 "trade_id is required and must point to an open trade."
+                + (f" Stops must stay at least {min_stop_atr}×ATR(14) away from the current "
+                   f"price; a tighter stop is moved out to that distance (the result tells you "
+                   f"the stop actually set)." if min_stop_atr else "")
             ),
             "input_schema": {
                 "type": "object",

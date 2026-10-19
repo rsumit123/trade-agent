@@ -22,8 +22,16 @@ logger = logging.getLogger(__name__)
 # per-session override are filled in / appended below.
 
 
-def _build_trading_rules(preset) -> str:
-    """Build market-specific trading rules for the system prompt."""
+def _build_trading_rules(preset, min_stop_atr: float = None) -> str:
+    """Build market-specific trading rules for the system prompt.
+    min_stop_atr (session setting) replaces the tight-percentage stop line, since
+    the runner enforces that floor on update_levels."""
+    stop_rule = (
+        f"- Stop loss: at least {min_stop_atr}×ATR(14) from the current price "
+        "(enforced; tighter stops are moved out). Size the position to the stop."
+        if min_stop_atr else
+        "- Stop loss: -0.3% to -0.5% max per trade (cut fast)"
+    )
     if preset and preset.is_24x7:
         return (
             "- This is a 24/7 market — no forced close times\n"
@@ -47,7 +55,7 @@ def _build_trading_rules(preset) -> str:
             f"- ALL trades are INTRADAY ONLY — auto-closed at {trigger_str} IST\n"
             "- NO swing trades allowed — you must exit everything before market close\n"
             "- Target: +0.3% to +1.0% per trade (tight scalps)\n"
-            "- Stop loss: -0.3% to -0.5% max per trade (cut fast)\n"
+            f"{stop_rule}\n"
             "- Hold time: 5-45 minutes typical, rarely more than 1 hour\n"
             "- Position sizing: use full allocation, multiple simultaneous positions OK\n"
             "- LONG setups: gap-up + volume spike + RSI not overbought + VWAP support\n"
@@ -90,11 +98,11 @@ def _format_system_prompt(config, learnings, is_market_open, force_intraday=Fals
     market_name = preset.display_name if preset else "Indian Stock Markets (NSE)"
     tz = preset.timezone if preset else "Asia/Kolkata"
 
-    trading_rules = _build_trading_rules(preset)
+    sc = config._session_config
+    trading_rules = _build_trading_rules(preset, getattr(sc, "min_stop_atr", None))
 
     # Personality section from session config
     personality_section = ""
-    sc = config._session_config
     if sc and sc.personality:
         personality_section = f"## Trading Personality\n{sc.personality}"
 
@@ -271,11 +279,12 @@ def _get_tool_defs(config, is_backtest: bool = False):
     can't waste round-trips calling it (it would return empty anyway)."""
     from .web_research import LLMWebSearchTool
     preset = config._market_preset
+    sc = getattr(config, "_session_config", None)
     tools = [
         LLMWebSearchTool.get_portfolio_tool(),
         LLMWebSearchTool.get_stock_detail_tool(market_preset=preset),
         LLMWebSearchTool.get_trade_tool(market_preset=preset),
-        LLMWebSearchTool.get_update_levels_tool(),
+        LLMWebSearchTool.get_update_levels_tool(getattr(sc, "min_stop_atr", None)),
     ]
     if not is_backtest:
         tools.insert(0, LLMWebSearchTool.tool_definition(market_preset=preset))
