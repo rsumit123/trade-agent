@@ -49,6 +49,7 @@ def test_stop_floor_replaces_the_tight_percentage_stop_rule():
     assert "-0.3% to -0.5%" in _build_trading_rules(preset)
     rules = _build_trading_rules(preset, 0.5)
     assert "0.5×ATR(14)" in rules and "-0.3% to -0.5%" not in rules
+    assert "1.5× the stop distance" in rules and "+0.3% to +1.0%" not in rules   # target ≥ stop
     system, _ = _format_system_prompt(_cfg(min_stop_atr=0.5), learnings="L", is_market_open=True)
     assert "at least 0.5×ATR(14)" in system
 
@@ -145,6 +146,16 @@ def test_short_stop_inside_the_band_is_moved_out(tmp_path):
     t = a.portfolio.execute_short("KROSS.NS", 32, 308.0, stop_price=334.25, atr_14=17.5)
     r = a._update_levels({"trade_id": t.id, "stop_price": 309.0, "reason": "trail"})
     assert r["stop_price"] == 312.75 and "note" in r               # 304 + 0.5×17.5
+
+
+def test_floor_never_widens_an_existing_stop_on_a_losing_position(tmp_path):
+    a = _agent(tmp_path, {"IXIGO.NS": 157.5})                        # fallen below the 156.5 stop band edge
+    t = a.portfolio.execute_buy("IXIGO.NS", 62, 160.71, "intraday", stop_price=156.5, atr_14=7.0)
+    r = a._update_levels({"trade_id": t.id, "stop_price": 157.0, "reason": "cut"})
+    assert r["stop_price"] == 156.5 and "kept at 156.5" in r["note"]   # band edge 154.0 would widen it
+    s = _agent(tmp_path / "s", {"KROSS.NS": 311.0})
+    t2 = s.portfolio.execute_short("KROSS.NS", 32, 308.0, stop_price=312.0, atr_14=17.5)
+    assert s._update_levels({"trade_id": t2.id, "stop_price": 311.5, "reason": "cut"})["stop_price"] == 312.0
 
 
 def test_stop_outside_the_band_passes_untouched_including_a_breakeven_trail(tmp_path):

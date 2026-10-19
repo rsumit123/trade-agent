@@ -26,12 +26,13 @@ def _build_trading_rules(preset, min_stop_atr: float = None) -> str:
     """Build market-specific trading rules for the system prompt.
     min_stop_atr (session setting) replaces the tight-percentage stop line, since
     the runner enforces that floor on update_levels."""
-    stop_rule = (
-        f"- Stop loss: at least {min_stop_atr}×ATR(14) from the current price "
-        "(enforced; tighter stops are moved out). Size the position to the stop."
-        if min_stop_atr else
-        "- Stop loss: -0.3% to -0.5% max per trade (cut fast)"
-    )
+    if min_stop_atr:
+        target_rule = "- Target: at least 1.5× the stop distance (no fixed-percent scalps)"
+        stop_rule = (f"- Stop loss: at least {min_stop_atr}×ATR(14) from the current price "
+                     "(enforced; tighter stops are moved out). Size the position to the stop.")
+    else:
+        target_rule = "- Target: +0.3% to +1.0% per trade (tight scalps)"
+        stop_rule = "- Stop loss: -0.3% to -0.5% max per trade (cut fast)"
     if preset and preset.is_24x7:
         return (
             "- This is a 24/7 market — no forced close times\n"
@@ -54,7 +55,7 @@ def _build_trading_rules(preset, min_stop_atr: float = None) -> str:
             "## INTRADAY SCALPING RULES\n"
             f"- ALL trades are INTRADAY ONLY — auto-closed at {trigger_str} IST\n"
             "- NO swing trades allowed — you must exit everything before market close\n"
-            "- Target: +0.3% to +1.0% per trade (tight scalps)\n"
+            f"{target_rule}\n"
             f"{stop_rule}\n"
             "- Hold time: 5-45 minutes typical, rarely more than 1 hour\n"
             "- Position sizing: use full allocation, multiple simultaneous positions OK\n"

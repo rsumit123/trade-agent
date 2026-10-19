@@ -347,20 +347,23 @@ class TradingAgent:
             logger.warning(f"Stop floor skipped for {trade.ticker}: no live price")
             return stop, None
         floor = round(mult * atr, 2)
-        if (trade.direction or "long").lower() == "short":
-            edge = round(price + floor, 2)
-            inside = stop < edge
-        else:
-            edge = round(price - floor, 2)
-            inside = stop > edge
+        short = (trade.direction or "long").lower() == "short"
+        edge = round(price + floor, 2) if short else round(price - floor, 2)
+        inside = stop < edge if short else stop > edge
         if not inside:
             return stop, None
+        # Never loosen: the band edge may sit beyond the stop already in place
+        # (position moving against us), and widening a stop is not allowed.
+        new = edge
+        if trade.stop_price is not None:
+            new = min(edge, trade.stop_price) if short else max(edge, trade.stop_price)
+        what = f"kept at {new}" if new == trade.stop_price else f"moved from {stop} to {new}"
         logger.info(f"🧱 Stop floor: {trade.ticker} requested {stop} is within {mult}×ATR "
-                    f"({floor}) of {price}; set to {edge}")
-        note = (f"stop_price moved from {stop} to {edge}: stops must stay at least "
-                f"{mult}×ATR(14) = {floor} away from the current price {price} (noise floor). "
+                    f"({floor}) of {price}; {what}")
+        note = (f"stop_price {what}: stops must stay at least {mult}×ATR(14) = {floor} away "
+                f"from the current price {price} (noise floor), and a stop is never widened. "
                 f"Do not re-request a tighter stop.")
-        return edge, note
+        return new, note
 
     @property
     def _active_model(self) -> str:
