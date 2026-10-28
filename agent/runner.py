@@ -10,7 +10,7 @@ import random
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from pathlib import Path
 
 from .config import AgentConfig
@@ -365,6 +365,25 @@ class TradingAgent:
                 f"Do not re-request a tighter stop.")
         return new, note
 
+    def _record_entry_context(self, trade, stock_ctx: Optional[Dict]) -> None:
+        """Measure market + stock conditions for a position that was just opened
+        and store them on the trade. Runs after the order (one extra Kite quote
+        must never delay a real entry) and never raises."""
+        from . import trade_context
+        try:
+            ctx = {}
+            if not getattr(self, "_is_backtest", False):
+                ctx = trade_context.entry_context(self.market_data, trade.ticker, stock_ctx,
+                                                  getattr(self, "_last_market_ctx", None))
+            if ctx:
+                trade.entry_context = json.dumps(ctx, default=str)
+                self.portfolio.set_entry_context(trade.id, trade.entry_context)
+            logger.info(f"🏷️  {trade.ticker} setup={trade.setup} · " + ", ".join(
+                f"{k}={ctx[k]}" for k in ("regime", "time_bucket", "liquidity", "gap_pct",
+                                          "from_open_pct", "vs_vwap_atr", "rs_vs_nifty") if k in ctx))
+        except Exception as e:
+            logger.warning(f"Entry context not recorded for {trade.ticker}: {e}")
+
     @property
     def _active_model(self) -> str:
         """Get the currently active LLM model name."""
@@ -425,6 +444,7 @@ class TradingAgent:
 
             # Compute ATR-based stop and target (1.5×ATR stop, 2×ATR target → 1:2 RR)
             stop_price = target_price = atr_14 = None
+            ctx = None
             try:
                 ctx = self.market_data.get_stock_context(ticker, include_vwap=False)
                 atr_14 = ctx.get("atr_14")
@@ -447,11 +467,15 @@ class TradingAgent:
 
             # Execute
             conviction = trade_input.get("conviction")
+            from .trade_context import normalise_setup
+            setup = normalise_setup(trade_input.get("setup"))
             trade = self.portfolio.execute_buy(
                 ticker, quantity, price, trade_type, reason,
                 stop_price=stop_price, target_price=target_price,
                 conviction=conviction, llm_model=self._active_model, atr_14=atr_14,
+                setup=setup,
             )
+            self._record_entry_context(trade, ctx)
             self.learner.write_trade_log(trade)
             return {
                 "success":      True,
@@ -464,6 +488,7 @@ class TradingAgent:
                 "stop_price":   stop_price,
                 "target_price": target_price,
                 "atr_14":       atr_14,
+                "setup":        setup,
             }
 
         elif action == "SELL":
@@ -538,6 +563,7 @@ class TradingAgent:
 
             # For shorts: stop ABOVE entry, target BELOW entry
             stop_price = target_price = atr_14 = None
+            ctx = None
             try:
                 ctx = self.market_data.get_stock_context(ticker, include_vwap=False)
                 atr_14 = ctx.get("atr_14")
@@ -558,11 +584,15 @@ class TradingAgent:
                 logger.warning(f"Stop/target calc failed for SHORT {ticker}: {e}")
 
             conviction = trade_input.get("conviction")
+            from .trade_context import normalise_setup
+            setup = normalise_setup(trade_input.get("setup"))
             trade = self.portfolio.execute_short(
                 ticker, quantity, price, reason,
                 stop_price=stop_price, target_price=target_price,
                 conviction=conviction, llm_model=self._active_model, atr_14=atr_14,
+                setup=setup,
             )
+            self._record_entry_context(trade, ctx)
             self.learner.write_trade_log(trade)
             return {
                 "success":      True,
@@ -574,6 +604,7 @@ class TradingAgent:
                 "stop_price":   stop_price,
                 "target_price": target_price,
                 "atr_14":       atr_14,
+                "setup":        setup,
             }
 
         elif action == "COVER":
@@ -746,6 +777,7 @@ class TradingAgent:
         from . import market_context
         from .sector_data import get_nifty50
         ctx = market_context.fetch(self.market_data, get_nifty50())
+        self._last_market_ctx = ctx       # reused for entry_context on trades this cycle
         market_context.add_relative_strength(watchlist_data, ctx)
         return market_context.format_context(ctx)
 

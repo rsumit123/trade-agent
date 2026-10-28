@@ -470,9 +470,10 @@ Format as a bullet list under `## 📌 Distilled Rules`. No preamble, just the s
                     return
 
             action_label = "SHORT" if trade.direction == "short" else "ENTRY"
+            setup = f"  [setup={trade.setup}]" if getattr(trade, "setup", None) else ""
             entry = (
                 f"**{action_label}** {trade.quantity}x {trade.ticker} @ {self._sym}{trade.entry_price:.2f}"
-                f"  [{trade.trade_type}]  [trade_id={trade.id}]\n"
+                f"  [{trade.trade_type}]{setup}  [trade_id={trade.id}]\n"
                 f"  *Thesis: {trade.reason or 'no reason recorded'}*"
             )
             logger.info(f"Trade logged: {entry}")

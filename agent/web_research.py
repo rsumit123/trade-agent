@@ -385,6 +385,7 @@ class LLMWebSearchTool:
     @staticmethod
     def get_trade_tool(market_preset=None) -> Dict[str, Any]:
         """Tool for the LLM to place trades."""
+        from .trade_context import SETUPS
         if market_preset and market_preset.is_24x7:
             short_note = ""
             force_note = ""
@@ -456,7 +457,16 @@ class LLMWebSearchTool:
                     "conviction": {
                         "type": "integer",
                         "description": "Your conviction level 1-5. 1=speculative guess, 2=weak signal, 3=moderate, 4=strong setup, 5=textbook setup with multiple confirmations. Only trade at 4-5 conviction."
-                    }
+                    },
+                    "setup": {
+                        "type": "string",
+                        "enum": list(SETUPS),
+                        "description": (
+                            "Required for BUY and SHORT: the setup this trade is, from a fixed list so "
+                            "results can be counted per setup. Direction comes from the action. "
+                            + "; ".join(f"{k} = {v}" for k, v in SETUPS.items())
+                        ),
+                    },
                 },
                 "required": ["action", "reason", "conviction"]
             }
