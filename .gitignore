@@ -49,3 +49,7 @@ sessions/*/agent.lock
 
 # Legacy lock file
 data/agent.lock
+
+# Setup backtester cache and results (fetched from Kite on the VM)
+data/candles/
+data/bt_results/
