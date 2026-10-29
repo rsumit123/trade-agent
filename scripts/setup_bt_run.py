@@ -49,18 +49,23 @@ for k, p in enumerate(files, 1):
 print(f"{len(files)} symbols, {len(trades)} trades, {time.time() - t0:.0f}s "
       f"(notional ₹{a.notional:,.0f}, slippage {a.slippage:.2%}/side, out-of-sample from {oos})\n")
 
+lines = [f"{len(files)} symbols, {len(trades)} trades, notional ₹{a.notional:,.0f}, "
+         f"slippage {a.slippage:.2%}/side, out-of-sample from {oos}, setups {a.setups}, by {a.by}"]
 for sample in ("in", "out"):
     rows = summarise([t for t in trades if t["sample"] == sample], a.by)
-    print(f"== {sample.upper()}-OF-SAMPLE")
-    print(f"{'setup':<14}{'dir':<6}" + (f"{a.by:<12}" if a.by else "") +
-          f"{'n':>6}{'win%':>7}{'net win%':>9}{'net ₹':>11}{'₹/trade':>9}{'avg win':>9}{'avg loss':>10}")
+    lines.append(f"== {sample.upper()}-OF-SAMPLE")
+    lines.append(f"{'setup':<14}{'dir':<6}" + (f"{a.by:<12}" if a.by else "") +
+                 f"{'n':>6}{'win%':>7}{'net win%':>9}{'net ₹':>11}{'₹/trade':>9}{'avg win':>9}{'avg loss':>10}")
     for r in rows:
-        print(f"{r['setup']:<14}{r['direction']:<6}" + (f"{str(r[a.by]):<12}" if a.by else "") +
-              f"{r['n']:>6}{r['win_rate']:>7}{r['net_win_rate']:>9}{r['net']:>11}{r['net_per_trade']:>9}"
-              f"{str(r['avg_net_win']):>9}{str(r['avg_net_loss']):>10}")
-    print()
+        lines.append(f"{r['setup']:<14}{r['direction']:<6}" + (f"{str(r[a.by]):<12}" if a.by else "") +
+                     f"{r['n']:>6}{r['win_rate']:>7}{r['net_win_rate']:>9}{r['net']:>11}{r['net_per_trade']:>9}"
+                     f"{str(r['avg_net_win']):>9}{str(r['avg_net_loss']):>10}")
+    lines.append("")
+print("\n".join(lines))
 
-out = Path("data/bt_results") / f"{datetime.now():%Y%m%d-%H%M%S}.csv"
+stamp = f"{datetime.now():%Y%m%d-%H%M%S}"
+out = Path("data/bt_results") / f"{stamp}.csv"
 out.parent.mkdir(parents=True, exist_ok=True)
 pd.DataFrame(trades).to_csv(out, index=False)
-print(f"Trades written to {out}")
+(out.parent / f"{stamp}-summary.txt").write_text("\n".join(lines) + "\n")
+print(f"Trades written to {out} (summary: {stamp}-summary.txt)")

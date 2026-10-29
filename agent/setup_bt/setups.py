@@ -7,6 +7,7 @@ Params are plain data so step 3 (Opus writing setup definitions) can produce
 variants without new code.
 """
 
+import random
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Tuple
 
@@ -39,9 +40,31 @@ class Setup:
     params: Dict = field(default_factory=dict)
     target_r: float = 1.5
     min_stop_atr: float = 0.5
+    filters: Dict = field(default_factory=dict)   # entry-context filters, see passes_filters()
+    base: str = ""                                # registry name when this is a variant
 
     def signal(self, d: Day, i: int) -> Signal:
         raise NotImplementedError
+
+
+def passes_filters(filters: Dict, ctx: Dict, direction: str) -> bool:
+    """Entry-context filters. Keys: direction, regime, time_bucket, liquidity
+    (allowed lists) and <field>_min / <field>_max for any numeric context field
+    (gap_pct, abs_gap_pct, atr_pct, vix, rs_vs_nifty, from_open_pct, ...).
+    A filter on a field the trade doesn't have rejects the trade."""
+    for key, want in (filters or {}).items():
+        if key == "direction":
+            if direction not in want:
+                return False
+        elif key in ("regime", "time_bucket", "liquidity"):
+            if ctx.get(key) not in want:
+                return False
+        elif key.endswith("_min") or key.endswith("_max"):
+            field_, bound = key[:-4], key[-3:]
+            v = abs(ctx.get("gap_pct")) if field_ == "abs_gap_pct" and "gap_pct" in ctx else ctx.get(field_)
+            if v is None or (bound == "min" and v < want) or (bound == "max" and v > want):
+                return False
+    return True
 
 
 class GapFade(Setup):
@@ -110,4 +133,21 @@ class VwapCross(Setup):
         return None
 
 
-REGISTRY = {"gap_fade": GapFade, "orb_breakout": OrbBreakout, "vwap_cross": VwapCross}
+class RandomEntry(Setup):
+    """Control: enters in a random direction on a random eligible bar, with the
+    same stop/target mechanics (stop min_stop_atr x ATR away, target_r x risk).
+    A real setup has to beat this, not just zero. Deterministic per stock-day."""
+
+    def __init__(self, prob=0.05, seed=7, **kw):
+        super().__init__("random_entry", {"prob": prob, "seed": seed}, **kw)
+
+    def signal(self, d: Day, i: int) -> Signal:
+        r = random.Random(f"{self.params['seed']}|{d.times[i].isoformat()}|{d.day_open}|{d.prev_close}")
+        if r.random() >= self.params["prob"]:
+            return None
+        return ("long", d.c[i]) if r.random() < 0.5 else ("short", d.c[i])   # stop widened to min_stop_atr
+
+
+REGISTRY = {"gap_fade": GapFade, "orb_breakout": OrbBreakout, "vwap_cross": VwapCross,
+            "random_entry": RandomEntry}
+

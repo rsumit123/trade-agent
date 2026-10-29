@@ -16,7 +16,7 @@ from typing import Dict, Iterable, List, Optional
 import pandas as pd
 
 from ..trade_context import liquidity_bucket, regime, time_bucket
-from .setups import Day, Setup
+from .setups import Day, Setup, passes_filters
 
 ENTRY_FROM, ENTRY_UNTIL, FORCE_EXIT = time(9, 30), time(14, 30), time(15, 15)
 
@@ -81,8 +81,18 @@ def _context(d: Day, i: int, entry_ts: datetime, idx: Dict) -> Dict:
     return {k: v for k, v in ctx.items() if v is not None}
 
 
+def sample_of(day: date, oos_from: Optional[date], val_from: Optional[date] = None) -> str:
+    """train | val | out. Proposer rounds rank on train and val only; the
+    out-of-sample window is checked once per campaign."""
+    if oos_from and day >= oos_from:
+        return "out"
+    if val_from and day >= val_from:
+        return "val"
+    return "in" if not val_from else "train"
+
+
 def simulate_day(d: Day, setups: Iterable[Setup], symbol: str, idx: Dict, notional: float,
-                 slippage: float, oos_from: Optional[date]) -> List[Dict]:
+                 slippage: float, oos_from: Optional[date], val_from: Optional[date] = None) -> List[Dict]:
     trades = []
     n = len(d.c)
     for s in setups:
@@ -94,6 +104,9 @@ def simulate_day(d: Day, setups: Iterable[Setup], symbol: str, idx: Dict, notion
             if not sig:
                 continue
             direction, stop = sig
+            ctx = _context(d, i, d.times[i + 1], idx)
+            if getattr(s, "filters", None) and not passes_filters(s.filters, ctx, direction):
+                continue
             long = direction == "long"
             entry = d.o[i + 1] * (1 + slippage if long else 1 - slippage)
             min_risk = s.min_stop_atr * d.atr
@@ -127,14 +140,14 @@ def simulate_day(d: Day, setups: Iterable[Setup], symbol: str, idx: Dict, notion
                 exit_px, exit_type, exit_ts = d.c[-1], "forced_close", d.times[-1]
             exit_px *= (1 - slippage if long else 1 + slippage)
             pnl = (exit_px - entry) * qty if long else (entry - exit_px) * qty
-            ctx = _context(d, i, d.times[i + 1], idx)
             trades.append({
-                "symbol": symbol, "setup": s.name, "direction": direction, "quantity": qty,
+                "symbol": symbol, "setup": s.name, "base": getattr(s, "base", "") or s.name, "direction": direction,
+                "quantity": qty,
                 "entry_time": d.times[i + 1].isoformat(), "exit_time": exit_ts.isoformat(),
                 "entry_price": round(entry, 2), "exit_price": round(exit_px, 2),
                 "stop": round(stop, 2), "target": round(target, 2), "pnl": round(pnl, 2),
                 "exit_type": exit_type,
-                "sample": "out" if oos_from and d.times[0].date() >= oos_from else "in",
+                "sample": sample_of(d.times[0].date(), oos_from, val_from),
                 "entry_context": json.dumps(ctx),
             })
             break                                                       # one trade per setup per day
@@ -143,7 +156,7 @@ def simulate_day(d: Day, setups: Iterable[Setup], symbol: str, idx: Dict, notion
 
 def run_symbol(df: pd.DataFrame, symbol: str, setups: List[Setup], idx: Dict,
                notional: float = 10_000, slippage: float = 0.0005,
-               oos_from: Optional[date] = None) -> List[Dict]:
+               oos_from: Optional[date] = None, val_from: Optional[date] = None) -> List[Dict]:
     feats = daily_features(df)
     out = []
     for day, g in df.groupby(df["date"].dt.date):
@@ -155,5 +168,5 @@ def run_symbol(df: pd.DataFrame, symbol: str, setups: List[Setup], idx: Dict,
                 vwap=_vwap(h, l, c, v), day_open=float(f["open"]), prev_close=float(f["prev_close"]),
                 atr=float(f["atr"]), prev_turnover_cr=float(f["prev_turnover_cr"])
                 if not pd.isna(f["prev_turnover_cr"]) else None)
-        out.extend(simulate_day(d, setups, symbol, idx, notional, slippage, oos_from))
+        out.extend(simulate_day(d, setups, symbol, idx, notional, slippage, oos_from, val_from))
     return out

@@ -60,11 +60,18 @@ The owner is **rsumit123@gmail.com**. All emails go there and only replies from 
    - Open positions held for a long time.
 5. **BTC table.** Skip while all BTC agents are stopped (since 2026-10-15). Otherwise: compare control against strict, no_news, wide and long_hold on cumulative P&L, today's P&L, win rate, trades today and exit mix. Name the leader, the laggard and the variable that seems to matter most. Treat fewer than about 30 closed trades per variant as noise.
 6. **NSE comparison.** The main comparison is nse_opus against nse_sonnet: same preset, capital and risk limits, but Opus has a "more freedom" prompt and an open universe. A difference can't be credited to the model alone, because both the model and the rules changed. Also compare nse_haiku with nse_sonnet: identical config, so any difference is the model (nse_haiku starts with no distilled rules of its own). Also compare nse_default with nse_sonnet, noting they use different presets (swing vs intraday). Say "too early" for any agent with fewer than 20 trades. Report `claude_spend` from the deep check (spent, last 24h, projected vs remaining) in the health line.
+6b. **Setup statistics (required, read-only).** Every new trade carries a setup tag and code-measured entry context since 2026-10-29. Run:
+   ```bash
+   ssh ssh-social "docker exec -i -w /app alphaagent-backend python3 - --since 2026-10-29" \
+     < scripts/setup_report.py
+   ```
+   Put a "Setups" section in the email: per session, each setup x direction with n, net win% and net ₹ (after estimated charges). Name the best and worst setup by net ₹/trade, but say "too early" below 10 trades per setup. Flag any session with more than ~30% `untagged` entries (the agent is ignoring the field).
+   Then add the latest backtest result if one exists on the Mac (`ls -t data/bt_results/*.csv | head -1`, plus `data/bt_results/*-summary.txt` if present): for each backtested setup, out-of-sample n, net win% and net ₹/trade, and one line comparing it with the agents' live results for the same setup (both profitable / backtest yes but agent no / etc.). Never run a backtest from this skill; only read existing results.
 7. **Suggestions.** At most 2, numbered "1." and "2.". Each must map one-to-one to an `apply_action.py` action, with the exact value (the full prompt text, the exact tickers). If nothing is worth changing, write "No changes recommended today — continue observing."
 8. **Send the email** with Gmail `send_message` to rsumit123@gmail.com.
    - Subject: `AlphaAgent daily review — <YYYY-MM-DD>`, using the IST date.
    - Body: plain text, no markdown.
-   - Order: health line, problems found, per-session bullets, BTC table, NSE verdict, suggestions.
+   - Order: health line, problems found, per-session bullets, BTC table, NSE verdict, setups (live + backtest), suggestions.
    - End with these two lines verbatim:
      ```
      Reply (first line only) with: approve 1 / approve 2 / approve all / skip / hold — or approve N with <your modification>, e.g. 'approve 1 with interval 30 instead of 60'. Modifications must stay within: universe, news on/off, prompt override, cycle interval, prompt version, stop/restart one agent.
