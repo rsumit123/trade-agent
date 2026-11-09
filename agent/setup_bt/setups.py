@@ -46,7 +46,7 @@ class Setup:
     target_r: float = 1.5
     min_stop_atr: float = 0.0     # legacy floor on the stop: N x DAILY ATR (too wide intraday; off by default)
     min_stop_a5: float = 3.0      # stop at least N x the 5-minute ATR(14) (never under 0.35% of price) - same as live
-    max_stop_a5: float = 12.0     # skip setups whose stop would be wider than N x 5-minute ATR (not intraday-sized)
+    max_stop_a5: float = 6.0      # skip setups whose stop would be wider than N x 5-minute ATR (a 1.5R target must stay reachable intraday)
     filters: Dict = field(default_factory=dict)   # entry-context filters, see passes_filters()
     base: str = ""                                # registry name when this is a variant
 
