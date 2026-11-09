@@ -41,7 +41,12 @@ PAUSED: set = {   # 2026-10-15: user stopped all BTC agents ("those are useless 
     "btc_haiku", "btc_haiku_strict", "btc_haiku_no_news", "btc_haiku_wide", "btc_haiku_long_hold",
 }
 # Claude promo credit: $97.04 + $5.06 paid on 2026-10-13; promo expires 2026-10-29.
-CLAUDE_BUDGET_USD, CLAUDE_BUDGET_FROM, CLAUDE_BUDGET_UNTIL = 102.10, "2026-10-13", "2026-10-29"
+# Console balance (purchased + promotional) on 2026-10-28 23:46 IST was $5.06 + $122.16 = $127.22; spend
+# is counted from the next day. The ledgers miss learner/scanner calls (~16% under the console), so the
+# ledger sum is scaled by LEDGER_UNDERCOUNT. UNTIL = end of the current credit period (update when
+# the console balance is re-checked).
+CLAUDE_BUDGET_USD, CLAUDE_BUDGET_FROM, CLAUDE_BUDGET_UNTIL = 127.22, "2026-10-29", "2026-11-30"
+LEDGER_UNDERCOUNT = 1.16
 WINDOW_H = 24
 LOG_TAIL_BYTES = 8_000_000
 STALE_TRADE_DAYS = 5          # running agent with no trade for this long gets flagged
@@ -162,9 +167,9 @@ def check_claude_spend(sessions_dir: Path) -> dict:
                                r.get("cache_write_tokens", 0), r.get("cache_read_tokens", 0),
                                r.get("cache_write_1h_tokens", 0))
             if r["ts"][:10] >= CLAUDE_BUDGET_FROM:
-                since_budget += usd
+                since_budget += usd * LEDGER_UNDERCOUNT
             if datetime.fromisoformat(r["ts"]) >= since:
-                last_24h += usd
+                last_24h += usd * LEDGER_UNDERCOUNT
     days_left = (datetime.fromisoformat(CLAUDE_BUDGET_UNTIL).date() - now.date()).days + 1
     remaining = CLAUDE_BUDGET_USD - since_budget
     projected = last_24h * days_left

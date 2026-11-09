@@ -85,7 +85,7 @@ def test_vwap_cross_after_holding_one_side():
     closes = [100, 101, 101.5, 102, 102.2, 102.4, 102.5, 99.0] + [99] * 20
     d = _day(closes, atr=2.0)
     sig = VwapCross().signal(d, 7)
-    assert sig[0] == "short" and abs(sig[1] - (d.vwap[7] + 1.0)) < 1e-9
+    assert sig[0] == "short" and abs(sig[1] - (d.vwap[7] + 4.0 * 2.0 / 12.0)) < 1e-9   # stop_a5 4 x (daily ATR/12)
 
 
 # ── engine ─────────────────────────────────────────────────────────────────

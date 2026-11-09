@@ -48,17 +48,17 @@ def test_stop_floor_replaces_the_tight_percentage_stop_rule():
     preset = get_preset("nse-intraday")
     assert "-0.3% to -0.5%" in _build_trading_rules(preset)
     rules = _build_trading_rules(preset, 0.5)
-    assert "0.5×ATR(14)" in rules and "-0.3% to -0.5%" not in rules
+    assert "0.5× the daily ATR(14)" in rules and "-0.3% to -0.5%" not in rules
     assert "1.5× the stop distance" in rules and "+0.3% to +1.0%" not in rules   # target ≥ stop
     system, _ = _format_system_prompt(_cfg(min_stop_atr=0.5), learnings="L", is_market_open=True)
-    assert "at least 0.5×ATR(14)" in system
+    assert "at least 0.5× the daily ATR(14)" in system
 
 
 def test_update_levels_tool_mentions_the_floor_only_when_set():
     def desc(cfg):
         return next(t for t in _get_tool_defs(cfg) if t["name"] == "update_levels")["description"]
     assert "ATR" not in desc(_cfg())
-    assert "0.5×ATR(14)" in desc(_cfg(min_stop_atr=0.5))
+    assert "0.5× the daily ATR(14)" in desc(_cfg(min_stop_atr=0.5))
 
 
 def test_new_fields_survive_yaml_round_trip(tmp_path, monkeypatch):

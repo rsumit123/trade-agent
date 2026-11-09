@@ -19,6 +19,7 @@ from ..trade_context import liquidity_bucket, regime, time_bucket
 from .setups import Day, Setup, passes_filters
 
 ENTRY_FROM, ENTRY_UNTIL, FORCE_EXIT = time(9, 30), time(14, 30), time(15, 15)
+MIN_STOP_PCT = 0.35   # same absolute floor as the live stop floor (trade_context.MIN_STOP_PCT)
 
 
 def daily_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -49,6 +50,18 @@ def index_context(nifty: Optional[pd.DataFrame], vix: Optional[pd.DataFrame]) ->
     if vix is not None and len(vix):
         for ts, c in zip(vix["date"], vix["close"]):
             out.setdefault(ts.to_pydatetime(), {})["vix"] = round(float(c), 2)
+    return out
+
+
+def a5_series(h, l, c, daily_atr: float, n: int = 14, min_bars: int = 7) -> List[float]:
+    """5-minute ATR(14) as of each completed bar (mean true range of the last n bars of the
+    day; the first bar's true range ignores the overnight gap). Before min_bars bars exist it
+    is estimated as daily ATR / 12 (the median ratio), the same fallback the live floor uses."""
+    trs = []
+    out = []
+    for k in range(len(h)):
+        trs.append(h[k] - l[k] if k == 0 else max(h[k] - l[k], abs(h[k] - c[k - 1]), abs(l[k] - c[k - 1])))
+        out.append(sum(trs[-n:]) / len(trs[-n:]) if len(trs) >= min_bars else daily_atr / 12.0)
     return out
 
 
@@ -109,8 +122,14 @@ def simulate_day(d: Day, setups: Iterable[Setup], symbol: str, idx: Dict, notion
                 continue
             long = direction == "long"
             entry = d.o[i + 1] * (1 + slippage if long else 1 - slippage)
-            min_risk = s.min_stop_atr * d.atr
+            a5 = d.a5_at(i)
+            min_risk = max(getattr(s, "min_stop_a5", 0.0) * a5 + 0.0,
+                           MIN_STOP_PCT / 100.0 * entry if getattr(s, "min_stop_a5", 0.0) else 0.0,
+                           getattr(s, "min_stop_atr", 0.0) * d.atr)
             risk = (entry - stop) if long else (stop - entry)
+            max_stop = getattr(s, "max_stop_a5", None)
+            if max_stop and risk > max_stop * a5:
+                continue                                                # structural stop too wide for an intraday trade
             if risk < min_risk:
                 risk = min_risk
                 stop = entry - risk if long else entry + risk
@@ -167,6 +186,7 @@ def run_symbol(df: pd.DataFrame, symbol: str, setups: List[Setup], idx: Dict,
         d = Day(times=[t.to_pydatetime() for t in g["date"]], o=g["open"].tolist(), h=h, l=l, c=c, v=v,
                 vwap=_vwap(h, l, c, v), day_open=float(f["open"]), prev_close=float(f["prev_close"]),
                 atr=float(f["atr"]), prev_turnover_cr=float(f["prev_turnover_cr"])
-                if not pd.isna(f["prev_turnover_cr"]) else None)
+                if not pd.isna(f["prev_turnover_cr"]) else None,
+                a5=a5_series(h, l, c, float(f["atr"])))
         out.extend(simulate_day(d, setups, symbol, idx, notional, slippage, oos_from, val_from))
     return out

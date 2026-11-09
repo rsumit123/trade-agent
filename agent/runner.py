@@ -321,47 +321,75 @@ class TradingAgent:
             result["note"] = note
         return result
 
-    def _apply_stop_floor(self, trade_id: int, stop: float):
-        """Keep a requested stop at least min_stop_atr × ATR(14) away from the current
-        price (session setting; off when unset). A stop inside that band is moved out
-        to the band edge, and the caller is told, so the LLM stops re-requesting it.
-        Returns (stop, note)."""
+    def _stop_floor_distance(self, trade, price: float):
+        """Minimum stop distance for this trade from the session's settings, or (None, "")
+        when no floor applies. min_stop_a5: N × the 5-minute ATR(14), never under
+        MIN_STOP_PCT of price; with fewer than 7 bars today the 5-minute ATR is estimated
+        as daily ATR / 12. min_stop_atr (legacy): N × the daily ATR(14).
+        When both are set the wider floor wins."""
+        from . import trade_context
         sc = getattr(self.config, "_session_config", None)
-        mult = getattr(sc, "min_stop_atr", None) if sc else None
-        if not mult:
-            return stop, None
+        a5_mult = getattr(sc, "min_stop_a5", None) if sc else None
+        d_mult = getattr(sc, "min_stop_atr", None) if sc else None
+        if not a5_mult and not d_mult:
+            return None, ""
+        daily = trade.atr_14
+        if not daily:
+            try:
+                daily = self.market_data.get_stock_context(trade.ticker, include_vwap=False).get("atr_14")
+            except Exception:
+                daily = None
+        dist, label = 0.0, ""
+        if a5_mult:
+            a5 = None
+            try:
+                df = self.market_data.get_intraday_data(trade.ticker, "5minute")
+                a5 = trade_context.five_min_atr(df.to_dict("records") if len(df) else [])
+            except Exception:
+                a5 = None
+            src = "5-minute ATR"
+            if not a5 and daily:
+                a5, src = daily / 12.0, "estimated 5-minute ATR (early in the session)"
+            if a5:
+                dist = max(a5_mult * a5, trade_context.MIN_STOP_PCT / 100.0 * price)
+                label = f"{a5_mult}×{src} ({round(a5, 2)}), min {trade_context.MIN_STOP_PCT}% of price"
+        if d_mult and daily:
+            if d_mult * daily > dist:
+                dist, label = d_mult * daily, f"{d_mult}×ATR(14) ({round(daily, 2)})"
+        return (round(dist, 2), label) if dist > 0 else (None, "")
+
+    def _apply_stop_floor(self, trade_id: int, stop: float):
+        """Keep a requested stop at least the session's floor away from the current price
+        (off when no floor is set). A stop inside that band is moved out to the band edge,
+        and the caller is told, so the LLM stops re-requesting it. A stop is never widened
+        beyond the one already in place. Returns (stop, note)."""
         trade = next((t for t in self.portfolio.get_open_positions() if t.id == trade_id), None)
         if trade is None:
             return stop, None
-        atr = trade.atr_14
-        if not atr:
-            try:
-                atr = self.market_data.get_stock_context(trade.ticker, include_vwap=False).get("atr_14")
-            except Exception:
-                atr = None
-        if not atr or atr <= 0:
-            logger.warning(f"Stop floor skipped for {trade.ticker}: ATR unavailable")
+        sc = getattr(self.config, "_session_config", None)
+        if not (getattr(sc, "min_stop_a5", None) or getattr(sc, "min_stop_atr", None)):
             return stop, None
         price = (self.market_data.get_current_prices([trade.ticker]) or {}).get(trade.ticker)
         if not price:
             logger.warning(f"Stop floor skipped for {trade.ticker}: no live price")
             return stop, None
-        floor = round(mult * atr, 2)
+        floor, label = self._stop_floor_distance(trade, price)
+        if not floor:
+            logger.warning(f"Stop floor skipped for {trade.ticker}: ATR unavailable")
+            return stop, None
         short = (trade.direction or "long").lower() == "short"
         edge = round(price + floor, 2) if short else round(price - floor, 2)
         inside = stop < edge if short else stop > edge
         if not inside:
             return stop, None
-        # Never loosen: the band edge may sit beyond the stop already in place
-        # (position moving against us), and widening a stop is not allowed.
         new = edge
         if trade.stop_price is not None:
             new = min(edge, trade.stop_price) if short else max(edge, trade.stop_price)
         what = f"kept at {new}" if new == trade.stop_price else f"moved from {stop} to {new}"
-        logger.info(f"🧱 Stop floor: {trade.ticker} requested {stop} is within {mult}×ATR "
-                    f"({floor}) of {price}; {what}")
-        note = (f"stop_price {what}: stops must stay at least {mult}×ATR(14) = {floor} away "
-                f"from the current price {price} (noise floor), and a stop is never widened. "
+        logger.info(f"🧱 Stop floor: {trade.ticker} requested {stop} is within {label} "
+                    f"(= {floor}) of {price}; {what}")
+        note = (f"stop_price {what}: stops must stay at least {label} = {floor} away from the "
+                f"current price {price} (noise floor), and a stop is never widened. "
                 f"Do not re-request a tighter stop.")
         return new, note
 
@@ -779,7 +807,15 @@ class TradingAgent:
         ctx = market_context.fetch(self.market_data, get_nifty50())
         self._last_market_ctx = ctx       # reused for entry_context on trades this cycle
         market_context.add_relative_strength(watchlist_data, ctx)
-        return market_context.format_context(ctx)
+        text = market_context.format_context(ctx)
+        if text and getattr(getattr(self.config, "_session_config", None), "adaptive_rules", False):
+            from . import adaptive
+            cal = adaptive.calibrate(ctx)
+            if cal:
+                logger.info(f"🎚️  Calibration: regime={cal['regime']} min_rr(with trend)={cal['min_rr_with']} "
+                            f"vwap_atr(with trend)={cal['vwap_atr_with']}")
+            text += adaptive.format_calibration(cal)
+        return text
 
     # ── Main Loop ────────────────────────────────────────────
 

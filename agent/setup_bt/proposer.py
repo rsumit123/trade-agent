@@ -38,24 +38,32 @@ def _rows(rows: List[Dict], by: str = None) -> List[Dict]:
 ENGINE_RULES = """Engine (fixed, do not try to change it):
 - 5-minute bars, Nifty 200 stocks, about 2 years. Signals use completed bars; entry at the next bar's open.
 - Entries 09:30-14:30 IST, everything force-closed at 15:15. One trade per variant per stock per day.
-- Stop from the setup, widened to at least min_stop_atr x ATR(14). Target = target_r x risk.
-  If one bar touches both, the stop counts. 0.05% slippage per side plus real Indian intraday charges
-  (~Rs 27 per Rs 10,000 round trip). Fixed Rs 10,000 per trade, so charges are about 0.27% of notional:
-  a setup needs a real edge, small scalps lose.
+- Risk is sized to INTRADAY movement: the stop from the setup is widened to at least min_stop_a5 x the
+  5-minute ATR(14) (and never under 0.35% of price), and the trade is skipped if the stop would be wider
+  than max_stop_a5 x the 5-minute ATR (a typical stock: 1 x 5-minute ATR is about 0.2% of price).
+  Target = target_r x risk. If one bar touches both, the stop counts. In an earlier version stops and
+  targets were sized from the DAILY ATR; they were so wide that over 80% of trades just ended at the
+  15:15 close, so that mistake is not available any more.
+- 0.05% slippage per side plus real Indian intraday charges (about Rs {charge} per Rs {notional:,.0f} round
+  trip, i.e. {charge_pct:.2f}% of notional): a setup needs a real edge, tiny scalps lose to charges.
 - random_entry is a control: random bar, random direction, same stop/target mechanics. A variant only
   counts if it beats random_entry, not just zero."""
 
 BASES = """Base setups (you choose params within the ranges):
 - gap_fade: |gap| >= gap_min %. After or_bars opening bars, a bar closes back through VWAP against the gap
   and beyond the day's open. Short a failing gap-up, long a failing gap-down. Stop: the day's extreme so far.
-- orb_breakout: a bar closes beyond the or_bars-bar opening range, with bar volume >= vol_mult x the day's
-  average bar volume so far. Stop: the other side of the range.
+- orb_breakout: the FIRST bar to close beyond the or_bars-bar opening range (no earlier close outside it),
+  with bar volume >= vol_mult x the day's average bar volume so far, and an opening range between
+  min_range_pct and max_range_pct of the open. Stop: the other side of the range.
 - vwap_cross: price closed on one side of VWAP for hold_bars bars, then a bar closes on the other side by
-  >= min_cross_atr x ATR. Stop: stop_atr x ATR beyond VWAP."""
+  >= min_cross_atr x the daily ATR. Stop: stop_a5 x the 5-minute ATR beyond VWAP."""
 
 
 def build_prompt(evid: Dict, history: List[Dict], n_variants: int, round_no: int,
-                 live_stats: str = "") -> str:
+                 live_stats: str = "", notional: float = 10_000) -> str:
+    from ..trade_context import est_intraday_charges
+    charge = est_intraday_charges(notional, notional)
+    engine_rules = ENGINE_RULES.format(charge=round(charge), notional=notional, charge_pct=charge / notional * 100)
     ranges = {b: {k: list(v) for k, v in p.items()} for b, p in PARAM_RANGES.items()}
     filters = {k: sorted(v) for k, v in CHOICE_FILTERS.items()}
     return f"""You are designing intraday trading setups for Indian equities (NSE cash, MIS), round {round_no} of a
@@ -63,7 +71,7 @@ search. Your job: propose up to {n_variants} NEW setup variants that you expect 
 costs, using the backtest evidence below. Prefer a few well-reasoned variants over many small tweaks: every
 variant tried is counted, and a winner found after many tries is worth less.
 
-{ENGINE_RULES}
+{engine_rules}
 
 {BASES}
 
@@ -78,7 +86,7 @@ Filters on the entry context (optional):
 regime: trend_up (Nifty >= +0.4% since open and in the top 40% of its range), trend_down (mirror), else range.
 
 Evidence (train = first ~12 months, val = next ~6 months; net = after slippage and charges, Rs per trade at
-Rs 10,000 notional; slices with fewer than 5 trades are omitted):
+Rs {notional:,.0f} notional; slices with fewer than 5 trades are omitted):
 {json.dumps(evid, separators=(",", ":"))}
 
 Variants already tried and their results (do not repeat them):

@@ -349,6 +349,11 @@ Start with `## {self._now_local().strftime("%Y-%m-%d")} — Daily Review`
                 "on its own merits."
             )
             exploration_items = '- "Categories under N=30: <list>. No verdict yet."'
+        if getattr(sc, "adaptive_rules", False):
+            exploration_block += (
+                "\n- Do NOT write numeric thresholds for the minimum reward:risk or the maximum distance from VWAP "
+                "(and drop any that the previous rules contain): the harness sets those every cycle from the market "
+                "regime. Describe patterns and invalidation levels instead.")
 
         prompt = f"""You are a trading journal assistant. Read the previous rules, the recent trade entries and reflections, AND the quantitative stats below. Update the rules: keep earlier lessons that still hold, revise or drop those the new evidence contradicts, and add new ones.
 

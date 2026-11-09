@@ -20,10 +20,12 @@ from .setups import REGISTRY, Setup
 # (min, max) per numeric param, by base setup.
 PARAM_RANGES = {
     "gap_fade": {"gap_min": (1.0, 6.0), "or_bars": (2, 6)},
-    "orb_breakout": {"or_bars": (2, 6), "vol_mult": (1.0, 4.0)},
-    "vwap_cross": {"hold_bars": (3, 18), "min_cross_atr": (0.0, 0.5), "stop_atr": (0.2, 1.5)},
+    "orb_breakout": {"or_bars": (2, 6), "vol_mult": (1.0, 4.0), "min_range_pct": (0.1, 2.0),
+                     "max_range_pct": (0.5, 5.0)},
+    "vwap_cross": {"hold_bars": (3, 18), "min_cross_atr": (0.0, 0.5), "stop_a5": (2.0, 10.0)},
 }
-COMMON_RANGES = {"target_r": (1.0, 3.0), "min_stop_atr": (0.3, 1.5)}
+COMMON_RANGES = {"target_r": (1.0, 3.0), "min_stop_a5": (1.0, 8.0), "max_stop_a5": (4.0, 25.0),
+                 "min_stop_atr": (0.0, 1.5)}
 CHOICE_FILTERS = {
     "direction": {"long", "short"},
     "regime": {"trend_up", "trend_down", "range"},

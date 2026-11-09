@@ -16,6 +16,7 @@ yet seen live; the read-only live check must confirm them.
 import csv
 import io
 import json
+import time
 import logging
 import os
 import threading
@@ -357,7 +358,25 @@ class GrowwBroker:
         except OSError as e:
             logger.warning(f"Could not cache Groww token: {e}")
 
+    # Read-only SDK calls: safe to repeat, so a 429 is retried after a short pause.
+    # Orders are never retried here (a retry could double-place; callers handle that).
+    READ_CALLS = {"get_order_detail", "get_order_status_by_reference", "get_order_list", "get_smart_order",
+                  "get_smart_order_list", "get_positions_for_user", "get_quote", "get_available_margin_details"}
+    RATE_LIMIT_PAUSES_S = (1.5, 4.0)
+
     def _call(self, name: str, **kwargs):
+        """One SDK call; read-only calls ride out a Groww rate limit (429) with two
+        short retries (the midday sweep used to hit it and log an error)."""
+        for pause in (*self.RATE_LIMIT_PAUSES_S, None):
+            try:
+                return self._call_once(name, **kwargs)
+            except Exception as e:
+                if pause is None or name not in self.READ_CALLS or classify_error(e) != "rate_limited":
+                    raise
+                logger.info(f"Groww {name}: rate limited, retrying in {pause}s")
+                time.sleep(pause)
+
+    def _call_once(self, name: str, **kwargs):
         """One SDK call. An auth-looking failure is retried once after a fresh
         login; still failing → GrowwAuthError."""
         try:

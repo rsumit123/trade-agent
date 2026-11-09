@@ -88,3 +88,70 @@ def test_parse_specs_and_ledger(tmp_path):
     log_results(led, "c1", 1, specs[0], {"train": {"n": 3}})
     log_results(led, "c2", 1, specs[0], {})
     assert tried_count(led) == 2 and tried_count(led, "c1") == 1
+
+
+# ── intraday-scaled risk (backtester fix) ───────────────────────────────────
+
+from agent.setup_bt.engine import a5_series, simulate_day as _sim
+from agent.setup_bt.setups import GapFade, OrbBreakout
+from tests.test_setup_bt import _day
+
+
+def test_a5_series_uses_only_completed_bars_and_falls_back_early():
+    h, l, c = [100.5] * 20, [99.5] * 20, [100.0] * 20
+    out = a5_series(h, l, c, daily_atr=2.4)
+    assert abs(out[0] - 0.2) < 1e-9 and abs(out[5] - 0.2) < 1e-9   # < 7 bars: daily ATR / 12
+    assert abs(out[10] - 1.0) < 1e-9                # true range of each bar is 1.0
+
+
+def test_orb_takes_only_the_first_break_and_a_tradable_range():
+    closes = [100, 100.4, 100.2, 100.3, 101.6, 101.7, 101.9] + [101.9] * 20
+    vols = [1000] * 4 + [3000, 3000, 3000] + [1000] * 20
+    d = _day(closes, vols=vols)
+    orb = OrbBreakout()
+    assert orb.signal(d, 4) is not None             # first break
+    assert orb.signal(d, 5) is None and orb.signal(d, 6) is None   # already outside the range: not the first break
+    wide = _day([100, 104, 96, 103, 104.5] + [104.5] * 20, vols=[1000] * 4 + [3000] + [1000] * 20)
+    assert OrbBreakout().signal(wide, 4) is None    # opening range ~8% wide: not tradable
+
+
+def test_stop_is_sized_from_the_5_minute_atr_and_wide_structural_stops_are_skipped():
+    d = _engine_day([100.1] * 75, [99.9] * 75)
+    d.a5 = [0.5] * 75                                # 5-minute ATR 0.5 -> floor 3 x 0.5 = 1.5 (1.5% of 100)
+
+    class Tight:
+        name, base, filters, target_r, min_stop_a5, max_stop_a5 = "t", "t", {}, 2.0, 3.0, 12.0
+
+        def signal(self, d, i):
+            return "long", d.c[i] - 0.2              # structural stop 0.2 away: widened to 1.5
+
+    class Wide(Tight):
+        def signal(self, d, i):
+            return "long", d.c[i] - 10.0             # 10 away = 20 x ATR: skipped
+
+    (t,) = _sim(d, [Tight()], "X", {}, 10_000, 0.0, None)
+    assert t["stop"] == 98.5 and t["target"] == 103.0
+    assert _sim(d, [Wide()], "X", {}, 10_000, 0.0, None) == []
+
+
+def test_floor_is_at_least_0_35_percent_of_price():
+    d = _engine_day([100.1] * 75, [99.9] * 75)
+    d.a5 = [0.05] * 75                               # 3 x 0.05 = 0.15, but 0.35% of 100 = 0.35
+
+    class S:
+        name, base, filters, target_r, min_stop_a5, max_stop_a5 = "s", "s", {}, 2.0, 3.0, 12.0
+
+        def signal(self, d, i):
+            return "short", d.c[i] + 0.1
+
+    (t,) = _sim(d, [S()], "X", {}, 10_000, 0.0, None)
+    assert abs(t["stop"] - 100.35) < 1e-9
+
+
+def test_proposer_accepts_the_new_params_and_mentions_notional():
+    s, errs = validate({"id": "orb_narrow", "base": "orb_breakout",
+                        "params": {"min_range_pct": 0.5, "max_range_pct": 2.0}, "min_stop_a5": 2.5, "max_stop_a5": 10})
+    assert not errs and s.min_stop_a5 == 2.5 and s.max_stop_a5 == 10
+    assert validate({"id": "vwap_x", "base": "vwap_cross", "params": {"stop_atr": 0.5}})[1]   # old param is gone
+    prompt = build_prompt({"train": {}, "val": {}}, [], 5, 1, notional=100_000)
+    assert "Rs 100,000" in prompt and "5-minute ATR" in prompt and "15:15 close, so that mistake" in prompt

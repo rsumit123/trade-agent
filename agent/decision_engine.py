@@ -22,13 +22,23 @@ logger = logging.getLogger(__name__)
 # per-session override are filled in / appended below.
 
 
-def _build_trading_rules(preset, min_stop_atr: float = None) -> str:
-    """Build market-specific trading rules for the system prompt.
-    min_stop_atr (session setting) replaces the tight-percentage stop line, since
-    the runner enforces that floor on update_levels."""
+def _stop_floor_text(min_stop_atr=None, min_stop_a5=None) -> str:
+    """Human description of the enforced stop floor, for the prompt and the tool text."""
+    parts = []
+    if min_stop_a5:
+        parts.append(f"{min_stop_a5}× the 5-minute ATR(14) (about 0.5-1% of price on most stocks, never under 0.35%)")
     if min_stop_atr:
+        parts.append(f"{min_stop_atr}× the daily ATR(14)")
+    return " and at least ".join(parts)
+
+
+def _build_trading_rules(preset, min_stop_atr: float = None, min_stop_a5: float = None) -> str:
+    """Build market-specific trading rules for the system prompt.
+    A stop floor (session settings) replaces the tight-percentage stop line, since
+    the runner enforces that floor on update_levels."""
+    if min_stop_atr or min_stop_a5:
         target_rule = "- Target: at least 1.5× the stop distance (no fixed-percent scalps)"
-        stop_rule = (f"- Stop loss: at least {min_stop_atr}×ATR(14) from the current price "
+        stop_rule = (f"- Stop loss: at least {_stop_floor_text(min_stop_atr, min_stop_a5)} from the current price "
                      "(enforced; tighter stops are moved out). Size the position to the stop.")
     else:
         target_rule = "- Target: +0.3% to +1.0% per trade (tight scalps)"
@@ -100,7 +110,7 @@ def _format_system_prompt(config, learnings, is_market_open, force_intraday=Fals
     tz = preset.timezone if preset else "Asia/Kolkata"
 
     sc = config._session_config
-    trading_rules = _build_trading_rules(preset, getattr(sc, "min_stop_atr", None))
+    trading_rules = _build_trading_rules(preset, getattr(sc, "min_stop_atr", None), getattr(sc, "min_stop_a5", None))
 
     # Personality section from session config
     personality_section = ""
@@ -285,7 +295,7 @@ def _get_tool_defs(config, is_backtest: bool = False):
         LLMWebSearchTool.get_portfolio_tool(),
         LLMWebSearchTool.get_stock_detail_tool(market_preset=preset),
         LLMWebSearchTool.get_trade_tool(market_preset=preset),
-        LLMWebSearchTool.get_update_levels_tool(getattr(sc, "min_stop_atr", None)),
+        LLMWebSearchTool.get_update_levels_tool(getattr(sc, "min_stop_atr", None), getattr(sc, "min_stop_a5", None)),
     ]
     if not is_backtest:
         tools.insert(0, LLMWebSearchTool.tool_definition(market_preset=preset))

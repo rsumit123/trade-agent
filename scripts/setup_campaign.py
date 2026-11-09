@@ -44,6 +44,7 @@ ap.add_argument("--final-top", type=int, default=3)
 ap.add_argument("--min-n", type=int, default=30)
 ap.add_argument("--specs", help="JSON file of variant specs to use instead of the API proposer in round 1")
 ap.add_argument("--limit", type=int, default=0)
+ap.add_argument("--notional", type=float, default=10_000, help="Rs per trade; charges are capped per order, so Rs 1L has a much lower cost hurdle")
 a = ap.parse_args()
 
 val_from, oos_from = date.fromisoformat(a.val_from), date.fromisoformat(a.oos_from)
@@ -83,7 +84,7 @@ def evaluate(setups, oos=False):
             part = df[days >= start]
         else:
             part = df[days < oos_from]
-        trades += run_symbol(part, sym, setups, idx, oos_from=oos_from, val_from=val_from)
+        trades += run_symbol(part, sym, setups, idx, notional=a.notional, oos_from=oos_from, val_from=val_from)
     want = {"out"} if oos else {"train", "val"}
     return [t for t in trades if t["sample"] in want]
 
@@ -114,7 +115,8 @@ for rnd in range(1, a.rounds + 1):
     if rnd == 1 and a.specs:
         specs = parse_specs(Path(a.specs).read_text())
     else:
-        inp = {"evidence": evidence(all_trades), "history": history, "n_variants": a.per_round, "round": rnd}
+        inp = {"evidence": evidence(all_trades), "history": history, "n_variants": a.per_round, "round": rnd,
+               "notional": a.notional}
         f = out_dir / f"round_{rnd}_input.json"
         f.write_text(json.dumps(inp))
         subprocess.run(["ssh", VM, f"mkdir -p {VM_DIR}/{a.campaign}"], check=True)

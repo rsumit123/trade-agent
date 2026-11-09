@@ -56,6 +56,25 @@ def time_bucket(t: datetime) -> str:
     return "late"             # 13:30-close
 
 
+MIN_STOP_PCT = 0.35   # a stop floor is never tighter than this % of price, whatever the 5-minute ATR says
+
+
+def five_min_atr(candles, n: int = 14) -> Optional[float]:
+    """Mean true range of the last n completed 5-minute bars (needs at least 6).
+    candles: list of dicts or a DataFrame with high/low/close, oldest first."""
+    try:
+        rows = candles.to_dict("records") if hasattr(candles, "to_dict") else list(candles or [])
+        rows = rows[-(n + 1):]
+        if len(rows) < 7:
+            return None
+        trs = []
+        for prev, cur in zip(rows, rows[1:]):
+            trs.append(max(cur["high"] - cur["low"], abs(cur["high"] - prev["close"]), abs(cur["low"] - prev["close"])))
+        return sum(trs) / len(trs)
+    except Exception:
+        return None
+
+
 def liquidity_bucket(turnover_cr: Optional[float]) -> Optional[str]:
     if turnover_cr is None:
         return None
@@ -89,9 +108,16 @@ def build(quote: Optional[Dict], stock: Optional[Dict], market: Optional[Dict],
     if row:
         ctx.update({k: row[k] for k in ("change_pct", "gap_pct", "from_open_pct", "day_range_pct",
                                         "range_pos", "vs_vwap_pct", "turnover_cr", "at_circuit")})
-        ctx["liquidity"] = liquidity_bucket(row["turnover_cr"])
     stock = stock or {}
     atr, price = stock.get("atr_14"), stock.get("current_price") or (row or {}).get("ltp")
+    # Bucket by the 20-day average daily turnover, not today's partial turnover (which made
+    # every early-morning entry look "low"); fall back to today's if history is missing.
+    avg_vol = stock.get("avg_volume_20d")
+    if avg_vol and price:
+        ctx["avg_turnover_cr"] = round(avg_vol * price / 1e7, 1)
+        ctx["liquidity"] = liquidity_bucket(ctx["avg_turnover_cr"])
+    elif row:
+        ctx["liquidity"] = liquidity_bucket(row["turnover_cr"])
     if atr and price:
         ctx["atr_pct"] = round(atr / price * 100, 2)
         vwap = (row or {}).get("vwap")

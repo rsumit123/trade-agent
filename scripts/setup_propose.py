@@ -20,7 +20,7 @@ from agent.setup_bt.variants import parse_specs  # noqa: E402
 MODEL = "claude-opus-5-5"
 inp = json.loads(open(sys.argv[1]).read())
 prompt = build_prompt(inp["evidence"], inp.get("history", []), inp.get("n_variants", 8),
-                      inp.get("round", 1), inp.get("live_stats", ""))
+                      inp.get("round", 1), inp.get("live_stats", ""), inp.get("notional", 10_000))
 resp = anthropic.Anthropic().messages.create(model=MODEL, max_tokens=16000,
                                              messages=[{"role": "user", "content": prompt}])
 specs = parse_specs(response_text(resp))
